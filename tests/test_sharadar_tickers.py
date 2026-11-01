@@ -249,6 +249,19 @@ def test_listings_refuse_a_store_without_a_sidecar(tmp_path):
         lookup.listings([303], _day(DAYS[0]))
 
 
+
+def test_listings_refuse_a_damaged_sidecar_after_names_read_it_as_ids(tmp_path):
+    from quantlab.dataset.sharadar.tickers import SharadarTickerLookup
+
+    sidecar = tmp_path / "damaged.zarr.sharadar_tickers.json"
+    sidecar.write_text("{not json", encoding="utf-8")
+    lookup = SharadarTickerLookup(sidecar)
+    # names never raises, so it shows ids; listings, asked next, still refuses.
+    assert lookup.names([303], _day(DAYS[0])) == [SymbolName("303")]
+    with pytest.raises(ValueError, match="damaged.zarr.sharadar_tickers.json"):
+        lookup.listings([303], _day(DAYS[0]))
+    assert lookup.names([303], _day(DAYS[0])) == [SymbolName("303")]
+
 def _tree_digest(path: Path) -> str:
     digest = hashlib.sha256()
     for file in sorted(p for p in path.rglob("*") if p.is_file()):

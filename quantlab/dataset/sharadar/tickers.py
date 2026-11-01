@@ -180,6 +180,23 @@ def ticker_sidecar_payload(
     return {"table": code, "intervals": intervals, "former": former}
 
 
+def _span_at(
+    spans: dict[str, tuple[list[str], list[tuple[str, str | None, str | None]]]], symbol, day
+) -> tuple[str, tuple[str, str | None, str | None] | None]:
+    """Return ``symbol``'s sidecar key and its (ticker, company, exchange) in use on ``day``.
+
+    The span is ``None`` for a permaticker the sidecar does not know, or a
+    day before its first span; a span starts on its ``start``.
+    """
+    try:
+        key = str(int(symbol))
+    except (TypeError, ValueError):
+        key = str(symbol)
+    found = spans.get(key)
+    k = -1 if found is None else bisect.bisect_right(found[0], str(day)[:10]) - 1
+    return key, (None if k < 0 else found[1][k])
+
+
 class SharadarTickerLookup(TickerLookup):
     """The ticker and company a permaticker had on a day, from one ``<store>.sharadar_tickers.json``.
 
@@ -203,6 +220,9 @@ class SharadarTickerLookup(TickerLookup):
         """Initialize the lookup without reading the file; see the class docstring."""
         self.sidecar_path = Path(sidecar_path)
         self._spans: dict[str, tuple[list[str], list[tuple[str, str | None, str | None]]]] | None = None
+        # What reading the sidecar raised, kept so a damaged file is read once
+        # and every strict read after a lenient one still refuses it.
+        self._error: Exception | None = None
 
     def __repr__(self) -> str:
         """Return ``SharadarTickerLookup('<sidecar path>')``."""
@@ -212,19 +232,26 @@ class SharadarTickerLookup(TickerLookup):
         """Return the spans per permaticker, as start labels and (ticker, company, exchange), read once.
 
         Raises what reading or parsing the file raises (``OSError``,
-        ``ValueError``, ``KeyError``, ``TypeError``, ``AttributeError``).
+        ``ValueError``, ``KeyError``, ``TypeError``, ``AttributeError``), on
+        every call: a failure is kept, never cached as an empty table.
         """
+        if self._error is not None:
+            raise self._error
         if self._spans is None:
-            payload = json.loads(self.sidecar_path.read_text(encoding="utf-8"))
-            table = {}
-            for permaticker, spans in payload["intervals"].items():
-                # A null start sorts before every day.
-                starts = [str(span["start"] or "")[:10] for span in spans]
-                names = [
-                    (str(span["ticker"]), span.get("company"), span.get("exchange"))
-                    for span in spans
-                ]
-                table[str(permaticker)] = (starts, names)
+            try:
+                payload = json.loads(self.sidecar_path.read_text(encoding="utf-8"))
+                table = {}
+                for permaticker, spans in payload["intervals"].items():
+                    # A null start sorts before every day.
+                    starts = [str(span["start"] or "")[:10] for span in spans]
+                    names = [
+                        (str(span["ticker"]), span.get("company"), span.get("exchange"))
+                        for span in spans
+                    ]
+                    table[str(permaticker)] = (starts, names)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                self._error = exc
+                raise
             self._spans = table
         return self._spans
 
@@ -234,17 +261,17 @@ class SharadarTickerLookup(TickerLookup):
         A missing or damaged file gives an empty table and one warning, so
         every permaticker reads as its id.
         """
-        if self._spans is None:
-            try:
-                self._load_spans()
-            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-                self._spans = {}
+        failed_before = self._error is not None
+        try:
+            return self._load_spans()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            if not failed_before:
                 logger.warning(
                     f"{type(self).__name__}: the ticker sidecar {str(self.sidecar_path)!r} "
                     f"is unusable ({type(exc).__name__}: {exc}); permatickers are shown "
                     f"as their ids. Write it with scripts/sharadar/ticker_sidecar.py."
                 )
-        return self._spans
+            return {}
 
     def names(self, symbols: Sequence, day: date) -> list[SymbolName]:
         """Return the ticker and company of each of ``symbols`` on ``day``, in order.
@@ -270,20 +297,10 @@ class SharadarTickerLookup(TickerLookup):
         [SymbolName(ticker='FB', company='FACEBOOK INC')]
         """
         spans = self._read_spans()
-        as_of = str(day)[:10]
         names = []
         for symbol in symbols:
-            try:
-                key = str(int(symbol))
-            except (TypeError, ValueError):
-                key = str(symbol)
-            found = spans.get(key)
-            k = -1 if found is None else bisect.bisect_right(found[0], as_of) - 1
-            if k < 0:
-                names.append(SymbolName(key))
-            else:
-                ticker, company, _ = found[1][k]
-                names.append(SymbolName(ticker, company))
+            key, span = _span_at(spans, symbol, day)
+            names.append(SymbolName(key) if span is None else SymbolName(span[0], span[1]))
         return names
 
     def listings(self, symbols: Sequence, day: date) -> list[Listing]:
@@ -326,18 +343,8 @@ class SharadarTickerLookup(TickerLookup):
                 f"{type(self).__name__}: the ticker sidecar {str(self.sidecar_path)!r} is "
                 f"unusable ({type(exc).__name__}: {exc})"
             ) from exc
-        as_of = str(day)[:10]
         listings = []
         for symbol in symbols:
-            try:
-                key = str(int(symbol))
-            except (TypeError, ValueError):
-                key = str(symbol)
-            found = spans.get(key)
-            k = -1 if found is None else bisect.bisect_right(found[0], as_of) - 1
-            if k < 0:
-                listings.append(Listing(None, None))
-            else:
-                ticker, _, exchange = found[1][k]
-                listings.append(Listing(ticker, exchange))
+            _, span = _span_at(spans, symbol, day)
+            listings.append(Listing(None, None) if span is None else Listing(span[0], span[2]))
         return listings

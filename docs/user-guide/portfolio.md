@@ -141,12 +141,12 @@ True
 True
 ```
 
-A caller that reads the run itself as well passes the `BacktestRun` it opened and the price
-dataset it rebuilt, so one process opens the run once and reads one price dataset:
+A caller that reads the run's prices as well passes the `BacktestRun` it opened: the inputs
+read the open run's `price_dataset`, rebuilt once and shared, so one process opens the run once
+and reads one price dataset:
 
 ```python
->>> prices = run.rebuild("price_dataset")
->>> DecisionInputs.from_run(run, price_dataset=prices).dataset is prices
+>>> DecisionInputs.from_run(run).dataset is run.price_dataset
 True
 ```
 

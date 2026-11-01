@@ -220,9 +220,11 @@ class LivePredictionStore:
 
         Examples
         --------
-        >>> panel = LivePredictionStore("live/live_predictions.zarr").panel("2026-10-07")
-        >>> panel["ret_5"].dims, panel.sizes["timestamp"]
-        (('timestamp', 'symbol'), 1)
+        The predictions a replay of the bars since 2026-10-07 reads, one
+        variable per label on ``(timestamp, symbol)``::
+
+            panel = LivePredictionStore("live/live_predictions.zarr").panel("2026-10-07")
+            panel["ret_5"]
         """
         if not self.exists:
             raise FileNotFoundError(f"{self.path} has not been written: no live prediction yet")
@@ -352,9 +354,11 @@ class LivePredictionStore:
 
         Examples
         --------
-        >>> LivePredictionStore("live/live_predictions.zarr").check_owner(other_run_dir)
-        Traceback (most recent call last):
-        ValueError: live/live_predictions.zarr holds the predictions of another run: run_dir ...
+        An executor checks the store belongs to the run it trades before it
+        reads a row; another run, or the same run retrained, raises
+        ``ValueError`` naming the attributes that differ::
+
+            LivePredictionStore("live/live_predictions.zarr").check_owner(run_dir)
         """
         if not isinstance(run, BacktestRun):
             run = BacktestRun.open(run)
