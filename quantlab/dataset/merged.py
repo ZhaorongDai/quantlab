@@ -27,7 +27,7 @@ import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset.config import MergedDatasetConfig
-from quantlab.dataset.base import BaseDataset, MarketDataset, SymbolName, TickerLookup
+from quantlab.dataset.base import BaseDataset, Listing, MarketDataset, SymbolName, TickerLookup
 from quantlab.dataset.view import DatasetView
 from quantlab.utils.date_range import check_range
 
@@ -511,3 +511,22 @@ class _FirstKnownLookup(TickerLookup):
                     names[i] = name
             pending = [i for i in pending if names[i] == SymbolName(str(symbols[i]))]
         return names
+
+    def listings(self, symbols, day) -> list[Listing]:
+        """Return each symbol's listing from the first lookup that knows its ticker.
+
+        An input lookup that records no listings raises, so a symbol is never
+        left unlisted only because the lookup asked could not say.
+        """
+        symbols = list(symbols)
+        listings = [Listing(None, None)] * len(symbols)
+        pending = list(range(len(symbols)))
+        for lookup in self.lookups:
+            if not pending:
+                break
+            answers = lookup.listings([symbols[i] for i in pending], day)
+            for i, listing in zip(pending, answers):
+                if listing.ticker is not None:
+                    listings[i] = listing
+            pending = [i for i in pending if listings[i].ticker is None]
+        return listings

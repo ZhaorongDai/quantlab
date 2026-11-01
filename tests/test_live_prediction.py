@@ -431,6 +431,62 @@ def test_a_store_of_another_checkpoint_is_refused(fresh):
     assert len(store.bars()) == 1
 
 
+def test_panel_reads_the_rows_of_a_date_range(fresh):
+    first = fresh.predict()
+    fresh.vendor_update()
+    done = fresh.predict()
+    store = LivePredictionStore(fresh.live)
+
+    whole = store.panel()
+    assert list(whole["timestamp"].values) == [first.timestamp, done.timestamp]
+    assert list(whole.data_vars) == ["fwd_ret_1"]
+    assert set(whole.coords) == {"timestamp", "symbol"}
+    assert not whole.attrs
+    xr.testing.assert_identical(
+        whole.sel(timestamp=done.timestamp, drop=True), store.row(done.timestamp).drop_vars("timestamp")
+    )
+    later = store.panel(start=done.timestamp)
+    assert list(later["timestamp"].values) == [done.timestamp]
+    assert list(store.panel(end=first.timestamp)["timestamp"].values) == [first.timestamp]
+    assert store.panel("2000-01-01", "2000-01-05").sizes["timestamp"] == 0
+
+
+def test_panel_of_a_store_not_yet_written_refuses(tmp_path):
+    with pytest.raises(FileNotFoundError, match="nothing.zarr"):
+        LivePredictionStore(tmp_path / "nothing.zarr").panel()
+
+
+def test_check_owner_accepts_the_run_and_refuses_another_checkpoint(fresh):
+    store = LivePredictionStore(fresh.live)
+    store.check_owner(fresh.run_dir)  # nothing written yet: nothing to refuse
+    fresh.predict()
+    store.check_owner(fresh.run_dir)
+    store.check_owner(BacktestRun.open(fresh.run_dir))
+
+    data = xr.open_zarr(fresh.live).load()
+    data.attrs["checkpoint"] = "/elsewhere/model.joblib"
+    shutil.rmtree(fresh.live)
+    data.to_zarr(fresh.live)
+    with pytest.raises(ValueError, match="another run: checkpoint"):
+        store.check_owner(fresh.run_dir)
+
+
+def test_check_owner_refuses_a_run_without_a_model(fresh, tmp_path):
+    fresh.predict()
+    without_model = _without_model(BacktestRun.open(fresh.run_dir), tmp_path)
+    with pytest.raises(ValueError, match="no model"):
+        LivePredictionStore(fresh.live).check_owner(without_model)
+
+
+def _without_model(run: BacktestRun, tmp_path: Path) -> Path:
+    """A copy of ``run``'s directory whose prediction panel is gone."""
+    copy = tmp_path / "copy"
+    shutil.copytree(run.path, copy)
+    for found in copy.glob("predictions.zarr"):
+        shutil.rmtree(found)
+    return copy
+
+
 def test_an_unknown_mirror_is_refused(fresh):
     with pytest.raises(LivePredictionRefused, match="name no store") as refused:
         predict_live_bar(fresh.run_dir, fresh.live, mirrors=[fresh.root / "nowhere.zarr"])

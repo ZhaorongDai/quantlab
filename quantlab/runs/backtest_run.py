@@ -8,6 +8,7 @@ and input-data checksums for reproducibility.
 
 import dataclasses
 import json
+from functools import cached_property
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -547,6 +548,25 @@ class BacktestRun:
                 }
             return [rebuild_component(item, self._recipe_dir) for item in value]
         return rebuild_component(value, self._recipe_dir)
+
+    @cached_property
+    def price_dataset(self) -> Any:
+        """The run's price dataset, rebuilt once and shared by every reader of this open run.
+
+        ``rebuild("price_dataset")`` builds a new one on each call; a process
+        reading the run's prices from several places (a decision rule's
+        inputs and its own valuation, say) reads them here, so they read one
+        dataset and what was read is recorded under it.
+
+        Examples
+        --------
+        >>> run = BacktestRun.open(run_dir)
+        >>> run.price_dataset is run.price_dataset
+        True
+        >>> type(run.price_dataset).__name__
+        'StockDataset'
+        """
+        return self.rebuild("price_dataset")
 
     def rebuild_backtester(self, **overrides: Any):
         """Rebuild the backtester that wrote the run, with some fields replaced.

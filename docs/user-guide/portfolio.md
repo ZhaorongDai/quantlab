@@ -141,6 +141,15 @@ True
 True
 ```
 
+A caller that reads the run's prices as well passes the `BacktestRun` it opened: the inputs
+read the open run's `price_dataset`, rebuilt once and shared, so one process opens the run once
+and reads one price dataset:
+
+```python
+>>> DecisionInputs.from_run(run).dataset is run.price_dataset
+True
+```
+
 An executor that keeps its own book, such as a live account, decides one bar at a time:
 `rebalances(t)` says whether `t` is a rebalance bar, `context(t, predictions,
 current_weights)` builds the bar's context from the dataset (so the executor keeps at most

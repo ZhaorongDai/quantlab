@@ -44,7 +44,7 @@ from pathlib import Path
 import polars as pl
 from loguru import logger
 
-from quantlab.dataset.base import SymbolName, TickerLookup
+from quantlab.dataset.base import Listing, SymbolName, TickerLookup
 from quantlab.dataset.sharadar.permatickers import ticker_changes
 from quantlab.dataset.sharadar.tables import scan_raw_table, table
 
@@ -65,8 +65,10 @@ def _text_or_none(value) -> str | None:
     return None if not text or text == _NOT_APPLICABLE else text
 
 
-def _current_names(vendor_root: str | Path, code: str, permatickers: set[int]) -> dict[int, tuple[str, str | None]]:
-    """Return each permaticker's current ticker and company from its TICKERS rows of ``code``.
+def _current_names(
+    vendor_root: str | Path, code: str, permatickers: set[int]
+) -> dict[int, tuple[str, str | None, str | None]]:
+    """Return each permaticker's current ticker, company and exchange from its TICKERS rows of ``code``.
 
     A permaticker with several rows (an old ticker listed beside the new one)
     takes the row with the latest ``lastpricedate``, then ``lastupdated``.
@@ -77,13 +79,13 @@ def _current_names(vendor_root: str | Path, code: str, permatickers: set[int]) -
             pl.col("table").is_in(table(code).mapping_labels)
             & pl.col("permaticker").is_in(list(permatickers))
         )
-        .select("permaticker", "ticker", "name", "lastpricedate", "lastupdated")
+        .select("permaticker", "ticker", "name", "exchange", "lastpricedate", "lastupdated")
         .collect()
         .sort(["permaticker", "lastpricedate", "lastupdated", "ticker"], nulls_last=False)
     )
-    current: dict[int, tuple[str, str | None]] = {}
-    for permaticker, ticker, name, _, _ in rows.iter_rows():
-        current[int(permaticker)] = (str(ticker), _text_or_none(name))
+    current: dict[int, tuple[str, str | None, str | None]] = {}
+    for permaticker, ticker, name, exchange, _, _ in rows.iter_rows():
+        current[int(permaticker)] = (str(ticker), _text_or_none(name), _text_or_none(exchange))
     return current
 
 
@@ -122,10 +124,14 @@ def ticker_sidecar_payload(
     dict
         ``{"table": code, "intervals": {permaticker: [span, ...]},
         "former": {permaticker: [span, ...]}}``, each span ``{"start",
-        "ticker", "company"}``: the first day the ticker was in use (``None``
-        for the first span, or when unknown), the ticker and the company
-        (``None`` when the tables record none; an earlier ticker's company is
-        the ``contraname`` of its change). Spans are in date order and
+        "ticker", "company", "exchange"}``: the first day the ticker was in
+        use (``None`` for the first span, or when unknown), the ticker, the
+        company (``None`` when the tables record none; an earlier ticker's
+        company is the ``contraname`` of its change) and the primary
+        exchange. TICKERS records only the exchange a security is listed on
+        now, so the current span carries it and an earlier span's is
+        ``None`` (as is any span of a sidecar written before exchanges were
+        recorded). Spans are in date order and
         permatickers in numeric order. ``former`` lists tickers an earlier
         sidecar gave a permaticker that its current spans no longer name;
         the lookup does not show them.
@@ -141,14 +147,14 @@ def ticker_sidecar_payload(
     changes = ticker_changes(vendor_root, code)
     intervals: dict[str, list[dict]] = {}
     for permaticker in sorted(current):
-        ticker, company = current[permaticker]
+        ticker, company, exchange = current[permaticker]
         steps = changes.get(permaticker, [])
         spans = []
         start = None
         for day, old, old_company in steps:
-            spans.append({"start": start, "ticker": old, "company": old_company})
+            spans.append({"start": start, "ticker": old, "company": old_company, "exchange": None})
             start = day
-        spans.append({"start": start, "ticker": ticker, "company": company})
+        spans.append({"start": start, "ticker": ticker, "company": company, "exchange": exchange})
         intervals[str(permaticker)] = spans
     former: dict[str, list[dict]] = {}
     if previous:
@@ -174,6 +180,23 @@ def ticker_sidecar_payload(
     return {"table": code, "intervals": intervals, "former": former}
 
 
+def _span_at(
+    spans: dict[str, tuple[list[str], list[tuple[str, str | None, str | None]]]], symbol, day
+) -> tuple[str, tuple[str, str | None, str | None] | None]:
+    """Return ``symbol``'s sidecar key and its (ticker, company, exchange) in use on ``day``.
+
+    The span is ``None`` for a permaticker the sidecar does not know, or a
+    day before its first span; a span starts on its ``start``.
+    """
+    try:
+        key = str(int(symbol))
+    except (TypeError, ValueError):
+        key = str(symbol)
+    found = spans.get(key)
+    k = -1 if found is None else bisect.bisect_right(found[0], str(day)[:10]) - 1
+    return key, (None if k < 0 else found[1][k])
+
+
 class SharadarTickerLookup(TickerLookup):
     """The ticker and company a permaticker had on a day, from one ``<store>.sharadar_tickers.json``.
 
@@ -196,35 +219,59 @@ class SharadarTickerLookup(TickerLookup):
     def __init__(self, sidecar_path: str | Path) -> None:
         """Initialize the lookup without reading the file; see the class docstring."""
         self.sidecar_path = Path(sidecar_path)
-        self._spans: dict[str, tuple[list[str], list[tuple[str, str | None]]]] | None = None
+        self._spans: dict[str, tuple[list[str], list[tuple[str, str | None, str | None]]]] | None = None
+        # What reading the sidecar raised, kept so a damaged file is read once
+        # and every strict read after a lenient one still refuses it.
+        self._error: Exception | None = None
 
     def __repr__(self) -> str:
         """Return ``SharadarTickerLookup('<sidecar path>')``."""
         return f"SharadarTickerLookup({str(self.sidecar_path)!r})"
 
-    def _read_spans(self) -> dict[str, tuple[list[str], list[tuple[str, str | None]]]]:
-        """Return the spans per permaticker, as start labels and names, read once.
+    def _load_spans(self) -> dict[str, tuple[list[str], list[tuple[str, str | None, str | None]]]]:
+        """Return the spans per permaticker, as start labels and (ticker, company, exchange), read once.
+
+        Raises what reading or parsing the file raises (``OSError``,
+        ``ValueError``, ``KeyError``, ``TypeError``, ``AttributeError``), on
+        every call: a failure is kept, never cached as an empty table.
+        """
+        if self._error is not None:
+            raise self._error
+        if self._spans is None:
+            try:
+                payload = json.loads(self.sidecar_path.read_text(encoding="utf-8"))
+                table = {}
+                for permaticker, spans in payload["intervals"].items():
+                    # A null start sorts before every day.
+                    starts = [str(span["start"] or "")[:10] for span in spans]
+                    names = [
+                        (str(span["ticker"]), span.get("company"), span.get("exchange"))
+                        for span in spans
+                    ]
+                    table[str(permaticker)] = (starts, names)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                self._error = exc
+                raise
+            self._spans = table
+        return self._spans
+
+    def _read_spans(self) -> dict[str, tuple[list[str], list[tuple[str, str | None, str | None]]]]:
+        """Return the spans per permaticker as ``_load_spans`` does, never raising.
 
         A missing or damaged file gives an empty table and one warning, so
         every permaticker reads as its id.
         """
-        if self._spans is None:
-            self._spans = {}
-            try:
-                payload = json.loads(self.sidecar_path.read_text(encoding="utf-8"))
-                for permaticker, spans in payload["intervals"].items():
-                    # A null start sorts before every day.
-                    starts = [str(span["start"] or "")[:10] for span in spans]
-                    names = [(str(span["ticker"]), span.get("company")) for span in spans]
-                    self._spans[str(permaticker)] = (starts, names)
-            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-                self._spans = {}
+        failed_before = self._error is not None
+        try:
+            return self._load_spans()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            if not failed_before:
                 logger.warning(
                     f"{type(self).__name__}: the ticker sidecar {str(self.sidecar_path)!r} "
                     f"is unusable ({type(exc).__name__}: {exc}); permatickers are shown "
                     f"as their ids. Write it with scripts/sharadar/ticker_sidecar.py."
                 )
-        return self._spans
+            return {}
 
     def names(self, symbols: Sequence, day: date) -> list[SymbolName]:
         """Return the ticker and company of each of ``symbols`` on ``day``, in order.
@@ -250,18 +297,54 @@ class SharadarTickerLookup(TickerLookup):
         [SymbolName(ticker='FB', company='FACEBOOK INC')]
         """
         spans = self._read_spans()
-        as_of = str(day)[:10]
         names = []
         for symbol in symbols:
-            try:
-                key = str(int(symbol))
-            except (TypeError, ValueError):
-                key = str(symbol)
-            found = spans.get(key)
-            k = -1 if found is None else bisect.bisect_right(found[0], as_of) - 1
-            if k < 0:
-                names.append(SymbolName(key))
-            else:
-                ticker, company = found[1][k]
-                names.append(SymbolName(ticker, company))
+            key, span = _span_at(spans, symbol, day)
+            names.append(SymbolName(key) if span is None else SymbolName(span[0], span[1]))
         return names
+
+    def listings(self, symbols: Sequence, day: date) -> list[Listing]:
+        """Return the ticker and primary exchange of each of ``symbols`` on ``day``, in order.
+
+        A permaticker the sidecar does not know, or a day before its first
+        span, gets ``Listing(None, None)``; an earlier ticker's span has no
+        exchange (see ``ticker_sidecar_payload``).
+
+        Parameters
+        ----------
+        symbols : Sequence
+            Permatickers as on the panel's ``symbol`` axis.
+        day : datetime.date
+            The date whose listings to use; a span starts on its ``start``.
+
+        Returns
+        -------
+        list of Listing
+            One listing per input, in the input's order.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the sidecar is missing.
+        ValueError
+            If it cannot be read as a sidecar.
+
+        Examples
+        --------
+        >>> lookup.listings([194817, 1], date(2022, 6, 9))
+        [Listing(ticker='META', exchange='NASDAQ'), Listing(ticker=None, exchange=None)]
+        """
+        try:
+            spans = self._load_spans()
+        except FileNotFoundError:
+            raise
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise ValueError(
+                f"{type(self).__name__}: the ticker sidecar {str(self.sidecar_path)!r} is "
+                f"unusable ({type(exc).__name__}: {exc})"
+            ) from exc
+        listings = []
+        for symbol in symbols:
+            _, span = _span_at(spans, symbol, day)
+            listings.append(Listing(None, None) if span is None else Listing(span[0], span[2]))
+        return listings

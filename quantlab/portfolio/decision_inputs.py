@@ -373,11 +373,11 @@ class DecisionInputs:
         self._preload: _Preload | None = None
 
     @classmethod
-    def from_run(cls, run_dir: str | PathLike, *, end=None) -> Self:
+    def from_run(cls, run: "BacktestRun | str | PathLike", *, end=None) -> Self:
         """Rebuild the decision inputs of a recorded backtest run.
 
         Read through ``BacktestRun``: the rule (``rebuild("constructor")``),
-        the price dataset (``rebuild("price_dataset")``, an in-memory one
+        the price dataset (the open run's ``price_dataset``, an in-memory one
         reading the copy under the run directory), the market columns, the
         execution settings and the rebalance periods; from the run's
         prediction panel, the label specs the rule is bound to and the anchor
@@ -387,10 +387,16 @@ class DecisionInputs:
         imported (a rule declaring factors imports its factors' layer).
         ``weights`` on the run's predictions reproduces the run's weights.
 
+        The prices are the open run's ``price_dataset``, so a caller that
+        also reads the run's prices passes the ``BacktestRun`` it opened: the
+        process opens the run once and reads one price dataset, and what the
+        rule reads is recorded under it, whoever asks.
+
         Parameters
         ----------
-        run_dir : str or os.PathLike
-            A run directory written by ``run()`` or ``run_cv()``.
+        run : BacktestRun, str or os.PathLike
+            A run written by ``run()`` or ``run_cv()``, open or by its
+            directory.
         end : pd.Timestamp or datetime-like, optional
             The last bar of a replay (the run's own last bar to replay it
             whole), on which ``rebalances`` is False; ``None`` for an
@@ -418,8 +424,15 @@ class DecisionInputs:
         TopNConstructor(direction='long_only', top_n=2, score_label=None)
         >>> predictions = BacktestRun.open(run_dir).predictions().predictions
         >>> weights = inputs.weights(predictions)  # the run's weights
+
+        Opened once, for a caller that reads the run's prices too:
+
+        >>> run = BacktestRun.open(run_dir)
+        >>> DecisionInputs.from_run(run).dataset is run.price_dataset
+        True
         """
-        run = BacktestRun.open(run_dir)
+        if not isinstance(run, BacktestRun):
+            run = BacktestRun.open(run)
         panel = run.predictions()
         if panel is None:
             raise FileNotFoundError(
@@ -431,7 +444,7 @@ class DecisionInputs:
             raise ValueError(f"{run.path}: the run records no constructor")
         constructor.bind(panel.labels)
         return cls(
-            run.rebuild("price_dataset"),
+            run.price_dataset,
             constructor,
             fill_column=run.market.fill_price_column,
             valuation_column=run.market.valuation_price_column,
