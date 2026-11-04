@@ -9,8 +9,7 @@ we look for in a pull request.
 Open an issue at https://github.com/ZhaorongDai/quantlab/issues. For a bug, include the
 command or code you ran, the full error message, your operating system and your Python
 version. A small example that reproduces the problem on synthetic data is the most helpful
-thing you can provide. Never paste API keys, WRDS passwords or other credentials into an
-issue.
+thing you can provide. Never paste API keys, passwords or other credentials into an issue.
 
 ## Setting up a development environment
 
@@ -40,10 +39,12 @@ indexed by `timestamp` and `symbol`.
 
 ## Code conventions
 
-Keep configuration in the config dataclasses in `quantlab/base/config.py` rather than in
-hard-coded values, so that runs stay reproducible. Read credentials only from environment
-variables, never from code or configuration files. Abstract base classes live in
-`quantlab/base/`, and their concrete implementations live with the code that uses them.
+Keep configuration in config dataclasses rather than in hard-coded values, so that runs stay
+reproducible. Read credentials only from environment variables, never from code or
+configuration files. Each layer keeps its root class in `quantlab/<layer>/base.py`, its
+configs in `quantlab/<layer>/config.py` and its shipped implementations in
+`quantlab/<layer>/predefined/`. A layer imports only the layers before it;
+`tests/test_layer_layout.py` checks the order.
 
 ## Docstrings and comments
 

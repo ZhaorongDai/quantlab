@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://zhaorongdai.github.io/quantlab/
+    about: The user guide, the layer references and the developer guide.

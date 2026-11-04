@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in quantlab raises an error or gives a wrong result.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: A small example, on synthetic data if you can. Never paste API keys or other credentials.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Full error message
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: quantlab version
+      description: The output of `python -c "import quantlab; print(quantlab.__version__)"`.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and Python version
+      placeholder: macOS 15, Python 3.13.1
+    validations:
+      required: true
