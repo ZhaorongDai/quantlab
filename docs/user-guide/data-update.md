@@ -134,11 +134,13 @@ on the next morning, New York time, and a Massive day's files the morning after 
 set to New York time:
 
 ```text
-0 5 * * 1-5  cd $HOME/quantlab && . $HOME/.config/quantlab/data.env && uv run python examples/data_update/sharadar_data.py && uv run python examples/data_update/massive_data.py >> $HOME/data_update.log 2>&1
+0 5 * * 1-5  cd $HOME/quantlab && . $HOME/.config/quantlab/data.env && flock -n $HOME/data_update.lock sh -c 'uv run python examples/data_update/sharadar_data.py && uv run python examples/data_update/massive_data.py' >> $HOME/data_update.log 2>&1
 ```
 
-- cron does not read your shell profile, so the job must load `QUANTLAB_DATA_DIR` and the keys
-  itself; here they are `export` lines in a file only you can read (`chmod 600`).
+- cron does not read your shell profile, so the job must load `QUANTLAB_DATA_DIR`, the keys and a
+  `PATH` holding `uv` itself; here they are `export` lines in a file only you can read (`chmod 600`).
+- `flock -n` skips a run while the last one is still going: two runs must not write the same stores
+  at once, and a first build can outlast the time between two runs.
 - Each script exits 1 when a part failed, and every part is safe to run again, so a retry is the
   same command. The `&&` keeps Massive from running on a day Sharadar failed.
 - A day the vendor has not published yet is not an error: it is picked up by the next run.

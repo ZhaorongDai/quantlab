@@ -65,14 +65,16 @@ panel = prices.panel("2026-10-01", "2026-10-30")
 
 Schedule the same two commands for the morning after the vendors publish. cron does not read your
 shell profile, so put the `export` lines above in a file only you can read
-(`chmod 600 ~/.config/quantlab/data.env`) and load it in the job. On a machine set to New York
-time:
+(`chmod 600 ~/.config/quantlab/data.env`), with a line putting `uv` on `PATH`, and load it in the
+job. On a machine set to New York time:
 
 ```text
-0 5 * * 1-5  cd $HOME/quantlab && . $HOME/.config/quantlab/data.env && uv run python examples/data_update/sharadar_data.py && uv run python examples/data_update/massive_data.py >> $HOME/data_update.log 2>&1
+0 5 * * 1-5  cd $HOME/quantlab && . $HOME/.config/quantlab/data.env && flock -n $HOME/data_update.lock sh -c 'uv run python examples/data_update/sharadar_data.py && uv run python examples/data_update/massive_data.py' >> $HOME/data_update.log 2>&1
 ```
 
-Each script exits 1 when a part failed. Running it again is safe, so a retry is the same command.
+`flock -n` skips a run while the last one is still going, because two runs must not write the same
+stores at once; a first build can outlast the time between two runs. Each script exits 1 when a part
+failed. Running it again is safe, so a retry is the same command.
 A day the vendor has not published yet is not a failure: the next run picks it up.
 
 Factors, labels and the risk model are computed from these stores, and are extended after them:

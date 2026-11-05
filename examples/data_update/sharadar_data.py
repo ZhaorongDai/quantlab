@@ -91,7 +91,8 @@ def show_last_bar() -> None:
 if __name__ == "__main__":
     if inside_repository([DATA_ROOT], Path(__file__).resolve().parents[2]):
         raise SystemExit(f"{DATA_ROOT} is inside the repository; the data is licensed.")
-    failed_tables = () if pull_new_tables() else refresh()
+    new_tables = pull_new_tables()
+    failed_tables = () if set(new_tables) == set(TABLES) else refresh()
     outcome = bring_stores_up()
     print("\n".join(outcome.lines()), flush=True)
     show_last_bar()
