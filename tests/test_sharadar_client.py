@@ -16,12 +16,14 @@ from tests.sharadar_fixtures import (
     INDICATORS_COLUMNS,
     INDICATORS_ROWS,
     SEP_COLUMNS,
+    SF2_COLUMNS,
     TICKERS_COLUMNS,
     FakeTransport,
     Reply,
     bulk_routes,
     csv_text,
     sep_row,
+    sf2_row,
     tickers_row,
 )
 
@@ -128,6 +130,19 @@ def test_a_ticker_that_looks_like_a_number_or_null_stays_text(api_key, tmp_path)
     transport = FakeTransport(bulk_routes({"stocks": text}))
     frame = pl.read_parquet(_client(transport).bulk_table("sep", tmp_path))
     assert frame["ticker"].to_list() == ["NA", "1234"]
+
+
+def test_a_whole_transaction_value_written_with_a_decimal_point_stays_an_integer(api_key, tmp_path):
+    rows = [
+        sf2_row("AAA", "2024-01-02", "P", 100, 10.0, transactionvalue="12507.0"),  # SYNTHETIC
+        sf2_row("AAA", "2024-01-03", "P", 100, 10.0, transactionvalue=None),  # SYNTHETIC
+    ]
+    transport = FakeTransport(bulk_routes({"insiders": csv_text(SF2_COLUMNS, rows)}))
+
+    frame = pl.read_parquet(_client(transport).bulk_table("sf2", tmp_path))
+
+    assert frame.schema["transactionvalue"] == pl.Int64
+    assert frame["transactionvalue"].to_list() == [12507, None]
 
 
 def test_a_column_schema_change_is_refused(api_key, tmp_path):

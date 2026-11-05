@@ -11,6 +11,9 @@ different securities on different days. Massive stores therefore keep the Massiv
 their symbol axis, and the **Ticker map** says which Sharadar permaticker traded under each
 ticker on each day. Everything read as securities goes through it.
 
+[`examples/data_update/massive_data.py`](https://github.com/ZhaorongDai/quantlab/blob/main/examples/data_update/massive_data.py)
+downloads the files, builds the stores and keeps them current; this page explains the pieces.
+
 ## Credentials
 
 Downloading needs the Massive credentials, read only from the environment:

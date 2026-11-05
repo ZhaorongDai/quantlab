@@ -6,6 +6,9 @@ axis is the **permaticker**, Sharadar's permanent security id. The stock price t
 daily price of research, backtests and trading; the other tables become point-in-time panels on
 the same axis and calendar.
 
+[`examples/data_update/sharadar_data.py`](https://github.com/ZhaorongDai/quantlab/blob/main/examples/data_update/sharadar_data.py)
+does the first download, builds every store and keeps them current; this page explains the pieces.
+
 ## Credentials
 
 Downloading needs a sharadar.com key, read only from the environment:

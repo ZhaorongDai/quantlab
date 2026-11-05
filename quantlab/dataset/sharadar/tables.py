@@ -68,6 +68,9 @@ class SharadarTable:
         The code of the table whose TICKERS rows map this table's tickers,
         for a table TICKERS has no rows of (DAILY covers SF1's filers);
         ``None`` maps through the table's own rows.
+    decimal_integers : tuple of str
+        Integer columns the vendor may write with a decimal point
+        (``12507.0``), parsed as floats and stored as declared in ``schema``.
     """
 
     code: str
@@ -76,6 +79,29 @@ class SharadarTable:
     categories: tuple[str, ...] | None = None
     primary_key: tuple[str, ...] | None = None
     tickers_code: str | None = None
+    decimal_integers: tuple[str, ...] = ()
+
+    @property
+    def csv_schema(self) -> dict[str, type[pl.DataType]]:
+        """Return the types to parse the vendor's CSV with.
+
+        Examples
+        --------
+        >>> TABLES["sf2"].csv_schema["transactionvalue"], TABLES["sf2"].schema["transactionvalue"]
+        (Float64, Int64)
+        """
+        return self.schema | dict.fromkeys(self.decimal_integers, pl.Float64)
+
+    def stored_types(self, frame: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
+        """Return rows parsed with ``csv_schema`` in the types of ``schema``.
+
+        Examples
+        --------
+        >>> rows = pl.DataFrame({"transactionvalue": [12507.0, None]})
+        >>> TABLES["sf2"].stored_types(rows)["transactionvalue"].to_list()
+        [12507, None]
+        """
+        return frame.with_columns(pl.col(name).cast(self.schema[name]) for name in self.decimal_integers)
 
     @property
     def tickers_labels(self) -> tuple[str, str]:
@@ -270,6 +296,7 @@ TABLES: dict[str, SharadarTable] = {
                 "expirationdate": pl.Date,
                 "rownum": pl.Int64,
             },
+            decimal_integers=("transactionvalue",),
             categories=_DOMESTIC_COMMON,
         ),
         # 13F holdings, one row per security, investor and security type;

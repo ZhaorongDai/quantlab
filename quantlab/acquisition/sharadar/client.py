@@ -266,7 +266,7 @@ class SharadarClient:
             self._download_zip(spec, response.headers["Location"], archive)
             csv_path = self._extract_csv(spec, archive, Path(scratch))
             partial = Path(scratch) / target.name
-            pl.scan_csv(csv_path, schema=spec.schema).sink_parquet(partial)
+            spec.stored_types(pl.scan_csv(csv_path, schema=spec.csv_schema)).sink_parquet(partial)
             os.replace(partial, target)
         # The bulk file is the newest copy of every row, so it supersedes the
         # window and updated pulls; the watermark (the day of the pull) is
@@ -537,7 +537,7 @@ class SharadarClient:
     def _parse_page(spec: SharadarTable, text: str) -> pl.DataFrame:
         """Parse one CSV page, checking its header is the table's schema."""
         _check_header(spec, next(csv.reader(io.StringIO(text)), []))
-        return pl.read_csv(io.StringIO(text), schema=spec.schema)
+        return spec.stored_types(pl.read_csv(io.StringIO(text), schema=spec.csv_schema))
 
     def _download_zip(self, spec: SharadarTable, url: str, archive: Path) -> None:
         """Download the pre-signed zip to ``archive`` in parallel byte ranges.
