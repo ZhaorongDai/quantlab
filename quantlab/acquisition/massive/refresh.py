@@ -12,11 +12,11 @@ retries (``MassiveTransportError``) or came back unreadable
 any other error, a bug of ours among them, is raised. A missing credential
 raises before any endpoint is asked for.
 
-The daily trade, minute and day aggregate files are not refreshed here: their
-download runs beside the Trade bar conversion (``scripts/massive/convert.py
---download``), which converts each day while the next downloads, so a refresh
-that downloaded them all first would hold every file on disk before
-converting any. ``refresh_raw_tier`` is registered on ``MASSIVE_SOURCE``.
+The daily trade, minute and day aggregate files are not refreshed here: they
+are downloaded with ``MassiveClient.download_days``, which yields each day as it
+lands so a caller can convert it while the next downloads
+(``examples/data_update/massive_data.py``). ``refresh_raw_tier`` is registered
+on ``MASSIVE_SOURCE``.
 
 Examples
 --------

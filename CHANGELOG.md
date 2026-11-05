@@ -71,6 +71,12 @@ compatibility shims or config migrations.
   normalisation changes nothing on the dataset and a refused config reads no store. A
   subclass written against the old hook adds the parameter.
 
+### Fixed
+
+- A first bulk pull of Sharadar's SF2 failed: the vendor now writes `transactionvalue` with a
+  decimal point (`12507.0`). It is parsed as a float and stored as the same `Int64`, so raw
+  files already on disk need no change.
+
 ## 0.2.0 (2026-10-20)
 
 ### Added

@@ -10,10 +10,9 @@ the S&P 500 membership under ``universe/sharadar/``.
 Three entry points act on them:
 
 - ``build_stores`` builds or extends them after a first download
-  (``scripts/sharadar/download.py``);
-- ``update_stores`` brings them up to date after a raw-tier refresh
-  (``scripts/sharadar/update.py``, the daily update's ``sharadar_stores``
-  step): each store appends its
+  (``examples/data_update/sharadar_data.py``);
+- ``update_stores`` brings them up to date after a raw-tier refresh (the same
+  example): each store appends its
   new bars from the first day it already holds; a panel store not built yet is
   built from the SEP store's first day; a store refusing because its stored
   symbols are no longer the raw tier's axis (``ResumeRefused``) is rebuilt
@@ -21,10 +20,9 @@ Three entry points act on them:
   failing does not stop the others;
 
   both return a ``StoreUpdate``, one ``StoreResult`` per store (a
-  ``StoreState`` and the conversion result), and log what they did; the
-  scripts print ``StoreUpdate.lines()``;
-- ``write_ticker_sidecars`` writes the ticker sidecar of the price stores
-  (``scripts/sharadar/ticker_sidecar.py``).
+  ``StoreState`` and the conversion result), and log what they did; print
+  ``StoreUpdate.lines()`` to see them;
+- ``write_ticker_sidecars`` writes the ticker sidecar of the price stores.
 
 Examples
 --------

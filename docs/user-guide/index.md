@@ -4,6 +4,8 @@ Learn the research workflow here; use the [API reference](../reference/index.rst
 for signatures, parameters and return values.
 
 - **Already have DataFrames?** Start with the [Frame API](frame-api.md).
+- **Need real market data on disk?** See [Keeping data current](data-update.md): download,
+  store and update it every day.
 - **Building a complete pipeline?** Run the [quickstart](../getting-started/quickstart.md),
   then read [concepts](concepts.md).
 - **Working on one stage?** Choose a topic below.

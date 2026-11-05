@@ -8,7 +8,8 @@ page: [Sharadar](sharadar.md), [Massive](massive.md) and [WRDS](wrds.md).
 
 The runnable companion is
 [`examples/inspect_data_sources.py`](https://github.com/ZhaorongDai/quantlab/blob/main/examples/inspect_data_sources.py).
-It needs no credentials or network access.
+It needs no credentials or network access. To download real data, build the stores and keep them
+current every day, start from [Keeping data current](data-update.md).
 
 ## Raw tier and panel
 
