@@ -13,7 +13,9 @@ compatibility shims or config migrations.
   `rest/<endpoint>/<YYYY>/<day>/<stamp>/000001.jsonl`. Pages kept the old way are not read: move
   each pull's pages into its directory. `rest_page_files` and `read_rest_records` read only
   endpoints kept by date.
-- REST pages are synced to disk before they are renamed (`write_jsonl_atomically`).
+- REST pages, and the directories they land in, are synced to disk (`write_jsonl_atomically`,
+  `make_directories_durably`), so a watermark cannot outlive its pages through a power loss.
+- A page file where a pull's directory belongs raises `ValueError` instead of reading as no rows.
 
 ### Fixed
 

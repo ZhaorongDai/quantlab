@@ -424,6 +424,40 @@ def rest_snapshot_dir(vendor_root: str | Path, endpoint: str, pulled_at: datetim
     return rest_dir(vendor_root, endpoint) / f"{stamp:%Y}" / stamp.strftime(_STAMP_FORMAT)
 
 
+def rest_as_of_pull_dir(vendor_root: str | Path, endpoint: str, day: date, pulled_at: datetime) -> Path:
+    """Return the directory of the pull made at ``pulled_at`` (UTC) of an endpoint's table as of ``day``.
+
+    Examples
+    --------
+    >>> rest_as_of_pull_dir("/d/massive", "tickers", date(2024, 3, 11), datetime(2026, 10, 16, 12, tzinfo=UTC))
+    PosixPath('/d/massive/rest/tickers/2024/2024-03-11/20261016T120000000000')
+    """
+    return rest_as_of_dir(vendor_root, endpoint, day) / pulled_at.astimezone(UTC).strftime(_STAMP_FORMAT)
+
+
+def rest_pull_page_name(page: int) -> str:
+    """Return the file name of page ``page`` (from 1) in a pull's directory.
+
+    Examples
+    --------
+    >>> rest_pull_page_name(3)
+    '000003.jsonl'
+    """
+    return f"{page:06d}{REST_PAGE_SUFFIX}"
+
+
+def rest_pull_pages(directory: str | Path) -> list[Path]:
+    """Return the page files of one pull's directory, in order.
+
+    Examples
+    --------
+    Needs a raw tier on disk::
+
+        rest_pull_pages("/data/quantlab/downloads/massive/rest/float/2026/20261016T120000000000")
+    """
+    return sorted(Path(directory).glob(f"*{REST_PAGE_SUFFIX}"))
+
+
 def rest_pending_dir(vendor_root: str | Path, endpoint: str) -> Path:
     """Return where a pull's pages wait until the pull is whole.
 
@@ -442,13 +476,29 @@ def _pull_stamp(path: Path) -> datetime:
 
 def _read_pull(directory: Path) -> list[dict]:
     """Return the records of one pull directory, in the vendor's order."""
-    return [record for path in sorted(directory.glob(f"*{REST_PAGE_SUFFIX}")) for record in _read_page(path)]
+    return [record for path in rest_pull_pages(directory) for record in _read_page(path)]
+
+
+def _pull_dirs(root: Path, pattern: str) -> list[Path]:
+    """Return the pull directories ``pattern`` finds under ``root``, oldest pull first.
+
+    Raises
+    ------
+    ValueError
+        If a page file sits where a pull's directory belongs. Reading on would
+        return no records, and a caller could take that for an empty table.
+    """
+    found = sorted(root.glob(pattern), key=lambda path: path.name)
+    for path in found:
+        if not path.is_dir():
+            raise ValueError(f"Massive page {str(path)!r} is outside a pull's directory: move it into one.")
+    return found
 
 
 def _snapshot_dirs(vendor_root: str | Path, endpoint: str) -> dict[datetime, Path]:
     """Return an endpoint's snapshot directories by pull time, oldest first."""
-    dirs = rest_dir(vendor_root, endpoint).glob(f"[0-9]*/{_PULL_DIR_GLOB}")
-    return {_pull_stamp(path): path for path in sorted(dirs, key=lambda path: path.name)}
+    dirs = _pull_dirs(rest_dir(vendor_root, endpoint), f"[0-9]*/{_PULL_DIR_GLOB}")
+    return {_pull_stamp(path): path for path in dirs}
 
 
 def rest_snapshots(vendor_root: str | Path, endpoint: str) -> list[datetime]:
@@ -520,7 +570,7 @@ def rest_as_of_days(vendor_root: str | Path, endpoint: str) -> list[date]:
     root = rest_dir(vendor_root, endpoint)
     if not root.exists():
         return []
-    pulls = root.glob(f"[0-9]*/[0-9]*-[0-9]*-[0-9]*/{_PULL_DIR_GLOB}")
+    pulls = _pull_dirs(root, f"[0-9]*/[0-9]*-[0-9]*-[0-9]*/{_PULL_DIR_GLOB}")
     return sorted({date.fromisoformat(path.parent.name) for path in pulls})
 
 
@@ -539,7 +589,7 @@ def read_rest_as_of(vendor_root: str | Path, endpoint: str, day: date) -> list[d
         tickers = read_rest_as_of("/data/quantlab/downloads/massive", "tickers", date(2024, 3, 11))
         {row["ticker"]: row["composite_figi"] for row in tickers}
     """
-    pulls = sorted(rest_as_of_dir(vendor_root, endpoint, day).glob(_PULL_DIR_GLOB), key=lambda path: path.name)
+    pulls = _pull_dirs(rest_as_of_dir(vendor_root, endpoint, day), _PULL_DIR_GLOB)
     if not pulls:
         raise ValueError(f"Massive {endpoint} is not kept as of {day} under {str(vendor_root)!r}.")
     return _read_pull(pulls[-1])  # a day pulled again keeps its newest pull

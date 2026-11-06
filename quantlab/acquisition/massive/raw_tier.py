@@ -41,14 +41,15 @@ from datetime import date, datetime
 from pathlib import Path
 
 from quantlab.dataset.massive.raw import (
-    REST_PAGE_SUFFIX,
-    rest_as_of_dir,
+    rest_as_of_pull_dir,
     rest_pending_dir,
+    rest_pull_page_name,
+    rest_pull_pages,
     rest_snapshot_dir,
     rest_watermark_file,
     watermark_file,
 )
-from quantlab.utils.atomic import sync_directory, write_jsonl_atomically
+from quantlab.utils.atomic import make_directories_durably, sync_directory, write_jsonl_atomically
 from quantlab.utils.watermark import write_watermark
 
 
@@ -117,12 +118,18 @@ class StagedPull:
         >>> staged.add_page([{"ticker": "AAPL"}])
         """
         self._pages += 1
-        write_rest_page(self._staged / f"{self._pages:06d}{REST_PAGE_SUFFIX}", records)
+        write_rest_page(self._staged / rest_pull_page_name(self._pages), records)
 
     def commit(self) -> tuple[Path, ...]:
         """Publish the pull with one rename and return its page files in order.
 
-        A pull with no pages publishes nothing.
+        A pull with no pages publishes nothing. Once this returns, the pull
+        survives a power loss, so a watermark may follow it.
+
+        Returns
+        -------
+        tuple of Path
+            The published page files.
 
         Raises
         ------
@@ -139,16 +146,29 @@ class StagedPull:
         ['000001.jsonl']
         """
         if self._pages:
-            sync_directory(self._staged)
-            self._final.parent.mkdir(parents=True, exist_ok=True)
+            make_directories_durably(self._final.parent)
             self._staged.replace(self._final)
             sync_directory(self._final.parent)
         shutil.rmtree(self._pending, ignore_errors=True)
-        return tuple(sorted(self._final.glob(f"*{REST_PAGE_SUFFIX}")))
+        return tuple(rest_pull_pages(self._final))
 
 
 def stage_snapshot(vendor_root: str | Path, endpoint: str, pulled_at: datetime) -> StagedPull:
     """Start a snapshot pull of ``endpoint``, published by ``StagedPull.commit``.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/massive``.
+    endpoint : str
+        The endpoint's name.
+    pulled_at : datetime
+        When the pull started; it names the snapshot.
+
+    Returns
+    -------
+    StagedPull
+        The pull to add pages to; what an interrupted pull left is gone.
 
     Examples
     --------
@@ -168,6 +188,22 @@ def stage_snapshot(vendor_root: str | Path, endpoint: str, pulled_at: datetime) 
 def stage_as_of(vendor_root: str | Path, endpoint: str, day: date, pulled_at: datetime) -> StagedPull:
     """Start a pull of ``endpoint`` as of ``day``, published by ``StagedPull.commit``.
 
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/massive``.
+    endpoint : str
+        The endpoint's name.
+    day : date
+        The session the table is as of.
+    pulled_at : datetime
+        When the pull started; it names the pull.
+
+    Returns
+    -------
+    StagedPull
+        The pull to add pages to; what an interrupted pull left is gone.
+
     Examples
     --------
     >>> import tempfile
@@ -180,7 +216,7 @@ def stage_as_of(vendor_root: str | Path, endpoint: str, day: date, pulled_at: da
     >>> read_rest_as_of(root, "tickers", date(2024, 3, 11))
     [{'ticker': 'AAPL'}]
     """
-    final = rest_as_of_dir(vendor_root, endpoint, day) / rest_snapshot_dir(vendor_root, endpoint, pulled_at).name
+    final = rest_as_of_pull_dir(vendor_root, endpoint, day, pulled_at)
     return StagedPull(rest_pending_dir(vendor_root, endpoint), final)
 
 

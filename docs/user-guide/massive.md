@@ -100,7 +100,7 @@ read_rest_watermark("/data/quantlab/downloads/massive", "dividends")
 ```
 
 Each page is kept as the vendor returned it, one JSON object per line, under
-`massive/rest/<endpoint>/`, with the endpoint's watermark beside the pages. A pull asks for the
+`massive/rest/<endpoint>/<year>/`, with the endpoint's watermark in `massive/rest/<endpoint>/`. A pull asks for the
 days after the watermark, less the endpoint's overlap (days asked for again for rows the vendor
 adds or revises late). The watermark moves after every page and never passes yesterday in New
 York, so a rerun asks only for what is new and an interrupted backfill resumes from the last page
@@ -109,8 +109,8 @@ copy. The filing tables have no record id, so they are read with `key=None` (a r
 all its fields); snapshots are read with
 {py:func}`~quantlab.dataset.massive.raw.read_rest_snapshot`, and the reference tickers with
 {py:func}`~quantlab.dataset.massive.raw.read_rest_as_of`. A snapshot, or a session of the reference
-tickers, appears in one step: a pull killed part way leaves the previous data whole, and the next
-pull starts over.
+tickers, is kept as one directory per pull and appears in one step: a pull stopped part way, by a
+killed process or a power loss, leaves the previous data whole, and the next pull starts over.
 
 {py:func}`quantlab.acquisition.massive.refresh.refresh_raw_tier` pulls every endpoint (or those of
 `endpoints=`), tries each one even when another fails, and lists the failed ones in its result's
