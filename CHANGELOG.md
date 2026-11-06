@@ -6,6 +6,15 @@ compatibility shims or config migrations.
 
 ## Unreleased
 
+## 0.3.1 (2026-11-05)
+
+### Changed
+
+- The package's Documentation link on PyPI is the documentation site, and it gains a Changelog
+  link.
+- The README on PyPI has new badges and states both licences: MIT, and Apache-2.0 for the
+  included KunQuant factor code.
+
 ## 0.3.0 (2026-11-05)
 
 ### Added
