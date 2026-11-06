@@ -197,6 +197,10 @@ same directory, because a rename is atomic only within one filesystem. There is 
 two concurrent writers still race, but the loser sees a complete file. New code that
 persists state uses this function rather than `open(...).write`.
 
+A raw pull of several pages is staged and appears by one directory rename, with the directories
+above it synced ({py:func}`quantlab.utils.atomic.make_directories_durably`), so a watermark
+written after it cannot outlive it.
+
 Directories follow the same pattern. A backtest run directory is written as a hidden
 `.{name}.partial` sibling and renamed into place only after every artifact succeeded; the
 staging directory is removed on any exception, `KeyboardInterrupt` included. Widening a

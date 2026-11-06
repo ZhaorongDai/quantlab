@@ -25,14 +25,18 @@ endpoint's watermark beside them::
 
 A row may be in several files (a page re-read past the watermark);
 ``read_rest_records`` keeps each record's newest copy. A snapshot endpoint
-(the Float table) has the same layout, each snapshot every page of one pull
-(``rest_snapshots``, ``read_rest_snapshot``); a table kept as of each
-session (the reference tickers) has one directory a session::
+(the Float table) keeps one directory a pull, named by the pull's stamp
+(``rest_snapshots``, ``read_rest_snapshot``); a table kept as of each session
+(the reference tickers) keeps one a pull under a directory a session
+(``rest_as_of_days``, ``read_rest_as_of``)::
 
-    <download-dir>/massive/rest/tickers/2024/2024-03-11/20261016T120000000000_000001.jsonl
+    <download-dir>/massive/rest/float/2026/20261016T120000000000/000001.jsonl
+    <download-dir>/massive/rest/tickers/2024/2024-03-11/20261016T120000000000/000001.jsonl
 
-read by ``rest_as_of_days`` and ``read_rest_as_of``. Pages of a snapshot
-wait in ``rest/<endpoint>/_pending/`` until it is whole; nothing reads it.
+Such a pull waits in ``rest/<endpoint>/_pending/``, which nothing reads, and
+appears by one directory rename, so a directory is always a whole pull. Only
+these two kinds of pull are kept this way; ``rest_page_files`` and
+``read_rest_records`` read the endpoints kept by date.
 The client (``quantlab.acquisition.massive.client``) writes this tree,
 with the page and watermark writers of
 ``quantlab.acquisition.massive.raw_tier``, and
@@ -94,9 +98,12 @@ REST_DIR = "rest"
 #: Suffix of one REST page file.
 REST_PAGE_SUFFIX = ".jsonl"
 
-#: The directory, in an endpoint's, where a snapshot's pages wait until the
-#: snapshot is whole; nothing reads it.
+#: The directory, in an endpoint's, where a pull's pages wait until the pull is
+#: whole; nothing reads it.
 REST_PENDING_DIR = "_pending"
+
+#: Matches the directory of one snapshot or as-of pull, named by its pull stamp.
+_PULL_DIR_GLOB = "[0-9]*T[0-9]*"
 
 #: The columns of a trade file, in the vendor's order, read with these
 #: types. ``size`` is a float: recent years carry fractional shares.
@@ -388,7 +395,10 @@ def rest_page_file(vendor_root: str | Path, endpoint: str, pulled_at: datetime, 
 
 
 def rest_page_files(vendor_root: str | Path, endpoint: str) -> list[Path]:
-    """Return every page file of one REST endpoint, oldest pull first, pages in order.
+    """Return every page file of one endpoint kept by date, oldest pull first, pages in order.
+
+    A snapshot or as-of endpoint keeps its pages in a directory a pull: read
+    those with ``read_rest_snapshot`` and ``read_rest_as_of``.
 
     Examples
     --------
@@ -399,12 +409,57 @@ def rest_page_files(vendor_root: str | Path, endpoint: str) -> list[Path]:
     root = rest_dir(vendor_root, endpoint)
     if not root.exists():
         return []
-    pages = (path for path in root.glob(f"*/*{REST_PAGE_SUFFIX}") if not path.parent.name.startswith("_"))
-    return sorted(pages, key=lambda path: path.name)
+    return sorted(root.glob(f"[0-9]*/*{REST_PAGE_SUFFIX}"), key=lambda path: path.name)
+
+
+def rest_snapshot_dir(vendor_root: str | Path, endpoint: str, pulled_at: datetime) -> Path:
+    """Return the directory of the snapshot pulled at ``pulled_at`` (UTC).
+
+    Examples
+    --------
+    >>> rest_snapshot_dir("/d/massive", "float", datetime(2026, 10, 16, 12, tzinfo=UTC))
+    PosixPath('/d/massive/rest/float/2026/20261016T120000000000')
+    """
+    stamp = pulled_at.astimezone(UTC)
+    return rest_dir(vendor_root, endpoint) / f"{stamp:%Y}" / stamp.strftime(_STAMP_FORMAT)
+
+
+def rest_as_of_pull_dir(vendor_root: str | Path, endpoint: str, day: date, pulled_at: datetime) -> Path:
+    """Return the directory of the pull made at ``pulled_at`` (UTC) of an endpoint's table as of ``day``.
+
+    Examples
+    --------
+    >>> rest_as_of_pull_dir("/d/massive", "tickers", date(2024, 3, 11), datetime(2026, 10, 16, 12, tzinfo=UTC))
+    PosixPath('/d/massive/rest/tickers/2024/2024-03-11/20261016T120000000000')
+    """
+    return rest_as_of_dir(vendor_root, endpoint, day) / pulled_at.astimezone(UTC).strftime(_STAMP_FORMAT)
+
+
+def rest_pull_page_name(page: int) -> str:
+    """Return the file name of page ``page`` (from 1) in a pull's directory.
+
+    Examples
+    --------
+    >>> rest_pull_page_name(3)
+    '000003.jsonl'
+    """
+    return f"{page:06d}{REST_PAGE_SUFFIX}"
+
+
+def rest_pull_pages(directory: str | Path) -> list[Path]:
+    """Return the page files of one pull's directory, in order.
+
+    Examples
+    --------
+    Needs a raw tier on disk::
+
+        rest_pull_pages("/data/quantlab/downloads/massive/rest/float/2026/20261016T120000000000")
+    """
+    return sorted(Path(directory).glob(f"*{REST_PAGE_SUFFIX}"))
 
 
 def rest_pending_dir(vendor_root: str | Path, endpoint: str) -> Path:
-    """Return where a snapshot's pages wait until the snapshot is whole.
+    """Return where a pull's pages wait until the pull is whole.
 
     Examples
     --------
@@ -415,15 +470,42 @@ def rest_pending_dir(vendor_root: str | Path, endpoint: str) -> Path:
 
 
 def _pull_stamp(path: Path) -> datetime:
-    """Return the UTC pull time a page file is named by."""
-    return datetime.strptime(path.name.split("_")[0], _STAMP_FORMAT).replace(tzinfo=UTC)
+    """Return the UTC pull time a pull directory is named by."""
+    return datetime.strptime(path.name, _STAMP_FORMAT).replace(tzinfo=UTC)
+
+
+def _read_pull(directory: Path) -> list[dict]:
+    """Return the records of one pull directory, in the vendor's order."""
+    return [record for path in rest_pull_pages(directory) for record in _read_page(path)]
+
+
+def _pull_dirs(root: Path, pattern: str) -> list[Path]:
+    """Return the pull directories ``pattern`` finds under ``root``, oldest pull first.
+
+    Raises
+    ------
+    ValueError
+        If a page file sits where a pull's directory belongs. Reading on would
+        return no records, and a caller could take that for an empty table.
+    """
+    found = sorted(root.glob(pattern), key=lambda path: path.name)
+    for path in found:
+        if not path.is_dir():
+            raise ValueError(f"Massive page {str(path)!r} is outside a pull's directory: move it into one.")
+    return found
+
+
+def _snapshot_dirs(vendor_root: str | Path, endpoint: str) -> dict[datetime, Path]:
+    """Return an endpoint's snapshot directories by pull time, oldest first."""
+    dirs = _pull_dirs(rest_dir(vendor_root, endpoint), f"[0-9]*/{_PULL_DIR_GLOB}")
+    return {_pull_stamp(path): path for path in dirs}
 
 
 def rest_snapshots(vendor_root: str | Path, endpoint: str) -> list[datetime]:
     """Return the pull times (UTC) of a snapshot endpoint's whole snapshots, oldest first.
 
-    A snapshot is every page of one pull; one interrupted before its last
-    page left none (``MassiveClient.pull``).
+    A snapshot is one directory holding every page of one pull, published by
+    one rename, so an interrupted pull leaves none (``raw_tier.stage_snapshot``).
 
     Examples
     --------
@@ -431,7 +513,7 @@ def rest_snapshots(vendor_root: str | Path, endpoint: str) -> list[datetime]:
 
         rest_snapshots("/data/quantlab/downloads/massive", "float")[-1]
     """
-    return sorted({_pull_stamp(path) for path in rest_page_files(vendor_root, endpoint)})
+    return list(_snapshot_dirs(vendor_root, endpoint))
 
 
 def read_rest_snapshot(vendor_root: str | Path, endpoint: str, pulled_at: datetime | None = None) -> list[dict]:
@@ -459,12 +541,10 @@ def read_rest_snapshot(vendor_root: str | Path, endpoint: str, pulled_at: dateti
         root = "/data/quantlab/downloads/massive"
         history = {stamp: read_rest_snapshot(root, "float", stamp) for stamp in rest_snapshots(root, "float")}
     """
-    pages = rest_page_files(vendor_root, endpoint)
-    stamps = sorted({_pull_stamp(path) for path in pages})
-    if not stamps or (pulled_at is not None and pulled_at not in stamps):
+    snapshots = _snapshot_dirs(vendor_root, endpoint)
+    if not snapshots or (pulled_at is not None and pulled_at not in snapshots):
         raise ValueError(f"Massive {endpoint} has no snapshot pulled at {pulled_at} under {str(vendor_root)!r}.")
-    chosen = stamps[-1] if pulled_at is None else pulled_at
-    return [record for path in pages if _pull_stamp(path) == chosen for record in _read_page(path)]
+    return _read_pull(snapshots[max(snapshots) if pulled_at is None else pulled_at])
 
 
 def rest_as_of_dir(vendor_root: str | Path, endpoint: str, day: date) -> Path:
@@ -490,7 +570,8 @@ def rest_as_of_days(vendor_root: str | Path, endpoint: str) -> list[date]:
     root = rest_dir(vendor_root, endpoint)
     if not root.exists():
         return []
-    return sorted(date.fromisoformat(path.name) for path in root.glob("[0-9]*/[0-9]*-[0-9]*-[0-9]*") if path.is_dir())
+    pulls = _pull_dirs(root, f"[0-9]*/[0-9]*-[0-9]*-[0-9]*/{_PULL_DIR_GLOB}")
+    return sorted({date.fromisoformat(path.parent.name) for path in pulls})
 
 
 def read_rest_as_of(vendor_root: str | Path, endpoint: str, day: date) -> list[dict]:
@@ -508,11 +589,10 @@ def read_rest_as_of(vendor_root: str | Path, endpoint: str, day: date) -> list[d
         tickers = read_rest_as_of("/data/quantlab/downloads/massive", "tickers", date(2024, 3, 11))
         {row["ticker"]: row["composite_figi"] for row in tickers}
     """
-    pages = sorted(rest_as_of_dir(vendor_root, endpoint, day).glob(f"*{REST_PAGE_SUFFIX}"))
-    if not pages:
+    pulls = _pull_dirs(rest_as_of_dir(vendor_root, endpoint, day), _PULL_DIR_GLOB)
+    if not pulls:
         raise ValueError(f"Massive {endpoint} is not kept as of {day} under {str(vendor_root)!r}.")
-    newest = _pull_stamp(pages[-1])  # a day pulled again keeps its newest pull
-    return [record for path in pages if _pull_stamp(path) == newest for record in _read_page(path)]
+    return _read_pull(pulls[-1])  # a day pulled again keeps its newest pull
 
 
 def _read_page(path: Path) -> list[dict]:

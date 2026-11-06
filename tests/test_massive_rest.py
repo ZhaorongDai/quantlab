@@ -272,6 +272,7 @@ def test_dividends_page_on_their_ex_date(env, tmp_path):
 def test_a_snapshot_endpoint_is_pulled_whole_without_a_watermark(env, tmp_path):
     from quantlab.acquisition._support.http import HttpResponse
     from quantlab.acquisition.massive.rest import RestEndpoint
+    from quantlab.dataset.massive.raw import read_rest_snapshot
 
     pages = iter([
         {"results": [{"id": "F1", "ticker": "AAA", "free_float": 10}], "next_url": "https://api.massive.com/f?cursor=1"},
@@ -286,5 +287,5 @@ def test_a_snapshot_endpoint_is_pulled_whole_without_a_watermark(env, tmp_path):
     endpoint = RestEndpoint("float", "https://api.massive.com/f", None, limit=1)
     pull = _client(http_get).pull(endpoint, tmp_path, today=TODAY)
     assert calls[0] == {"limit": "1"} and pull.through is None and pull.rows == 2
-    assert [r["id"] for r in _records(tmp_path, "float")] == ["F1", "F2"]
+    assert [r["id"] for r in read_rest_snapshot(tmp_path / "massive", "float")] == ["F1", "F2"]
     assert not (tmp_path / "massive" / "rest" / "float" / "_watermark.json").exists()

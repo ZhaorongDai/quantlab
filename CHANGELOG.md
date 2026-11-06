@@ -6,6 +6,23 @@ compatibility shims or config migrations.
 
 ## Unreleased
 
+### Changed
+
+- A Massive snapshot, or a session of an as-of table, is kept as one directory per pull,
+  `rest/<endpoint>/<YYYY>/<stamp>/000001.jsonl` and
+  `rest/<endpoint>/<YYYY>/<day>/<stamp>/000001.jsonl`. Pages kept the old way are not read: move
+  each pull's pages into its directory. `rest_page_files` and `read_rest_records` read only
+  endpoints kept by date.
+- REST pages, and the directories they land in, are synced to disk (`write_jsonl_atomically`,
+  `make_directories_durably`), so a watermark cannot outlive its pages through a power loss.
+- A page file where a pull's directory belongs raises `ValueError` instead of reading as no rows.
+
+### Fixed
+
+- A Massive snapshot or as-of pull is published by one directory rename
+  (`raw_tier.stage_snapshot`, `raw_tier.stage_as_of`). Pages used to be renamed one at a time, so a
+  pull killed while publishing left part of a snapshot that `read_rest_snapshot` read as whole.
+
 ## 0.3.1 (2026-11-05)
 
 ### Changed

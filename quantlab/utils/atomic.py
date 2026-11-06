@@ -1,7 +1,8 @@
-"""Atomic JSON and parquet file writes.
+"""Atomic JSON, JSON-lines and parquet file writes.
 
 Every JSON sidecar quantlab persists (resume ledgers, acquisition watermarks,
-failure manifests) goes through ``write_json_atomically``, and every parquet
+failure manifests) goes through ``write_json_atomically``, every REST page
+through ``write_jsonl_atomically``, and every parquet
 file written whole (raw vendor pulls, the Ticker map's days) through
 ``write_parquet_atomically``. The payload is
 written to a temporary file in the destination's own directory and then
@@ -17,9 +18,18 @@ library so any layer can use it without creating an import cycle.
 import json
 import os
 import tempfile
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TextIO
 
-__all__ = ["write_json_atomically", "write_parquet_atomically"]
+__all__ = [
+    "make_directories_durably",
+    "sync_directory",
+    "write_json_atomically",
+    "write_jsonl_atomically",
+    "write_parquet_atomically",
+]
 
 
 def write_json_atomically(path: str | Path, payload: object, **json_kwargs) -> None:
@@ -48,23 +58,32 @@ def write_json_atomically(path: str | Path, payload: object, **json_kwargs) -> N
     >>> write_json_atomically("run/watermark.json", {"last": "2024-01-31"})
     >>> write_json_atomically("run/manifest.json", data, indent=2, sort_keys=True)
     """
-    destination = str(path)
-    directory = Path(destination).parent
-    directory.mkdir(parents=True, exist_ok=True)
+    with _atomic_text_file(path) as handle:
+        json.dump(payload, handle, **json_kwargs)
+
+
+@contextmanager
+def _atomic_text_file(path: str | Path) -> Iterator[TextIO]:
+    """Yield a text file that replaces ``path``, synced, when the block ends.
+
+    On any exception the temporary file is removed and ``path`` is left as it was.
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     # The temp file must live in the destination's directory: `os.replace` is
     # atomic only as a same-filesystem rename. Staged in the system temp dir it
     # could become a cross-device copy, which is interruptible.
     handle = tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
-        dir=str(directory),
-        prefix=Path(destination).name + ".",
+        dir=str(destination.parent),
+        prefix=destination.name + ".",
         suffix=".tmp",
         delete=False,
     )
     try:
         with handle:
-            json.dump(payload, handle, **json_kwargs)
+            yield handle
             handle.flush()
             os.fchmod(handle.fileno(), _PLAIN_MODE)
             # fsync before the rename, and after the mode change so the mode is
@@ -89,10 +108,90 @@ def _plain_mode() -> int:
     return 0o666 & ~umask
 
 
-#: The mode both writers give their file before the rename. ``NamedTemporaryFile``
+#: The mode the writers give their file before the rename. ``NamedTemporaryFile``
 #: creates it owner-only and ``os.replace`` keeps that mode, while a file in the
 #: shared data tier must stay as readable as a plain write leaves it.
 _PLAIN_MODE = _plain_mode()
+
+
+def write_jsonl_atomically(path: str | Path, records: Iterable[dict]) -> None:
+    """Write ``records`` to ``path``, one JSON object per line, durably.
+
+    Keys are sorted and non-ASCII text is kept, so a record's line is the same
+    on every pull. The file is synced before its rename, and the rename and any
+    directory created for it after, so a watermark written next cannot outlive
+    the file through a power loss.
+
+    Parameters
+    ----------
+    path : str | Path
+        Destination file; missing directories are created.
+    records : iterable of dict
+        The records, written in order.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> page = Path(tempfile.mkdtemp()) / "pages" / "000001.jsonl"
+    >>> write_jsonl_atomically(page, [{"ticker": "AAPL"}])
+    >>> page.read_text()
+    '{"ticker": "AAPL"}\\n'
+    """
+    destination = Path(path)
+    make_directories_durably(destination.parent)
+    with _atomic_text_file(destination) as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    sync_directory(destination.parent)
+
+
+def sync_directory(path: str | Path) -> None:
+    """Make the entries of directory ``path`` durable, such as a rename into it.
+
+    Parameters
+    ----------
+    path : str | Path
+        An existing directory.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> sync_directory(tempfile.mkdtemp())
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def make_directories_durably(path: str | Path) -> None:
+    """Create directory ``path`` and its missing parents, each one's entry synced.
+
+    Syncing only the last directory is not enough: a power loss could still
+    drop an entry higher up, and everything under it.
+
+    Parameters
+    ----------
+    path : str | Path
+        The directory.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> root = Path(tempfile.mkdtemp())
+    >>> make_directories_durably(root / "rest" / "2024")
+    >>> (root / "rest" / "2024").is_dir()
+    True
+    """
+    missing = []
+    directory = Path(path)
+    while not directory.exists():
+        missing.append(directory)
+        directory = directory.parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        sync_directory(directory.parent)
 
 
 def write_parquet_atomically(path: str | Path, frame) -> None:
