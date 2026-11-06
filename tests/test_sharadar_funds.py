@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantlab.dataset.sharadar.tables import latest_bulk
 from tests.sharadar_fixtures import (
     ACTIONS_COLUMNS,
     SEP_COLUMNS,
@@ -78,7 +79,7 @@ FUND_TICKERS = [
 
 def test_the_sfp_table_is_pulled_to_its_own_raw_directory(tmp_path):
     root = _pull(tmp_path / "downloads", [sep_row("SPY", DAYS[0], 470.0)], FUND_TICKERS)  # SYNTHETIC
-    assert (root / "sfp" / "sfp.parquet").is_file()
+    assert latest_bulk(root, "sfp").is_file()
 
 
 def test_a_fund_panel_keeps_every_fund_category_by_default(tmp_path):

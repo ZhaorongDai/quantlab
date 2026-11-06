@@ -2,9 +2,10 @@
 
 Every JSON sidecar quantlab persists (resume ledgers, acquisition watermarks,
 failure manifests) goes through ``write_json_atomically``, every REST page
-through ``write_jsonl_atomically``, and every parquet
-file written whole (raw vendor pulls, the Ticker map's days) through
-``write_parquet_atomically``. The payload is
+through ``write_jsonl_atomically``, every parquet file written whole from
+memory (raw vendor pulls, the Ticker map's days) through
+``write_parquet_atomically``, and a file too large for memory through
+``move_durably`` once it is finished. The payload is
 written to a temporary file in the destination's own directory and then
 renamed over the destination, so an interrupted write leaves either the
 previous complete file or the new one, never a truncated file that a resumed
@@ -25,6 +26,7 @@ from typing import TextIO
 
 __all__ = [
     "make_directories_durably",
+    "move_durably",
     "sync_directory",
     "write_json_atomically",
     "write_jsonl_atomically",
@@ -165,6 +167,40 @@ def sync_directory(path: str | Path) -> None:
         os.close(descriptor)
 
 
+def move_durably(source: str | Path, destination: str | Path) -> None:
+    """Rename a finished file to ``destination``, durably, in one step.
+
+    For a file too large to hold in memory, written by its own writer. It is
+    synced before the rename and the rename after, so a power loss leaves the
+    previous ``destination`` or the whole new one.
+
+    Parameters
+    ----------
+    source : str | Path
+        The finished file, on the destination's filesystem.
+    destination : str | Path
+        Where it goes; missing directories are created.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> root = Path(tempfile.mkdtemp())
+    >>> _ = (root / "partial").write_text("rows")
+    >>> move_durably(root / "partial", root / "table" / "bulk.parquet")
+    >>> (root / "table" / "bulk.parquet").read_text()
+    'rows'
+    """
+    descriptor = os.open(source, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    destination = Path(destination)
+    make_directories_durably(destination.parent)
+    os.replace(source, destination)
+    sync_directory(destination.parent)
+
+
 def make_directories_durably(path: str | Path) -> None:
     """Create directory ``path`` and its missing parents, each one's entry synced.
 
@@ -217,7 +253,7 @@ def write_parquet_atomically(path: str | Path, frame) -> None:
     >>> write_parquet_atomically("raw/tickers.parquet", pl.DataFrame({"ticker": ["AAPL"]}))  # doctest: +SKIP
     """
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    make_directories_durably(destination.parent)
     # Same directory as the destination, so the rename stays on one filesystem.
     handle = tempfile.NamedTemporaryFile(
         dir=str(destination.parent), prefix=destination.name + ".", suffix=".tmp", delete=False
@@ -227,7 +263,7 @@ def write_parquet_atomically(path: str | Path, frame) -> None:
             # Through the descriptor, before the frame is written over the file.
             os.fchmod(handle.fileno(), _PLAIN_MODE)
         frame.write_parquet(handle.name)
-        os.replace(handle.name, destination)
+        move_durably(handle.name, destination)
     except BaseException:
         Path(handle.name).unlink(missing_ok=True)
         raise

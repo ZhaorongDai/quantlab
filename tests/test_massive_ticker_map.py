@@ -23,7 +23,6 @@ NEXT = date(2020, 3, 3)
 
 
 def _write_table(root: Path, code: str, rows: list[dict]) -> None:
-    from quantlab.acquisition.sharadar.raw_tier import write_bulk_pull
     from quantlab.dataset.sharadar.tables import TABLES, bulk_file
 
     schema = TABLES[code].schema
@@ -37,10 +36,9 @@ def _write_table(root: Path, code: str, rows: list[dict]) -> None:
         },
         schema=schema,
     )
-    path = bulk_file(root, code)
+    path = bulk_file(root, code, datetime(2026, 10, 1, 20, tzinfo=UTC))
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(path)
-    write_bulk_pull(root, code, datetime(2026, 10, 1, 20, tzinfo=UTC))
 
 
 def _change(day: str, new: str, old: str) -> dict:

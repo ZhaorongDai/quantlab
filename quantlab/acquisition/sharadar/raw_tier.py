@@ -1,4 +1,4 @@
-"""The writers of Sharadar's raw tier: watermarks, bulk-pull records and the TICKERS history.
+"""The writers of Sharadar's raw tier: bulk pulls, watermarks and the TICKERS history.
 
 ``SharadarClient`` (``quantlab.acquisition.sharadar.client``) pulls tables
 into ``<download-dir>/sharadar/<table>/`` and records what it pulled with
@@ -13,6 +13,11 @@ labelled here: ``<sharadar>/<table>/_watermark.json`` holding ``table`` and
 Unlike Massive's watermarks it may move back: a date-window pull records the
 window's last day, whatever the watermark was.
 
+A bulk pull commits in one rename (``publish_bulk``): the file's name carries
+its pull time, and readers take the newest bulk and ignore pulls older than it.
+What follows the rename is repeatable, so a process killed at any point leaves
+readers correct data, and the next bulk pull finishes the cleanup.
+
 Examples
 --------
 >>> import tempfile
@@ -26,24 +31,36 @@ datetime.date(2024, 1, 11)
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import date, datetime
 from pathlib import Path
 
 import polars as pl
 
 from quantlab.dataset.sharadar.tables import (
-    BULK_PULL_FILE,
+    BULK_PREFIX,
     TABLES,
+    UPDATED_PREFIX,
+    WINDOW_PREFIX,
+    bulk_file,
+    latest_bulk,
     pull_time,
     raw_files,
     raw_table_dir,
     snapshot_for,
     table,
     tickers_history_file,
+    tickers_snapshot_file,
     tickers_snapshots,
 )
-from quantlab.utils.atomic import write_json_atomically, write_parquet_atomically
+from quantlab.utils.atomic import make_directories_durably, move_durably, write_parquet_atomically
 from quantlab.utils.watermark import WATERMARK_FILE, write_watermark
+
+#: Prefix of the scratch directory of a bulk pull, beside the table's raw files.
+_SCRATCH_PREFIX = ".pull-"
 
 #: What one row of the TICKERS history is: a security under one ticker in one table.
 _HISTORY_KEY = ["table", "permaticker", "ticker"]
@@ -66,23 +83,135 @@ def write_table_watermark(vendor_root: str | Path, code: str, through: date) -> 
     write_watermark(raw_table_dir(vendor_root, code) / WATERMARK_FILE, through, {"table": table(code).code})
 
 
-def write_bulk_pull(vendor_root: str | Path, code: str, pulled_at: datetime) -> None:
-    """Record when a table's bulk file was pulled (``BULK_PULL_FILE``), in UTC.
+@contextmanager
+def bulk_scratch(vendor_root: str | Path, code: str) -> Iterator[Path]:
+    """Yield a scratch directory beside a table's raw files for one bulk pull.
 
-    Read back by ``quantlab.dataset.sharadar.tables.pull_time``.
+    It is on the table's filesystem, so the finished file can be renamed into
+    place, and readers never look in it. What a killed pull left is removed
+    first.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/sharadar``.
+    code : str
+        The table's code.
+
+    Yields
+    ------
+    Path
+        The scratch directory, removed afterwards.
+
+    Raises
+    ------
+    ValueError
+        If the table holds a bulk file ``latest_bulk`` refuses, before anything
+        is downloaded.
 
     Examples
     --------
-    Writes ``/data/downloads/sharadar/sep/_bulk_pull.json``::
-
-        write_bulk_pull("/data/downloads/sharadar", "sep", datetime.now(UTC))
+    >>> import tempfile
+    >>> with bulk_scratch(tempfile.mkdtemp(), "sep") as scratch:
+    ...     scratch.is_dir()
+    True
     """
-    write_json_atomically(
-        raw_table_dir(vendor_root, code) / BULK_PULL_FILE,
-        {"table": table(code).code, "pulled_at": pulled_at.astimezone(UTC).isoformat()},
-        indent=2,
-        sort_keys=True,
-    )
+    latest_bulk(vendor_root, code)
+    directory = raw_table_dir(vendor_root, code)
+    make_directories_durably(directory)
+    _remove_scratch(directory)
+    with tempfile.TemporaryDirectory(dir=directory, prefix=_SCRATCH_PREFIX) as scratch:
+        yield Path(scratch)
+
+
+def _remove_scratch(directory: Path) -> None:
+    """Delete the scratch directories killed pulls left in a table's directory."""
+    for leftover in directory.glob(f"{_SCRATCH_PREFIX}*"):
+        shutil.rmtree(leftover, ignore_errors=True)
+
+
+def finish_interrupted_bulk(vendor_root: str | Path, code: str) -> None:
+    """Remove what a killed bulk pull left: its scratch and the pulls it superseded.
+
+    Readers ignore both, so this only frees the disk. Every pull of a table
+    starts here, since a table refreshed by windows may not see another bulk.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> finish_interrupted_bulk(tempfile.mkdtemp(), "sep")
+    """
+    _remove_scratch(raw_table_dir(vendor_root, code))
+    _remove_superseded(vendor_root, code)
+
+
+def publish_bulk(
+    vendor_root: str | Path, code: str, pulled_at: datetime, rows: pl.LazyFrame, scratch: Path
+) -> Path:
+    """Commit a table's bulk pull with one rename, then clean up after it.
+
+    Once the file is renamed, readers take it and ignore every older pull, so
+    nothing after the rename has to happen for the data to read correctly. A
+    TICKERS pull keeps a snapshot of itself (``tables.tickers_snapshot_file``)
+    first, so a committed pull always has one to be folded. The rest is
+    repeatable: older pulls are deleted and the TICKERS history is folded and
+    pruned. The bulk file is durable when this returns, so the caller may move
+    the watermark.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/sharadar``.
+    code : str
+        The table's code.
+    pulled_at : datetime
+        When the pull started (UTC), so a pull made after that overlays it.
+    rows : polars.LazyFrame
+        The table's rows.
+    scratch : Path
+        This pull's ``bulk_scratch``.
+
+    Returns
+    -------
+    Path
+        The bulk file.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> from datetime import UTC
+    >>> from quantlab.dataset.sharadar.tables import pull_time
+    >>> root = tempfile.mkdtemp()
+    >>> pulled = datetime(2024, 1, 11, 8, 30, tzinfo=UTC)
+    >>> rows = pl.LazyFrame({"ticker": ["AAPL"], "close": [185.0]})
+    >>> with bulk_scratch(root, "sep") as scratch:
+    ...     path = publish_bulk(root, "sep", pulled, rows, scratch)
+    >>> path.name, pull_time(path) == pulled
+    ('bulk_20240111T083000000000.parquet', True)
+    """
+    target = bulk_file(vendor_root, code, pulled_at)
+    finished = scratch / target.name
+    rows.sink_parquet(finished)
+    if code == "tickers":
+        snapshot = tickers_snapshot_file(vendor_root, pulled_at)
+        shutil.copyfile(finished, scratch / snapshot.name)
+        move_durably(scratch / snapshot.name, snapshot)
+    move_durably(finished, target)  # the commit
+    _remove_superseded(vendor_root, code)
+    # A snapshot about to be pruned is kept in the TICKERS history.
+    fold_tickers_history(vendor_root)
+    prune_tickers_snapshots(vendor_root)
+    return target
+
+
+def _remove_superseded(vendor_root: str | Path, code: str) -> None:
+    """Delete a table's pulls the readers no longer take: older bulks and what they supersede."""
+    current = set(raw_files(vendor_root, code))
+    directory = raw_table_dir(vendor_root, code)
+    for prefix in (BULK_PREFIX, WINDOW_PREFIX, UPDATED_PREFIX):
+        for path in directory.glob(f"{prefix}*.parquet"):
+            if path not in current:
+                path.unlink()
 
 
 def fold_tickers_history(vendor_root: str | Path) -> Path | None:

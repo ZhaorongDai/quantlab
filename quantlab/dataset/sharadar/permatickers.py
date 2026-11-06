@@ -650,7 +650,7 @@ class PermatickerResolver:
         --------
         Needs the Sharadar raw tier::
 
-            resolver.several_permatickers("/data/downloads/sharadar/actions/actions.parquet", ["DUP", "AAPL"])
+            resolver.several_permatickers("/data/downloads/sharadar/actions/bulk_20261016T080000000000.parquet", ["DUP", "AAPL"])
             # {'DUP': [501, 502]}
         """
         left = {str(t) for t in tickers if t is not None}
@@ -699,7 +699,7 @@ class PermatickerResolver:
 
         Examples
         --------
-        >>> resolver.resolve("/data/downloads/sharadar/sep/sep.parquet", ["LESL"])
+        >>> resolver.resolve("/d/sharadar/sep/bulk_20261016T080000000000.parquet", ["LESL"])
         {'LESL': 632479}
         """
         path = Path(path)

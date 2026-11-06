@@ -38,6 +38,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from quantlab.dataset.sharadar.tables import latest_bulk
 from tests.sharadar_fixtures import (
     TICKERS_COLUMNS,
     FakeTransport,
@@ -68,7 +69,6 @@ def _frame(code: str, rows: list[dict]) -> pl.DataFrame:
 
 def _write(root: Path, code: str, rows: list[dict], pulled: datetime, *, window=None, updated=None):
     """Write a bulk file (or a window / updated pull) of ``code`` pulled at ``pulled``."""
-    from quantlab.acquisition.sharadar.raw_tier import write_bulk_pull
     from quantlab.dataset.sharadar.tables import bulk_file, updated_file, window_file
 
     if window is not None:
@@ -76,9 +76,8 @@ def _write(root: Path, code: str, rows: list[dict], pulled: datetime, *, window=
     elif updated is not None:
         path = updated_file(root, code, pulled, updated)
     else:
-        path = bulk_file(root, code)
+        path = bulk_file(root, code, pulled)
         path.parent.mkdir(parents=True, exist_ok=True)
-        write_bulk_pull(root, code, pulled)
     path.parent.mkdir(parents=True, exist_ok=True)
     _frame(code, rows).write_parquet(path)
     return path
@@ -215,7 +214,7 @@ def test_the_stores_ticker_sidecar_maps_a_ticker_tickers_and_actions_forgot(tmp_
     assert frame["permaticker"].to_list() == [707] * 6
     frame, resolver = _mapped(root)
     assert frame["permaticker"].null_count() == 4
-    assert resolver.unresolved[root / "sep" / "sep.parquet"] == {"OLD": "no permaticker"}
+    assert resolver.unresolved[latest_bulk(root, "sep")] == {"OLD": "no permaticker"}
 
 
 def test_a_rewritten_sidecar_keeps_what_the_old_one_knew(tmp_path):
@@ -271,7 +270,7 @@ def test_a_bulk_tickers_pull_keeps_a_snapshot_and_prunes_unused_ones(tmp_path, m
     assert stale not in snapshots  # no raw file pairs with it
     assert len(snapshots) == 1
     assert pl.read_parquet(snapshots[0])["ticker"].to_list() == ["OLD"]
-    assert abs((pull_time(root / "tickers" / "tickers.parquet") - pull_time(snapshots[0])).total_seconds()) < 1
+    assert abs((pull_time(latest_bulk(root, "tickers")) - pull_time(snapshots[0])).total_seconds()) < 1
 
 
 # -- a ticker taken over by another security, two tickers on one key ----------
@@ -492,7 +491,7 @@ def test_a_related_ticker_of_another_shape_maps_nothing(tmp_path):
 
     frame, resolver = _mapped(root)
     assert frame["permaticker"].null_count() == 4
-    assert resolver.unresolved[root / "sep" / "sep.parquet"] == {"OLDU": "no permaticker"}
+    assert resolver.unresolved[latest_bulk(root, "sep")] == {"OLDU": "no permaticker"}
 
 
 def test_a_renamed_ticker_reused_later_maps_each_file_to_its_holder_then(tmp_path):
@@ -642,9 +641,9 @@ def test_a_ticker_the_fund_took_by_a_ticker_change_counts_from_the_change(tmp_pa
     # change, named 707 FB, not the fund.
     root = tmp_path / "sharadar"
     _meta(root, actions_pulled=_at("2025-10-01"), fund_since="2008-01-24")  # SYNTHETIC
-    actions = pl.read_parquet(root / "actions" / "actions.parquet")
+    actions = pl.read_parquet(latest_bulk(root, "actions"))
     pl.concat([actions, _frame("actions", [_change("2026-04-09", "FB", "DNET")])]).write_parquet(  # SYNTHETIC
-        root / "actions" / "actions.parquet"
+        latest_bulk(root, "actions")
     )
 
     frame, resolver = _mapped(root, scanned="actions")

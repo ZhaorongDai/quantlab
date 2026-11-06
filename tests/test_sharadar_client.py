@@ -100,7 +100,7 @@ def test_a_bulk_pull_follows_the_redirect_and_writes_raw_parquet(api_key, tmp_pa
     assert not any("x-api-key" in c.headers for c in signed)
     # Nothing but the parquet and the table's watermark is left behind.
     assert sorted(p.name for p in path.parent.iterdir()) == [
-        "_bulk_pull.json", "_watermark.json", path.name
+        "_watermark.json", path.name
     ]
 
 
