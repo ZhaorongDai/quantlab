@@ -56,7 +56,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/ZhaorongDai/quantlab"
 Repository = "https://github.com/ZhaorongDai/quantlab"
-Documentation = "https://github.com/ZhaorongDai/quantlab/tree/main/docs"
+Documentation = "https://zhaorongdai.github.io/quantlab/"
+Changelog = "https://github.com/ZhaorongDai/quantlab/blob/main/CHANGELOG.md"
 Issues = "https://github.com/ZhaorongDai/quantlab/issues"
 
 [project.optional-dependencies]
