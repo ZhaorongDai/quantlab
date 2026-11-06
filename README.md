@@ -11,7 +11,7 @@
   <a href="https://pypi.org/project/quantlab-py/"><img alt="PyPI" src="https://img.shields.io/pypi/v/quantlab-py?label=pypi&color=3776ab"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-3776ab?logo=python&logoColor=white"></a>
   <a href="https://zhaorongdai.github.io/quantlab/getting-started/installation.html"><img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-3776ab"></a>
-  <a href="https://github.com/ZhaorongDai/quantlab/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <a href="https://github.com/ZhaorongDai/quantlab/blob/main/LICENSE"><img alt="License: MIT and Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2B%20Apache--2.0-green"></a>
   <a href="https://github.com/ZhaorongDai/quantlab/blob/main/CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/changelog-latest-3776ab"></a>
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
   <a href="https://github.com/Menooker/KunQuant"><img alt="Factors: KunQuant" src="https://img.shields.io/badge/factors-KunQuant-0ea5e9"></a>
@@ -324,4 +324,5 @@ Bug reports, questions and pull requests are welcome. Please read
 
 ## License
 
-quantlab is released under the [MIT License](https://github.com/ZhaorongDai/quantlab/blob/main/LICENSE).
+quantlab is released under the [MIT License](https://github.com/ZhaorongDai/quantlab/blob/main/LICENSE). The KunQuant factor code it
+includes stays under the [Apache License 2.0](https://github.com/ZhaorongDai/quantlab/blob/main/quantlab/factor/predefined/_support/KUNQUANT_LICENSE).

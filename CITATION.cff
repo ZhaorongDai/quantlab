@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: If you use quantlab in your research, please cite it as below.
+type: software
+title: quantlab
+abstract: >-
+  A Python backend for quantitative equity research, from raw market data to a
+  backtested portfolio in one config-driven pipeline.
+authors:
+  - family-names: Dai
+    given-names: Zhaorong
+license:
+  - MIT
+  - Apache-2.0
+repository-code: https://github.com/ZhaorongDai/quantlab
+url: https://zhaorongdai.github.io/quantlab/
+keywords:
+  - quantitative finance
+  - backtesting
+  - factor investing
+  - portfolio optimization
