@@ -88,6 +88,12 @@ def _raw(root, code):
     return scan_raw_table(root, code).collect().sort("ticker", "date")
 
 
+def _raw_tickers(root):
+    from quantlab.dataset.sharadar.tables import scan_raw_table
+
+    return scan_raw_table(root, "tickers").collect()["permaticker"].unique().to_list()
+
+
 # -- the raw tier ----------------------------------------------------------------
 
 
@@ -455,3 +461,109 @@ def test_an_unmappable_ticker_is_reported_and_the_update_completes(tmp_path):
     ds = _dataset(tmp_path, root)
     ds.update()
     assert not ds.unmapped_path().exists()
+
+
+# -- an interrupted bulk pull ----------------------------------------------------
+
+
+def _killed(*args, **kwargs):
+    raise OSError("killed")
+
+
+def test_a_bulk_killed_before_the_commit_leaves_the_table_as_it_was(tmp_path, monkeypatch):
+    vendor = _vendor(DAYS[:4])
+    root = _bulk(vendor, tmp_path)
+    before = latest_bulk(root, "sep")
+    vendor.tables["stocks"][1].append(sep_row("AAA", DAYS[4], 104.0))  # SYNTHETIC
+
+    with monkeypatch.context() as patch:
+        patch.setattr("quantlab.acquisition.sharadar.raw_tier.move_durably", _killed)
+        with pytest.raises(OSError):
+            _client(vendor).bulk_table("sep", tmp_path)
+
+    assert latest_bulk(root, "sep") == before
+    assert _raw(root, "sep").height == 4
+
+
+def test_a_bulk_killed_after_the_commit_reads_new(tmp_path, monkeypatch):
+    vendor = _vendor(DAYS[:4])
+    root = _bulk(vendor, tmp_path)
+    vendor.tables["stocks"][1].append(sep_row("AAA", DAYS[4], 104.0))  # SYNTHETIC
+
+    with monkeypatch.context() as patch:
+        patch.setattr("quantlab.acquisition.sharadar.raw_tier._remove_superseded", _killed)
+        with pytest.raises(OSError):
+            _client(vendor).bulk_table("sep", tmp_path)
+
+    assert _raw(root, "sep").height == 5
+
+
+def test_a_first_bulk_killed_before_its_watermark_resumes_from_its_pull_day(tmp_path, monkeypatch):
+    from quantlab.dataset.sharadar.tables import pull_day, read_watermark
+
+    vendor = _vendor(DAYS[:4])
+    client = _client(vendor)
+    client.bulk_table("tickers", tmp_path)
+    client.bulk_table("actions", tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr("quantlab.acquisition.sharadar.client.write_table_watermark", _killed)
+        with pytest.raises(OSError):
+            client.bulk_table("sep", tmp_path)
+    root = tmp_path / "sharadar"
+    assert read_watermark(root, "sep") is None
+
+    vendor.tables["stocks"][1].append(sep_row("AAA", DAYS[4], 104.0))  # SYNTHETIC
+    client.window_table("sep", tmp_path, through=pull_day(latest_bulk(root, "sep")))
+
+    assert read_watermark(root, "sep") is not None
+
+
+def test_a_tickers_pull_killed_after_the_commit_keeps_its_snapshot(tmp_path, monkeypatch):
+    from quantlab.dataset.sharadar.tables import pull_time, tickers_snapshots
+
+    vendor = _vendor(DAYS[:4])
+    root = _bulk(vendor, tmp_path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("quantlab.acquisition.sharadar.raw_tier._remove_superseded", _killed)
+        with pytest.raises(OSError):
+            _client(vendor).bulk_table("tickers", tmp_path)
+
+    pulled = pull_time(latest_bulk(root, "tickers"))
+    assert pulled in [pull_time(path) for path in tickers_snapshots(root)]
+
+
+@pytest.mark.parametrize("step", ["fold_tickers_history", "prune_tickers_snapshots"])
+def test_a_tickers_pull_killed_in_its_finishing_steps_reads_and_the_next_one_folds(
+    tmp_path, monkeypatch, step
+):
+    from quantlab.dataset.sharadar.tables import tickers_history
+
+    vendor = _vendor(DAYS[:4])
+    root = _bulk(vendor, tmp_path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(f"quantlab.acquisition.sharadar.raw_tier.{step}", _killed)
+        with pytest.raises(OSError):
+            _client(vendor).bulk_table("tickers", tmp_path)
+
+    assert _raw_tickers(root) == [101]
+    _client(vendor).bulk_table("tickers", tmp_path)
+    assert tickers_history(root).height > 0
+
+
+def test_a_window_pull_finishes_what_a_killed_bulk_left(tmp_path, monkeypatch):
+    vendor = _vendor(DAYS[:4])
+    root = _bulk(vendor, tmp_path)
+    (root / "sep" / ".pull-killed").mkdir()
+    with monkeypatch.context() as patch:
+        patch.setattr("quantlab.acquisition.sharadar.raw_tier._remove_superseded", _killed)
+        with pytest.raises(OSError):
+            _client(vendor).bulk_table("sep", tmp_path)
+    (root / "sep" / ".pull-killed").mkdir()
+
+    vendor.tables["stocks"][1].append(sep_row("AAA", DAYS[4], 104.0))  # SYNTHETIC
+    _window(vendor, tmp_path, DAYS[4], codes=("sep",))
+
+    assert [p for p in (root / "sep").glob("bulk_*.parquet")] == [latest_bulk(root, "sep")]
+    assert not list((root / "sep").glob(".pull-*"))

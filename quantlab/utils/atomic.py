@@ -253,7 +253,7 @@ def write_parquet_atomically(path: str | Path, frame) -> None:
     >>> write_parquet_atomically("raw/tickers.parquet", pl.DataFrame({"ticker": ["AAPL"]}))  # doctest: +SKIP
     """
     destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    make_directories_durably(destination.parent)
     # Same directory as the destination, so the rename stays on one filesystem.
     handle = tempfile.NamedTemporaryFile(
         dir=str(destination.parent), prefix=destination.name + ".", suffix=".tmp", delete=False

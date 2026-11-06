@@ -5,7 +5,7 @@ The raw tier is Sharadar's own rows, kept as parquet under
 acquisition layer writes it and the datasets read it; both take the table
 names, the column schemas and the directory layout from this module, so the
 writer and the reader cannot disagree. This module only reads; the writers
-of the watermarks, bulk-pull records and TICKERS history are in
+of the bulk pulls, watermarks and TICKERS history are in
 ``quantlab.acquisition.sharadar.raw_tier``.
 
 Each table has a short *code*, the lower-cased legacy Sharadar code (``sep``
@@ -452,6 +452,15 @@ def bulk_file(vendor_root: str | Path, code: str, pulled_at: datetime) -> Path:
     The name carries the pull time, so publishing the file is the whole commit:
     its rename also says when it was pulled, and which later pulls overlay it.
 
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/sharadar``.
+    code : str
+        The table's code.
+    pulled_at : datetime
+        When the pull started (UTC).
+
     Examples
     --------
     >>> bulk_file("/d/sharadar", "sep", datetime(2024, 1, 11, 8, 30)).name
@@ -470,11 +479,16 @@ def latest_bulk(vendor_root: str | Path, code: str) -> Path | None:
     code : str
         The table's code.
 
+    Returns
+    -------
+    Path or None
+        The file with the newest pull time in its name.
+
     Raises
     ------
     ValueError
-        If a bulk file is kept under its old name, ``<code>.parquet``: read
-        without it, the table would be only its later pulls.
+        If the directory holds a ``<code>.parquet``, a bulk file this module
+        does not read: without it, the table would be only its later pulls.
 
     Examples
     --------
@@ -560,18 +574,45 @@ def raw_files(vendor_root: str | Path, code: str) -> list[Path]:
 
     Examples
     --------
-    >>> [p.name for p in raw_files("/data/downloads/sharadar", "sep")][:1]
-    ['bulk_20261016T080000000000.parquet']
+    Needs the Sharadar raw tier::
+
+        [path.name for path in raw_files("/data/downloads/sharadar", "sep")][:1]
+        # ['bulk_20261016T080000000000.parquet']
     """
+    bulks, windows, updates = _current_pulls(vendor_root, code)
+    return bulks + windows + updates
+
+
+def _current_pulls(vendor_root: str | Path, code: str) -> tuple[list[Path], list[Path], list[Path]]:
+    """Return a table's newest bulk (none or one), then its windows and updated pulls no older than it."""
     bulk = latest_bulk(vendor_root, code)
-    return [*([] if bulk is None else [bulk]), *_later_pulls(vendor_root, code, WINDOW_PREFIX, bulk),
-            *_later_pulls(vendor_root, code, UPDATED_PREFIX, bulk)]
+    directory = raw_table_dir(vendor_root, code)
+
+    def later(prefix: str) -> list[Path]:
+        pulls = sorted(directory.glob(f"{prefix}*.parquet"))
+        return pulls if bulk is None else [path for path in pulls if pull_time(path) >= pull_time(bulk)]
+
+    return ([] if bulk is None else [bulk]), later(WINDOW_PREFIX), later(UPDATED_PREFIX)
 
 
-def _later_pulls(vendor_root: str | Path, code: str, prefix: str, bulk: Path | None) -> list[Path]:
-    """Return a table's pulls of one kind, in pull order, leaving out those older than ``bulk``."""
-    pulls = sorted(raw_table_dir(vendor_root, code).glob(f"{prefix}*.parquet"))
-    return pulls if bulk is None else [path for path in pulls if pull_time(path) >= pull_time(bulk)]
+def resume_day(vendor_root: str | Path, code: str) -> date | None:
+    """Return the day a table's next pull resumes from, or ``None`` before its first bulk.
+
+    That is its watermark, or the day of its bulk: a pull killed after its
+    commit has no watermark yet, and the bulk's name says when it was pulled.
+
+    Examples
+    --------
+    Needs the Sharadar raw tier::
+
+        resume_day("/data/downloads/sharadar", "sep")
+        # datetime.date(2026, 10, 16)
+    """
+    watermark = read_watermark(vendor_root, code)
+    if watermark is not None:
+        return watermark
+    bulk = latest_bulk(vendor_root, code)
+    return None if bulk is None else pull_day(bulk)
 
 
 def scan_raw_table(
@@ -619,10 +660,8 @@ def scan_raw_table(
     ['table', 'permaticker', 'ticker']
     """
     directory = raw_table_dir(vendor_root, code)
-    bulk = latest_bulk(vendor_root, code)
-    windows = _later_pulls(vendor_root, code, WINDOW_PREFIX, bulk)
-    updates = _later_pulls(vendor_root, code, UPDATED_PREFIX, bulk)
-    files = [*([] if bulk is None else [bulk]), *windows]
+    bulks, windows, updates = _current_pulls(vendor_root, code)
+    files = bulks + windows
     if not files:
         raise FileNotFoundError(
             f"no raw Sharadar {code!r} table under {directory}; pull it first "

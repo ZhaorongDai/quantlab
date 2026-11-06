@@ -35,10 +35,10 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from quantlab.dataset.sharadar.tables import latest_bulk
 import polars as pl
 import pytest
 
+from quantlab.dataset.sharadar.tables import latest_bulk
 from tests.sharadar_fixtures import (
     TICKERS_COLUMNS,
     FakeTransport,

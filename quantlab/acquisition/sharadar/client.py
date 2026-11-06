@@ -34,7 +34,7 @@ one, otherwise a wait that doubles on each attempt.
 Examples
 --------
 Pull SEP and TICKERS (needs ``SHARADAR_API_KEY`` and the network); each lands
-at ``/data/quantlab/downloads/sharadar/<code>/<code>.parquet``::
+at ``/data/quantlab/downloads/sharadar/<code>/bulk_<pull time>.parquet``::
 
     client = SharadarClient()
     client.bulk_table("sep", "/data/quantlab/downloads")
@@ -68,13 +68,14 @@ from quantlab.acquisition._support.request_policy import (
 )
 from quantlab.acquisition.sharadar.raw_tier import (
     bulk_scratch,
+    finish_interrupted_bulk,
     publish_bulk,
     write_table_watermark,
 )
 from quantlab.dataset.sharadar.tables import (
     VENDOR_DIR,
     SharadarTable,
-    read_watermark,
+    resume_day,
     scan_raw_table,
     table,
     updated_file,
@@ -198,8 +199,7 @@ class SharadarClient:
         published only once the whole zip has been read and checked, in one
         rename (``raw_tier.publish_bulk``), so an interrupted pull leaves the
         previous data in place. Its name says when the pull was asked for
-        (``tables.bulk_file``), and a TICKERS pull also keeps a copy of itself
-        as a snapshot
+        (``tables.bulk_file``), and a TICKERS pull also keeps a copy of itself as a snapshot
         (``tables.tickers_snapshot_file``): a raw file names securities by
         the tickers of its own pull, and is later mapped with the snapshot
         of its run (``quantlab.dataset.sharadar.permatickers``). Snapshots no
@@ -330,6 +330,7 @@ class SharadarClient:
             raise ValueError(f"Sharadar table {code!r} has no date column to window.")
         key = _api_key(code)
         vendor_root = Path(download_dir) / VENDOR_DIR
+        finish_interrupted_bulk(vendor_root, code)
         end = date.fromisoformat(str(through)) if through is not None else vendor_today()
         start = self._window_start(vendor_root, code, end, trading_days)
         frames = []
@@ -413,8 +414,9 @@ class SharadarClient:
             )
         key = _api_key(code)
         vendor_root = Path(download_dir) / VENDOR_DIR
+        finish_interrupted_bulk(vendor_root, code)
         if since is None:
-            since = read_watermark(vendor_root, code)
+            since = resume_day(vendor_root, code)
             if since is None:
                 raise ValueError(
                     f"Sharadar table {code!r} has no watermark under {vendor_root}; "
@@ -466,7 +468,7 @@ class SharadarClient:
     @staticmethod
     def _window_start(vendor_root: Path, code: str, end: date, trading_days: int) -> date:
         """Return the first day of a window: ``trading_days`` raw dates before the watermark."""
-        watermark = read_watermark(vendor_root, code)
+        watermark = resume_day(vendor_root, code)
         if watermark is None:
             raise ValueError(
                 f"Sharadar table {code!r} has no watermark under {vendor_root}; "

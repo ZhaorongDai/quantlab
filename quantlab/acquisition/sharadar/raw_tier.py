@@ -46,6 +46,7 @@ from quantlab.dataset.sharadar.tables import (
     UPDATED_PREFIX,
     WINDOW_PREFIX,
     bulk_file,
+    latest_bulk,
     pull_time,
     raw_files,
     raw_table_dir,
@@ -97,6 +98,17 @@ def bulk_scratch(vendor_root: str | Path, code: str) -> Iterator[Path]:
     code : str
         The table's code.
 
+    Yields
+    ------
+    Path
+        The scratch directory, removed afterwards.
+
+    Raises
+    ------
+    ValueError
+        If the table holds a bulk file ``latest_bulk`` refuses, before anything
+        is downloaded.
+
     Examples
     --------
     >>> import tempfile
@@ -104,12 +116,33 @@ def bulk_scratch(vendor_root: str | Path, code: str) -> Iterator[Path]:
     ...     scratch.is_dir()
     True
     """
+    latest_bulk(vendor_root, code)
     directory = raw_table_dir(vendor_root, code)
     make_directories_durably(directory)
-    for leftover in directory.glob(f"{_SCRATCH_PREFIX}*"):
-        shutil.rmtree(leftover, ignore_errors=True)
+    _remove_scratch(directory)
     with tempfile.TemporaryDirectory(dir=directory, prefix=_SCRATCH_PREFIX) as scratch:
         yield Path(scratch)
+
+
+def _remove_scratch(directory: Path) -> None:
+    """Delete the scratch directories killed pulls left in a table's directory."""
+    for leftover in directory.glob(f"{_SCRATCH_PREFIX}*"):
+        shutil.rmtree(leftover, ignore_errors=True)
+
+
+def finish_interrupted_bulk(vendor_root: str | Path, code: str) -> None:
+    """Remove what a killed bulk pull left: its scratch and the pulls it superseded.
+
+    Readers ignore both, so this only frees the disk. Every pull of a table
+    starts here, since a table refreshed by windows may not see another bulk.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> finish_interrupted_bulk(tempfile.mkdtemp(), "sep")
+    """
+    _remove_scratch(raw_table_dir(vendor_root, code))
+    _remove_superseded(vendor_root, code)
 
 
 def publish_bulk(
@@ -118,11 +151,12 @@ def publish_bulk(
     """Commit a table's bulk pull with one rename, then clean up after it.
 
     Once the file is renamed, readers take it and ignore every older pull, so
-    nothing after the rename has to happen for the data to read correctly. The
-    rest is repeatable: older pulls are deleted, a TICKERS pull keeps a snapshot
-    of itself (``tables.tickers_snapshot_file``), and the TICKERS history is
-    folded and pruned. The bulk file is durable when this returns, so the
-    caller may move the watermark.
+    nothing after the rename has to happen for the data to read correctly. A
+    TICKERS pull keeps a snapshot of itself (``tables.tickers_snapshot_file``)
+    first, so a committed pull always has one to be folded. The rest is
+    repeatable: older pulls are deleted and the TICKERS history is folded and
+    pruned. The bulk file is durable when this returns, so the caller may move
+    the watermark.
 
     Parameters
     ----------
@@ -156,14 +190,14 @@ def publish_bulk(
     ('bulk_20240111T083000000000.parquet', True)
     """
     target = bulk_file(vendor_root, code, pulled_at)
-    partial = scratch / target.name
-    rows.sink_parquet(partial)
-    move_durably(partial, target)  # the commit
-    _remove_superseded(vendor_root, code)
+    finished = scratch / target.name
+    rows.sink_parquet(finished)
     if code == "tickers":
         snapshot = tickers_snapshot_file(vendor_root, pulled_at)
-        shutil.copyfile(target, partial)
-        move_durably(partial, snapshot)
+        shutil.copyfile(finished, scratch / snapshot.name)
+        move_durably(scratch / snapshot.name, snapshot)
+    move_durably(finished, target)  # the commit
+    _remove_superseded(vendor_root, code)
     # A snapshot about to be pruned is kept in the TICKERS history.
     fold_tickers_history(vendor_root)
     prune_tickers_snapshots(vendor_root)

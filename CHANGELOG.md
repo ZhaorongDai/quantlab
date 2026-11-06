@@ -10,6 +10,8 @@ compatibility shims or config migrations.
 
 - `tables.latest_bulk(vendor_root, code)`, the path of a table's newest Sharadar bulk pull, for
   code outside the library that reads it directly.
+- `tables.resume_day(vendor_root, code)`: a table's watermark, or the day of its bulk when a pull
+  was killed before writing one, so the next window or updated pull resumes on its own.
 - `utils.atomic.move_durably`, for a finished file too large to write from memory.
 
 ### Changed
@@ -33,7 +35,9 @@ compatibility shims or config migrations.
 
 - A Sharadar bulk pull commits in one rename (`raw_tier.publish_bulk`). A pull killed after the file
   was replaced left older window and updated pulls overriding the new bulk until the next one, and
-  a kill before its record was written paired the new file with the old pull time.
+  a kill before its record was written paired the new file with the old pull time. A window or
+  updated pull now removes what a killed bulk left, and a TICKERS pull keeps its snapshot before
+  it commits, so a killed one still reaches the TICKERS history.
 - A Massive snapshot or as-of pull is published by one directory rename
   (`raw_tier.stage_snapshot`, `raw_tier.stage_as_of`). Pages used to be renamed one at a time, so a
   pull killed while publishing left part of a snapshot that `read_rest_snapshot` read as whole.

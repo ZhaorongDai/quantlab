@@ -699,7 +699,7 @@ class PermatickerResolver:
 
         Examples
         --------
-        >>> resolver.resolve("/data/downloads/sharadar/sep/bulk_20261016T080000000000.parquet", ["LESL"])
+        >>> resolver.resolve("/d/sharadar/sep/bulk_20261016T080000000000.parquet", ["LESL"])
         {'LESL': 632479}
         """
         path = Path(path)
