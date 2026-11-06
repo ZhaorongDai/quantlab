@@ -4,6 +4,8 @@ quantlab follows [semantic versioning](https://semver.org/). While the version i
 minor release may break the API, the config format or the store layout; there are no
 compatibility shims or config migrations.
 
+## Unreleased
+
 ## 0.3.0 (2026-11-05)
 
 ### Added

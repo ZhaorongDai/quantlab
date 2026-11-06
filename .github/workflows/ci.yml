@@ -1,31 +1,32 @@
 name: CI
 
+# A pull request runs on its merge ref. Pushes run only on main and on release tags, so
+# a branch with an open pull request is not tested twice; run a branch without one by
+# hand (workflow_dispatch).
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Each commit on main has a group of its own: within a group a newer run cancels the
+  # one running and replaces the one pending, which would leave a commit untested.
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 60 }}
-    # Windows is not a supported platform yet: it runs only on a manual dispatch, for
-    # information, and does not fail the workflow.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         # ubuntu matches the Linux training server; macos (arm64) matches the dev host,
         # where the darwin-only paths run (OpenMP guard, KunQuant symbol padding).
-        os: >-
-          ${{ github.event_name == 'workflow_dispatch'
-          && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]')
-          || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+        os: [ubuntu-latest, macos-latest]
     env:
       MPLBACKEND: Agg
     steps:
@@ -42,22 +43,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install libomp
 
-      - name: Put MSVC on PATH (Windows)
-        # KunQuant compiles factor graphs to native code at run time with the host
-        # C++ compiler.
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Install the locked environment
         run: uv sync --locked --dev --all-extras
 
       - name: Test suite
-        # test_crsp_rebuild_measurements.py rebuilds the real CRSP store under data/;
-        # it is a local gate on real data, not a unit test.
-        # Windows prints each test name, so a failure or a hang can be located.
-        run: >-
-          uv run pytest --ignore=tests/test_crsp_rebuild_measurements.py
-          ${{ matrix.os == 'windows-latest' && '-v --durations=20' || '-q' }}
+        run: uv run pytest -n auto -q
 
       - name: API doctests
         run: uv run pytest -q --doctest-modules quantlab/api/
+
+  package:
+    uses: ./.github/workflows/package.yml

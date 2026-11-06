@@ -1,0 +1,43 @@
+name: Package
+
+# Builds the distributions from the checked-out commit, so nothing outside it (untracked
+# files, a stale egg-info) can reach the package, checks them, and imports every module
+# from the installed wheel outside the repository. CI runs it on every change, because a
+# version on PyPI cannot be replaced; the release publishes the artifact it uploads.
+on:
+  workflow_call:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: Build
+        run: uv build --out-dir dist
+
+      - name: Check metadata
+        run: uvx twine check --strict dist/*
+
+      - name: Import every module from the installed wheel
+        run: |
+          uv venv --python 3.13 /tmp/wheel-env
+          uv pip install --python /tmp/wheel-env/bin/python "$(ls dist/*.whl)[all]"
+          cd /tmp
+          /tmp/wheel-env/bin/python -c "
+          import importlib, pkgutil, quantlab
+          names = [m.name for m in pkgutil.walk_packages(quantlab.__path__, 'quantlab.')]
+          for name in names:
+              importlib.import_module(name)
+          print(len(names), 'modules imported from', quantlab.__file__)
+          "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
