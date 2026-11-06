@@ -11,9 +11,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Every commit on main keeps its run, so a later push cannot leave one untested.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Each commit on main has a group of its own: within a group a newer run cancels the
+  # one running and replaces the one pending, which would leave a commit untested.
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -53,25 +54,3 @@ jobs:
 
   package:
     uses: ./.github/workflows/package.yml
-
-  changelog:
-    # A change to the library is listed in the CHANGELOG, or labelled no-changelog.
-    if: >-
-      github.event_name == 'pull_request'
-      && !contains(github.event.pull_request.labels.*.name, 'no-changelog')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: The CHANGELOG lists a change to the library
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          changed=$(git diff --name-only "$BASE...$HEAD")
-          if echo "$changed" | grep -q '^quantlab/' && ! echo "$changed" | grep -qx 'CHANGELOG.md'; then
-            echo "::error::quantlab/ changed without a CHANGELOG.md entry; add one under Unreleased, or label the pull request no-changelog"
-            exit 1
-          fi

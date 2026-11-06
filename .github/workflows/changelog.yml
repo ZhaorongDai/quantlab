@@ -1,0 +1,32 @@
+name: Changelog
+
+# A change to the library is listed in the CHANGELOG, or labelled no-changelog. Its own
+# workflow, so adding or removing the label reruns this check and not the test suite.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changelog:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'no-changelog') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: The CHANGELOG lists a change to the library
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # --no-renames lists a file moved out of quantlab/ under its old path too.
+          changed=$(git diff --no-renames --name-only "$BASE...$HEAD")
+          if echo "$changed" | grep -q '^quantlab/' && ! echo "$changed" | grep -qx 'CHANGELOG.md'; then
+            echo "::error::quantlab/ changed without a CHANGELOG.md entry; add one under Unreleased, or label the pull request no-changelog"
+            exit 1
+          fi
