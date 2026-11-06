@@ -14,6 +14,7 @@ tracker leaves nothing to read, and its reader asserts exactly that.
 import dataclasses
 import json
 import math
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -56,10 +57,39 @@ def _merged(config, updates):
     return merged
 
 
+def _wandb_log_records(path):
+    """Yield each record's bytes from a ``.wandb`` log.
+
+    wandb has no public reader. The file is a 7-byte header, then the LevelDB
+    log format: 32 KiB blocks of records, each with a 7-byte header (checksum,
+    length, type), a record split across blocks by the types FIRST, MIDDLE and
+    LAST, and a block's last bytes left as padding when no header fits.
+    """
+    block_size, header_size = 32768, 7
+    full, first, middle, last = 1, 2, 3, 4
+    content = path.read_bytes()
+    position, parts = header_size, []
+    while position + header_size <= len(content):
+        room = block_size - position % block_size
+        if room < header_size:
+            position += room
+            continue
+        length, kind = struct.unpack_from("<HB", content, position + 4)
+        position += header_size
+        data = content[position : position + length]
+        position += length
+        if kind == full:
+            yield data
+        elif kind in (first, middle):
+            parts.append(data)
+        elif kind == last:
+            yield b"".join(parts) + data
+            parts = []
+
+
 def _read_wandb(tracker, workdir):
     import wandb
     from wandb.proto import wandb_internal_pb2 as pb
-    from wandb.sdk.internal import datastore
 
     # ``finish`` returns before wandb-core has written the log, which may still
     # be its 7-byte header; stopping the service waits for the write.
@@ -67,11 +97,9 @@ def _read_wandb(tracker, workdir):
     runs = []
     for run_dir in sorted((workdir / "wandb").glob("offline-run-*")):
         (log,) = run_dir.glob("*.wandb")
-        store = datastore.DataStore()
-        store.open_for_scan(str(log))
         observed = {"steps": [], "summary": {}, "config": {}, "tables": [], "files": []}
         history_keys = set()
-        while (data := store.scan_data()) is not None:
+        for data in _wandb_log_records(log):
             record = pb.Record()
             record.ParseFromString(data)
             kind = record.WhichOneof("record_type")
