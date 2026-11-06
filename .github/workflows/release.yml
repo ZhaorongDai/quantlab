@@ -65,7 +65,9 @@ jobs:
     # Only a tag push: a manual run started on a tag is still a check.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    environment: pypi
+    environment:
+      name: pypi
+      url: https://pypi.org/project/quantlab-py/
     permissions:
       id-token: write
     steps:
