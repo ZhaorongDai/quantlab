@@ -4,7 +4,7 @@ quantlab follows [semantic versioning](https://semver.org/). While the version i
 minor release may break the API, the config format or the store layout; there are no
 compatibility shims or config migrations.
 
-## Unreleased
+## 0.3.0 (2026-11-05)
 
 ### Added
 
@@ -53,9 +53,47 @@ compatibility shims or config migrations.
   `price_volume_us3000_xgb.py` trains a walk-forward XGBoost on them and
   backtests top-N and TopkDropout books over the test folds (`run_cv`), without a risk
   model.
+- `FactorStoreDataset` (`quantlab.dataset.factor_store`, config `FactorStoreDatasetConfig`):
+  reads a factor store's Zarr panel as panel variables, under an optional prefix, so stored
+  daily statistics merge beside prices. It shifts nothing: a store's value at day t must be
+  known at t's close.
+- `DatasetView` (`quantlab.dataset.view`), the root class of dataset views: with one input it
+  answers every read member but `panel` from that input, and with several a member the view
+  does not define raises. `RosterDataset`, `PermatickerDataset`, `MergedDataset` and
+  `BadPrintMaskedDataset` inherit it.
+- `FactorKunQuant.graph()`, the KunQuant graph a factor compiles, and
+  `quantlab.factor.kunquant_nan`, the NaN-preserving stand-ins (`SetInfOrNanToValue`, `Clip`,
+  `Max`, `Min`, `Select`, `missing_bars_only`), as public API.
+- `examples/data_update/`: `sharadar_data.py` and `massive_data.py` download a vendor's data
+  and build its stores on the first run and append the new days on a later one, so a daily
+  cron job is the same command.
+
+### Removed
+
+- Dataset resampling. Dataset configs lose `resample_freq` and `resample_how`, and
+  `resample()`, resampling on read and the sibling resampled store are gone;
+  `resample_labels` and factor resampling stay. A saved config holding a removed field is
+  refused with the unknown-key error.
+- `sharadar_sp500_1d`: `build_stores` and `update_stores` no longer write the S&P 500 roster
+  price store. Read the whole-market SEP store on a roster instead.
+- The examples whose data is gone: `examples/wrds_us_equity/`, and
+  `sharadar_us_equity/sp500_xgb.py`, `sp500_xgb_mvo.py` and `us3000_h1_mvo.py`.
 
 ### Changed
 
+- The start date, end date, symbols and kwargs of a dataset config move to
+  `RawDatasetConfig`, so `BaseDatasetConfig` holds only the store path and the name, and
+  `FrameDatasetConfig` loses the build fields.
+- A dataset with a delisting rule of its own declares the symbols it judges in
+  `_own_delisting_symbols`, and a view applies the rule only to those. A leaf that overrides
+  `delisting_bars` without it raises `TypeError` when its class is defined.
+- The factor report treats infinite values as missing, puts tied factor values in the bucket
+  of their average rank, and sorts the panels by timestamp. Without ties or infinite values
+  the results are unchanged. A discrete factor can now leave a bucket empty: a bucket that is
+  always empty has NaN cumulative and long-short metrics.
+- `XrBackend.resample` groups with xarray instead of a pandas round trip, about 5x faster from
+  minute bars to `"1d"` and about 2x slower to many short bars such as `"5m"`. NaN semantics
+  are unchanged; float sums may differ in the last bits.
 - `cache_dir` moves off `ConstituentDatasetConfig` onto a new subclass,
   `FileConstituentDatasetConfig` (`quantlab.dataset.config`), where it is required. The
   classes that read their membership source from local files take it
@@ -76,6 +114,23 @@ compatibility shims or config migrations.
 - A first bulk pull of Sharadar's SF2 failed: the vendor now writes `transactionvalue` with a
   decimal point (`12507.0`). It is parsed as a float and stored as the same `Int64`, so raw
   files already on disk need no change.
+- `BarraStyle` with `risk_free_symbol` answers `calendar`, `bar_before` and `bar_after` on the
+  bars of its price inputs. It used to include dates only the rate has, so a chunked compute
+  left uninitialised rows for them and warm-up counted them. `BarraStyle.resample` and a
+  config with `resample_freq` are refused.
+- A view keeps a delisting rule of its input: `MergedDataset` passes on the rule of each input,
+  so `BadPrintMaskedDataset` no longer drops it, and a view over a plain input no longer
+  delists a symbol whose prices move to another input.
+- `write_json_atomically` gives its file the mode a plain write would, as
+  `write_parquet_atomically` does. Sidecars rewritten by the daily update became owner-only,
+  and other users' reads of shared stores failed with `PermissionError`. Both writers set the
+  mode through the open descriptor.
+- Processes compiling the same KunQuant graph no longer remove each other's intact cache entry,
+  which made a third process fail with "cannot be loaded". Entries are published under a
+  per-key lock.
+- A release panel whose staleness column is not one of its variables can widen again:
+  `MassiveTenKChangesDataset` raised `KeyError('release_date')` the first time an update brought
+  a new filer.
 
 ## 0.2.0 (2026-10-20)
 
