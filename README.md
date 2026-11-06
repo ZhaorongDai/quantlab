@@ -6,10 +6,14 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/ZhaorongDai/quantlab/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/ZhaorongDai/quantlab/ci.yml?branch=main&label=ci"></a>
   <a href="https://zhaorongdai.github.io/quantlab/"><img alt="Docs" src="https://img.shields.io/badge/docs-online-3776ab"></a>
   <a href="https://pypi.org/project/quantlab-py/"><img alt="PyPI" src="https://img.shields.io/pypi/v/quantlab-py?label=pypi&color=3776ab"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-3776ab?logo=python&logoColor=white"></a>
+  <a href="https://zhaorongdai.github.io/quantlab/getting-started/installation.html"><img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-3776ab"></a>
   <a href="https://github.com/ZhaorongDai/quantlab/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <a href="https://github.com/ZhaorongDai/quantlab/blob/main/CHANGELOG.md"><img alt="Changelog" src="https://img.shields.io/badge/changelog-latest-3776ab"></a>
+  <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange">
   <a href="https://github.com/Menooker/KunQuant"><img alt="Factors: KunQuant" src="https://img.shields.io/badge/factors-KunQuant-0ea5e9"></a>
   <a href="https://vectorbt.dev/"><img alt="Backtest: vectorbt" src="https://img.shields.io/badge/backtest-vectorbt-0ea5e9"></a>
 </p>
