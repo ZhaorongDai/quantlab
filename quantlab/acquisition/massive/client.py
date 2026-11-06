@@ -68,7 +68,6 @@ from __future__ import annotations
 import gzip
 import json
 import os
-import shutil
 import threading
 import time
 import zlib
@@ -94,6 +93,8 @@ from quantlab.acquisition._support.request_policy import (
 )
 from quantlab.acquisition.massive.rest import ENDPOINTS, RestEndpoint
 from quantlab.acquisition.massive.raw_tier import (
+    stage_as_of,
+    stage_snapshot,
     write_day_file_watermark,
     write_rest_page,
     write_rest_watermark,
@@ -108,9 +109,7 @@ from quantlab.dataset.massive.raw import (
     read_rest_watermark,
     read_watermark,
     rest_as_of_days,
-    rest_as_of_dir,
     rest_page_file,
-    rest_pending_dir,
     s3_key,
 )
 from quantlab.utils.atomic import write_json_atomically
@@ -944,7 +943,8 @@ class MassiveClient:
         York, so today's and future rows (a split announced ahead) are asked
         for again by the next pull, and it never moves back. A snapshot
         endpoint (``date_field`` ``None``) is pulled whole and keeps no
-        watermark.
+        watermark; it and a session of an as-of endpoint appear in one step
+        (``raw_tier.stage_snapshot``, ``raw_tier.stage_as_of``).
 
         Parameters
         ----------
@@ -1091,26 +1091,19 @@ class MassiveClient:
         if holds(watermark, today):
             logger.info(f"Massive: {endpoint.name}: today's snapshot ({today}) is already kept.")
             return RestPull(endpoint.name, 0, 0, watermark)
-        pending = rest_pending_dir(vendor_root, endpoint.name)
-        shutil.rmtree(pending, ignore_errors=True)  # an interrupted snapshot's pages
-        staged: list[Path] = []
+        staged = stage_snapshot(vendor_root, endpoint.name, pulled_at)
         rows = pages = 0
         for records in self._pages(endpoint.url, {**endpoint.params, "limit": str(endpoint.limit)}):
             pages += 1
             if records:
-                final = rest_page_file(vendor_root, endpoint.name, pulled_at, len(staged) + 1)
-                write_rest_page(pending / final.name, records)
-                staged.append(final)
+                staged.add_page(records)
                 rows += len(records)
-        for final in staged:
-            final.parent.mkdir(parents=True, exist_ok=True)
-            (pending / final.name).replace(final)
-        shutil.rmtree(pending, ignore_errors=True)
+        files = staged.commit()
         if endpoint.once_a_day:
             write_rest_watermark(vendor_root, endpoint.name, "snapshot", today)
             watermark = today
-        logger.info(f"Massive: {endpoint.name}: snapshot of {rows:,} row(s) in {len(staged)} page file(s).")
-        return RestPull(endpoint.name, pages, rows, watermark, tuple(staged))
+        logger.info(f"Massive: {endpoint.name}: snapshot of {rows:,} row(s) in {len(files)} page file(s).")
+        return RestPull(endpoint.name, pages, rows, watermark, files)
 
     def _pull_as_of(
         self, endpoint: RestEndpoint, vendor_root: Path, end: date | None, today: date | None
@@ -1124,32 +1117,19 @@ class MassiveClient:
         sessions = _sessions(start, cap)
         logger.info(f"Massive: pulling {endpoint.name} as of {len(sessions)} session(s) from {start} "
                     f"(watermark {watermark}).")
-        pending = rest_pending_dir(vendor_root, endpoint.name)
         pages = rows = 0
         files: list[Path] = []
         for day in sessions:
-            pulled_at = datetime.now(UTC)
-            staged = pending / day.isoformat()
-            shutil.rmtree(staged, ignore_errors=True)  # an interrupted pull of this session
-            names: list[str] = []
+            staged = stage_as_of(vendor_root, endpoint.name, day, datetime.now(UTC))
             params = {endpoint.as_of_param: day.isoformat(), **endpoint.params, "limit": str(endpoint.limit)}
             for records in self._pages(endpoint.url, params):
                 pages += 1
                 if records:
-                    name = rest_page_file(vendor_root, endpoint.name, pulled_at, len(names) + 1).name
-                    write_rest_page(staged / name, records)
-                    names.append(name)
+                    staged.add_page(records)
                     rows += len(records)
-            final = rest_as_of_dir(vendor_root, endpoint.name, day)
-            if names:
-                final.mkdir(parents=True, exist_ok=True)
-            for name in names:
-                (staged / name).replace(final / name)
-                files.append(final / name)
-            shutil.rmtree(staged, ignore_errors=True)
+            files.extend(staged.commit())
             write_rest_watermark(vendor_root, endpoint.name, endpoint.as_of_param, day)
             watermark = day
-        shutil.rmtree(pending, ignore_errors=True)
         logger.info(f"Massive: {endpoint.name}: {rows:,} row(s) in {pages} page(s); watermark {watermark}.")
         return RestPull(endpoint.name, pages, rows, watermark, tuple(files))
 

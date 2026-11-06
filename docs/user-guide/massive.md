@@ -108,7 +108,9 @@ it wrote. {py:func}`~quantlab.dataset.massive.raw.read_rest_records` keeps each 
 copy. The filing tables have no record id, so they are read with `key=None` (a record is named by
 all its fields); snapshots are read with
 {py:func}`~quantlab.dataset.massive.raw.read_rest_snapshot`, and the reference tickers with
-{py:func}`~quantlab.dataset.massive.raw.read_rest_as_of`.
+{py:func}`~quantlab.dataset.massive.raw.read_rest_as_of`. A snapshot, or a session of the reference
+tickers, appears in one step: a pull killed part way leaves the previous data whole, and the next
+pull starts over.
 
 {py:func}`quantlab.acquisition.massive.refresh.refresh_raw_tier` pulls every endpoint (or those of
 `endpoints=`), tries each one even when another fails, and lists the failed ones in its result's

@@ -141,12 +141,14 @@ DISCLOSURES = [
 
 
 def _massive(massive: Path, through: date, disclosures: list[dict]) -> None:
-    from quantlab.acquisition.massive.raw_tier import write_rest_page, write_rest_watermark
+    from quantlab.acquisition.massive.raw_tier import stage_snapshot, write_rest_page, write_rest_watermark
     from quantlab.dataset.massive.raw import rest_page_file
 
     pulled = datetime(2024, 3, 12, 1, tzinfo=UTC)
     write_rest_page(rest_page_file(massive, "8k_disclosures", pulled, 1), disclosures)
-    write_rest_page(rest_page_file(massive, "disclosure_taxonomy", pulled, 1), TAXONOMY)
+    staged = stage_snapshot(massive, "disclosure_taxonomy", datetime.now(UTC))
+    staged.add_page(TAXONOMY)
+    staged.commit()
     write_rest_watermark(massive, "8k_disclosures", "filing_date", through)
 
 

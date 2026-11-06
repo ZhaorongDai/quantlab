@@ -1,7 +1,8 @@
-"""Atomic JSON and parquet file writes.
+"""Atomic JSON, JSON-lines and parquet file writes.
 
 Every JSON sidecar quantlab persists (resume ledgers, acquisition watermarks,
-failure manifests) goes through ``write_json_atomically``, and every parquet
+failure manifests) goes through ``write_json_atomically``, every REST page
+through ``write_jsonl_atomically``, and every parquet
 file written whole (raw vendor pulls, the Ticker map's days) through
 ``write_parquet_atomically``. The payload is
 written to a temporary file in the destination's own directory and then
@@ -93,6 +94,61 @@ def _plain_mode() -> int:
 #: creates it owner-only and ``os.replace`` keeps that mode, while a file in the
 #: shared data tier must stay as readable as a plain write leaves it.
 _PLAIN_MODE = _plain_mode()
+
+
+def write_jsonl_atomically(path: str | Path, records) -> None:
+    """Write ``records`` to ``path``, one JSON object per line, with an atomic replace.
+
+    Keys are sorted and non-ASCII text is kept, so a record's line is the same
+    on every pull. The file is synced before the rename, as ``write_json_atomically``
+    does, so a power loss cannot publish an empty file.
+
+    Parameters
+    ----------
+    path : str | Path
+        Destination file; its directory is created if missing.
+    records : iterable of dict
+        The records, written in order.
+
+    Examples
+    --------
+    >>> write_jsonl_atomically("raw/page.jsonl", [{"ticker": "AAPL"}])  # doctest: +SKIP
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=str(destination.parent),
+        prefix=destination.name + ".",
+        suffix=".tmp",
+        delete=False,
+    )
+    try:
+        with handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+            handle.flush()
+            os.fchmod(handle.fileno(), _PLAIN_MODE)
+            os.fsync(handle.fileno())
+        os.replace(handle.name, destination)
+    except BaseException:
+        Path(handle.name).unlink(missing_ok=True)
+        raise
+
+
+def sync_directory(path: str | Path) -> None:
+    """Make the entries of directory ``path`` durable, such as a rename into it.
+
+    Examples
+    --------
+    >>> sync_directory("raw")  # doctest: +SKIP
+    """
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def write_parquet_atomically(path: str | Path, frame) -> None:
