@@ -58,6 +58,18 @@ depends on the vendor's API, and the descriptor says it in two fields:
   whose raw tier is whole tables or daily files leaves both `None`. A capability can carry
   its own pair, so one account can serve two products.
 
+### A Massive pull shape
+
+A Massive REST endpoint names how it is pulled through its config class. A new shape is one more
+class in `quantlab/acquisition/massive/shapes.py`: subclass
+{py:class}`~quantlab.acquisition.massive.shapes.RestEndpoint`, give it the fields the shape uses,
+and implement `pull`. Read pages with
+{py:meth}`PullRun.pages <quantlab.acquisition.massive.shapes.PullRun.pages>`, which follows every
+`next_url` and takes the key out of it, and land them through
+`quantlab.acquisition.massive.raw_tier`.
+{py:meth}`MassiveClient.pull <quantlab.acquisition.massive.client.MassiveClient.pull>` and
+{py:func}`~quantlab.acquisition.massive.refresh.refresh_raw_tier` need no change.
+
 ### A symbol-batched vendor
 
 {py:class}`~quantlab.acquisition.symbol_batch.SymbolBatchAcquisition` owns everything but

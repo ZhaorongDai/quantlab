@@ -1,14 +1,13 @@
 """The Massive REST endpoints ``MassiveClient.pull`` keeps in the raw tier.
 
-An endpoint is one ``RestEndpoint``: its name (the raw tier's directory,
-``quantlab.dataset.massive.raw.rest_dir``), its URL, the date field the
-pull pages on and the earliest day it asks for. ``MassiveClient.pull``
-asks for ``<date_field>.gte`` the day after the endpoint's watermark (less
-``overlap_days``), sorted by the date field ascending, follows every
-``next_url``, writes each page as the vendor returned it and moves the
-watermark after each page; the endpoint's own filters go in ``params``.
-A new endpoint is one more entry of ``ENDPOINTS`` (docs/user-guide/massive.md, "REST
-pulls").
+An endpoint is one config object of its pull shape
+(``quantlab.acquisition.massive.shapes``): a ``DatedEndpoint``, a
+``WindowedEndpoint``, a ``SnapshotEndpoint``, an ``AsOfEndpoint`` or an
+``IdsEndpoint``, with its name (the raw tier's directory,
+``quantlab.dataset.massive.raw.rest_dir``), its URL and the fields of that
+shape. A new endpoint is one more entry of ``ENDPOINTS`` (docs/user-guide/massive.md,
+"REST pulls"). ``CONDITIONS`` stands apart: a day conversion needs it, so it is
+pulled beside the day files (``MassiveClient.condition_table``), not by a refresh.
 
 Examples
 --------
@@ -20,147 +19,33 @@ Examples
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date
+
+from quantlab.acquisition.massive.shapes import (
+    AsOfEndpoint,
+    ConditionTableEndpoint,
+    DatedEndpoint,
+    DatedSort,
+    IdsEndpoint,
+    RestEndpoint,
+    SnapshotEndpoint,
+    WindowedEndpoint,
+)
 
 #: The host of every REST endpoint.
 REST_HOST = "https://api.massive.com"
 
+#: The stock condition table.
+CONDITIONS = ConditionTableEndpoint(
+    "conditions", f"{REST_HOST}/v3/reference/conditions", params={"asset_class": "stocks"}, limit=1000
+)
 
-@dataclass(frozen=True)
-class RestEndpoint:
-    """One REST endpoint pulled into the raw tier.
-
-    Parameters
-    ----------
-    name : str
-        The endpoint's directory under ``<download-dir>/massive/rest/``.
-    url : str
-        The endpoint's URL, without a query.
-    date_field : str or None
-        The ``yyyy-mm-dd`` (or ISO timestamp) field the pull filters with
-        ``.gte``/``.lte`` and sorts on; ``None`` for a snapshot endpoint,
-        pulled whole every time without a watermark.
-    earliest : date, default 1970-01-01
-        The first day a pull without a watermark asks for.
-    params : dict, default empty
-        Fixed query parameters of every first page (filters of the
-        endpoint's own).
-    limit : int, default 5000
-        Rows per page; the endpoint's maximum.
-    overlap_days : int, default 0
-        Days before the watermark asked for again on every pull, for rows a
-        vendor adds or revises after their day.
-    key : str or None, default "id"
-        The field identifying a record (``raw.read_rest_records``); ``None``
-        when the records have no such field, so a record is identified by
-        all its fields.
-    tiebreak : str or None, default "ticker"
-        A second sort field, so pages of one day are in a stable order.
-    once_a_day : bool, default False
-        For a snapshot endpoint: keep one snapshot a day. A pull on a day
-        (in New York) that already has one asks for nothing, and the
-        watermark is the day of the newest snapshot.
-    as_of_param : str or None, default None
-        For a snapshot endpoint that serves the table as of a past day: the
-        query parameter naming that day (``date`` for the reference
-        tickers). The table is then pulled whole as of every XNYS session
-        after the watermark, from ``earliest``, through yesterday in New
-        York (or ``end``), each session kept apart
-        (``raw.read_rest_as_of``); the watermark is the last session kept.
-    ids_from : str or None, default None
-        For an endpoint served one id at a time (``{id}`` in ``url``, the
-        ticker events): the as-of endpoint whose tables give the ids. A
-        pull reads that endpoint's sessions after this one's watermark and
-        asks for every id (``id_field``) with no record kept yet, or whose
-        value of the source's ``key`` (the ticker) changed on one of them,
-        against the session before; it writes one record per id (the vendor's
-        ``results`` object) and ``limit`` records a page file, and moves the
-        watermark to the last session read once every id is asked. An id
-        the vendor does not know (404) is skipped, and asked again with the
-        next new session.
-    id_field : str, default "composite_figi"
-        The source records' field giving an ``ids_from`` endpoint's ids.
-    order_param : bool, default False
-        Give the order in its own ``order`` parameter (``sort=<date
-        field>&order=asc``), as the ``/vX/reference`` IPOs and the news take it, instead
-        of ``sort=<date field>.asc,<tiebreak>.asc``.
-    timestamped : bool, default False
-        ``date_field`` holds a timestamp, not a day (news' ``published_utc``):
-        a pull bounded by ``end`` asks for ``<date_field>.lt`` the day after
-        it, so the whole of ``end`` is kept.
-    window_days : int or None, default None
-        For an endpoint that filters on ``date_field`` but will not sort on
-        it (the 10-K sections sort on ``period_end`` only): the pull asks
-        one window of this many days at a time, with no ``sort``, and moves
-        the watermark to a window's last day only once all its pages are in,
-        since its rows come in no date order. An interrupted window is asked
-        again whole.
-
-    Examples
-    --------
-    >>> RestEndpoint("short_volume", f"{REST_HOST}/stocks/v1/short-volume", "date").name
-    'short_volume'
-    """
-
-    name: str
-    url: str
-    date_field: str | None
-    earliest: date = date(1970, 1, 1)
-    params: dict[str, str] = field(default_factory=dict)
-    limit: int = 5000
-    overlap_days: int = 0
-    key: str | None = "id"
-    tiebreak: str | None = "ticker"
-    once_a_day: bool = False
-    as_of_param: str | None = None
-    ids_from: str | None = None
-    id_field: str = "composite_figi"
-    order_param: bool = False
-    timestamped: bool = False
-    window_days: int | None = None
-
-    def __post_init__(self) -> None:
-        if self.ids_from is not None and "{id}" not in self.url:
-            raise ValueError(f"Massive REST endpoint {self.name!r}: an ids_from endpoint needs {{id}} in its url.")
-        for option in ("once_a_day", "as_of_param", "ids_from"):
-            if getattr(self, option) and self.date_field is not None:
-                raise ValueError(f"Massive REST endpoint {self.name!r}: {option} is for a snapshot endpoint.")
-        if self.window_days is not None and (self.date_field is None or self.timestamped or self.window_days < 1):
-            raise ValueError(
-                f"Massive REST endpoint {self.name!r}: window_days is a positive day count for a day date_field."
-            )
-
-    @property
-    def sort(self) -> str | None:
-        """The ``sort`` parameter: the date field ascending, then the tiebreak.
-
-        Examples
-        --------
-        >>> ENDPOINTS["splits"].sort
-        'execution_date.asc,ticker.asc'
-        """
-        if self.date_field is None:
-            return None
-        if self.order_param:
-            return self.date_field
-        return ",".join(f"{column}.asc" for column in (self.date_field, self.tiebreak) if column)
-
-    @property
-    def sort_params(self) -> dict[str, str]:
-        """The query parameters ordering a date-ranged pull: ``sort``, and ``order`` with ``order_param``.
-
-        Examples
-        --------
-        >>> ENDPOINTS["splits"].sort_params
-        {'sort': 'execution_date.asc,ticker.asc'}
-        >>> ENDPOINTS["ipos"].sort_params
-        {'sort': 'listing_date', 'order': 'asc'}
-        """
-        if self.date_field is None or self.window_days is not None:
-            return {}
-        return {"sort": self.sort, "order": "asc"} if self.order_param else {"sort": self.sort}
-
+# Every stock ticker listed as of each session (date=), from the first day of the Ticker
+# map's Day aggregates; the inputs of a later FIGI version of the Ticker map.
+_TICKERS = AsOfEndpoint(
+    "tickers", f"{REST_HOST}/v3/reference/tickers", "date", date(2016, 10, 10),
+    params={"market": "stocks", "sort": "ticker", "order": "asc"}, limit=1000,
+)
 
 #: Every endpoint the raw tier keeps, by name.
 ENDPOINTS: dict[str, RestEndpoint] = {
@@ -168,40 +53,39 @@ ENDPOINTS: dict[str, RestEndpoint] = {
     for endpoint in (
         # Splits (and stock dividends) on their execution date, from 1978; the current
         # endpoint, not the deprecated /v3/reference/splits.
-        RestEndpoint(
+        DatedEndpoint(
             "splits", f"{REST_HOST}/stocks/v1/splits", "execution_date", date(1978, 1, 1), overlap_days=7
         ),
         # Cash dividends on their ex-date, from 2000-08; a dividend is declared before its
         # ex-date, so a pull past the watermark (always before today) reaches every new one.
-        RestEndpoint(
+        DatedEndpoint(
             "dividends", f"{REST_HOST}/stocks/v1/dividends", "ex_dividend_date", date(2000, 1, 1), overlap_days=7
         ),
         # Every news article (#357) on its publication time, from 2016-06. The endpoint sorts
-        # with sort=<field> and order=asc (order_param); a day is read again for articles
-        # indexed late.
-        RestEndpoint(
+        # with sort=<field> and order=asc; a day is read again for articles indexed late.
+        DatedEndpoint(
             "news", f"{REST_HOST}/v2/reference/news", "published_utc", date(2016, 6, 1),
-            limit=1000, overlap_days=1, tiebreak=None, order_param=True, timestamped=True,
+            limit=1000, overlap_days=1, sort=DatedSort.ORDER_PARAM, timestamped=True,
         ),
         # FINRA short interest per settlement date, twice a month from 2017-12 (#355). A
         # release is published about 8 trading days after its settlement date, when the
         # watermark has passed it, so each pull asks again for the last 21 days. The
         # records have no id: a record is all its fields, the panel keeps the newest per
         # ticker and settlement date.
-        RestEndpoint(
+        DatedEndpoint(
             "short_interest", f"{REST_HOST}/stocks/v1/short-interest", "settlement_date", date(2017, 12, 1),
-            limit=50000, overlap_days=21, key=None,
+            limit=50000, overlap_days=21,
         ),
         # Raw-only tables (#360): filing text and second sources, on the filing date. Their
         # rows have no id of their own (a 13-F has one row per holding, a Form 4 one per
-        # line), so a record is identified by all its fields (key None); the sort is on the
-        # filing date alone. The 10-K sections refuse that sort (only period_end), so they
-        # are pulled a month of filing dates at a time, unsorted.
-        RestEndpoint("10k_sections", f"{REST_HOST}/stocks/filings/10-K/vX/sections", "filing_date",
-                     date(1993, 1, 1), limit=100, overlap_days=7, key=None, tiebreak=None, window_days=31),
+        # line), so a record is identified by all its fields; the sort is on the filing date
+        # alone. The 10-K sections refuse that sort (only period_end), so they are pulled a
+        # month of filing dates at a time, unsorted.
+        WindowedEndpoint("10k_sections", f"{REST_HOST}/stocks/filings/10-K/vX/sections", "filing_date",
+                         date(1993, 1, 1), limit=100, overlap_days=7, window_days=31),
         *(
-            RestEndpoint(name, f"{REST_HOST}{path}", "filing_date", date(1993, 1, 1),
-                         limit=limit, overlap_days=7, key=None, tiebreak=None)
+            DatedEndpoint(name, f"{REST_HOST}{path}", "filing_date", date(1993, 1, 1),
+                          limit=limit, overlap_days=7, sort=DatedSort.DATE)
             for name, path, limit in (
                 ("8k_text", "/stocks/filings/8-K/vX/text", 100),
                 ("risk_factors", "/stocks/filings/vX/risk-factors", 50000),
@@ -212,46 +96,37 @@ ENDPOINTS: dict[str, RestEndpoint] = {
         ),
         # The Float table holds only each ticker's latest free float, so a snapshot of the
         # whole table is kept every day and the history accumulates from the first pull.
-        RestEndpoint("float", f"{REST_HOST}/stocks/vX/float", None, key="ticker", once_a_day=True),
-        # Every stock ticker listed as of each session (date=), from the first day of the
-        # Ticker map's Day aggregates; the inputs of a later FIGI version of the Ticker map.
-        RestEndpoint(
-            "tickers", f"{REST_HOST}/v3/reference/tickers", None, date(2016, 10, 10),
-            params={"market": "stocks", "sort": "ticker", "order": "asc"}, limit=1000, key="ticker",
-            as_of_param="date",
-        ),
+        SnapshotEndpoint("float", f"{REST_HOST}/stocks/vX/float"),
+        _TICKERS,
         # IPOs on their listing date, from 2008-12 (#359). Every status is kept raw
         # (withdrawn, pending); the IPO panel reads the listed ones. The records have no
         # id and a revision (pending -> new -> history) changes their fields, so a record
         # is identified by all of them and the panel keeps each IPO's newest copy.
-        RestEndpoint(
+        DatedEndpoint(
             "ipos", f"{REST_HOST}/vX/reference/ipos", "listing_date", date(2008, 12, 1),
-            limit=1000, overlap_days=7, key=None, tiebreak=None, order_param=True,
+            limit=1000, overlap_days=7, sort=DatedSort.ORDER_PARAM,
         ),
         # Each composite FIGI's ticker changes (experimental vX endpoint, one FIGI a call),
         # asked for every FIGI of the reference tickers once and again when its ticker changes.
-        RestEndpoint(
-            "ticker_events", f"{REST_HOST}/vX/reference/tickers/{{id}}/events", None, limit=1000,
-            key="composite_figi", ids_from="tickers",
+        IdsEndpoint(
+            "ticker_events", f"{REST_HOST}/vX/reference/tickers/{{id}}/events", _TICKERS, limit=1000,
+            key="composite_figi",
         ),
         # Daily short volume per ticker (FINRA's files, totals and per venue), from 2024-02-06
         # (#356). A record has no id (one per ticker and day), so it is identified by all its
         # fields and the short volume panel keeps the newest copy of each (ticker, date).
-        RestEndpoint(
+        DatedEndpoint(
             "short_volume", f"{REST_HOST}/stocks/v1/short-volume", "date", date(2024, 2, 6),
-            limit=50000, overlap_days=7, key=None,
+            limit=50000, overlap_days=7,
         ),
         # 8-K disclosures (#358), one record per categorised disclosure of a filing, from
         # 2020-01; no id field (a filing has several), sorted on the filing date alone.
-        RestEndpoint(
+        DatedEndpoint(
             "8k_disclosures", f"{REST_HOST}/stocks/filings/8-K/vX/disclosures", "filing_date",
-            date(2020, 1, 1), limit=1000, overlap_days=7, key=None, tiebreak=None,
+            date(2020, 1, 1), limit=1000, overlap_days=7, sort=DatedSort.DATE,
         ),
         # The disclosure taxonomy (#358): primary, secondary and tertiary categories with a
         # description; a small table kept as one snapshot a day.
-        RestEndpoint(
-            "disclosure_taxonomy", f"{REST_HOST}/stocks/taxonomies/vX/disclosures", None,
-            limit=1000, key=None, once_a_day=True,
-        ),
+        SnapshotEndpoint("disclosure_taxonomy", f"{REST_HOST}/stocks/taxonomies/vX/disclosures", limit=1000),
     )
 }

@@ -269,7 +269,7 @@ def test_a_transport_error_is_retried_after_a_back_off(env, tmp_path):
 
 def test_the_condition_table_is_pulled_across_pages_with_the_key_in_a_header(env, tmp_path):
     from quantlab.acquisition._support.http import HttpResponse
-    from quantlab.acquisition.massive.client import CONDITIONS_URL
+    from quantlab.acquisition.massive.rest import CONDITIONS
     from quantlab.dataset.massive.raw import latest_conditions, read_conditions
 
     calls = []
@@ -277,7 +277,7 @@ def test_the_condition_table_is_pulled_across_pages_with_the_key_in_a_header(env
 
     def http_get(url, *, params, headers):
         calls.append((url, dict(params), dict(headers)))
-        if url == CONDITIONS_URL:
+        if url == CONDITIONS.url:
             body = {"status": "OK", "results": CONDITION_RECORDS[:5], "next_url": next_url}
         else:
             body = {"status": "OK", "results": CONDITION_RECORDS[5:]}
@@ -286,7 +286,7 @@ def test_the_condition_table_is_pulled_across_pages_with_the_key_in_a_header(env
     path = _client(http_get=http_get).condition_table(tmp_path)
     assert path == latest_conditions(tmp_path / "massive")
     assert json.loads(path.read_text()) == CONDITION_RECORDS
-    assert [url for url, _, _ in calls] == [CONDITIONS_URL, next_url]
+    assert [url for url, _, _ in calls] == [CONDITIONS.url, next_url]
     assert calls[0][1] == {"asset_class": "stocks", "limit": "1000"}
     assert all(headers == {"Authorization": "Bearer synthetic-api-key"} for _, _, headers in calls)
     assert all("synthetic-api-key" not in url + json.dumps(params) for url, params, _ in calls)

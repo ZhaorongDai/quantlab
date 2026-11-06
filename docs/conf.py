@@ -23,6 +23,11 @@ extensions = [
     "sphinx_design",
 ]
 
+# viewcode keeps one anchor prefix per module, from the page that reached it first. Following an
+# inherited member into its base module makes that prefix depend on how a parallel build splits
+# the pages, and every backlink of the module then points at an anchor that does not exist.
+viewcode_follow_imported_members = False
+
 # docs/ also holds files that are not pages of the site: the agents' notes, the
 # local research and ADR folders, and the HTML sources of the architecture PDFs.
 exclude_patterns = [

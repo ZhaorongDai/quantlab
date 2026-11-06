@@ -29,11 +29,10 @@ answers 412 (``MassiveObjectChangedError``), and the day starts over at once
 from a fresh HEAD.
 
 ``pull`` keeps one REST endpoint (``quantlab.acquisition.massive.rest``) in
-the raw tier: it pages on the endpoint's date field from the day after its
-watermark, follows every ``next_url`` (stripped of any key), writes each page
-as the vendor returned it and moves the watermark after each page, so a rerun
-asks only for what is new and an interrupted backfill resumes. HTTP 429 and
-5xx are retried after the same back-off, or after the ``Retry-After`` the
+the raw tier, in the endpoint's pull shape
+(``quantlab.acquisition.massive.shapes``): the client carries each GET, the
+shape says what to ask and what to keep, so a rerun asks only for what is new
+and an interrupted backfill resumes. HTTP 429 and 5xx are retried after the same back-off, or after the ``Retry-After`` the
 response gives; 401 and 403 raise
 ``MassiveEntitlementError`` naming the endpoint.
 
@@ -73,12 +72,10 @@ import time
 import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote
 
-import exchange_calendars as xcals
 from joblib import Parallel, delayed
 from loguru import logger
 
@@ -91,28 +88,11 @@ from quantlab.acquisition._support.request_policy import (
     require_env,
     retry_after,
 )
-from quantlab.acquisition.massive.rest import ENDPOINTS, RestEndpoint
-from quantlab.acquisition.massive.raw_tier import (
-    stage_as_of,
-    stage_snapshot,
-    write_day_file_watermark,
-    write_rest_page,
-    write_rest_watermark,
-)
-from quantlab.dataset.massive.raw import (
-    BUCKET,
-    VENDOR_DIR,
-    conditions_file,
-    raw_file,
-    read_rest_as_of,
-    read_rest_records,
-    read_rest_watermark,
-    read_watermark,
-    rest_as_of_days,
-    rest_page_file,
-    s3_key,
-)
-from quantlab.utils.atomic import write_json_atomically
+from quantlab.acquisition._support.sessions import xnys_sessions
+from quantlab.acquisition.massive.raw_tier import write_day_file_watermark
+from quantlab.acquisition.massive.rest import CONDITIONS, ENDPOINTS
+from quantlab.acquisition.massive.shapes import MassiveResponseError, PullRun, RestEndpoint, RestPull
+from quantlab.dataset.massive.raw import BUCKET, VENDOR_DIR, raw_file, read_watermark, s3_key
 from quantlab.utils.watermark import holds, resume_from
 
 #: The environment variable holding the API key (REST, and the S3 secret by default).
@@ -126,9 +106,6 @@ S3_SECRET_ENV = "MASSIVE_S3_SECRET_ACCESS_KEY"
 
 #: The S3 endpoint of the daily files.
 S3_ENDPOINT = "https://files.massive.com"
-
-#: The REST endpoint of the condition table.
-CONDITIONS_URL = "https://api.massive.com/v3/reference/conditions"
 
 #: Bytes read from the store per chunk.
 _CHUNK = 1 << 20
@@ -172,14 +149,6 @@ class MassiveTransportError(TransientError):
 
     A ``TransientError`` (a ``ConnectionError``) of the request policy
     (``quantlab.acquisition._support.request_policy``).
-    """
-
-
-class MassiveResponseError(ValueError):
-    """Massive answered 200 with a page the client cannot read: not JSON, or a record missing a field it needs.
-
-    A ``ValueError``, but the vendor's: the refresh records the endpoint as
-    failed, where a plain ``ValueError`` (a bug of ours) is raised.
     """
 
 
@@ -450,7 +419,7 @@ def rest_transport(url: str, *, params: Mapping[str, str], headers: Mapping[str,
     --------
     Needs the network; without a key Massive answers 401::
 
-        rest_transport(CONDITIONS_URL, params={"asset_class": "stocks"}, headers={}).status
+        rest_transport(CONDITIONS.url, params=CONDITIONS.params, headers={}).status
     """
     return http_get(
         url,
@@ -460,37 +429,6 @@ def rest_transport(url: str, *, params: Mapping[str, str], headers: Mapping[str,
         error=MassiveTransportError,
         follow_redirects=True,
     )
-
-
-@dataclass(frozen=True)
-class RestPull:
-    """What ``MassiveClient.pull`` did for one endpoint.
-
-    Attributes
-    ----------
-    endpoint : str
-        The endpoint's name.
-    pages : int
-        Pages fetched.
-    rows : int
-        Records written (a record re-read past the watermark counts again).
-    through : date or None
-        The endpoint's watermark after the pull; ``None`` for a snapshot
-        endpoint, or while nothing is pulled through a day yet.
-    files : tuple of Path
-        The page files written, in order.
-
-    Examples
-    --------
-    >>> RestPull("splits", 2, 7000, date(2026, 10, 15)).rows
-    7000
-    """
-
-    endpoint: str
-    pages: int
-    rows: int
-    through: date | None
-    files: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -770,7 +708,7 @@ class MassiveClient:
         if holds(watermark, start):
             logger.info(f"Massive: {data_type} downloaded through {watermark}; resuming after it.")
         start = resume_from(watermark, start)
-        days = _sessions(start, end)
+        days = xnys_sessions(start, end)
         # One file is fetched at a time, with every stream; verifying is not
         # serialized, so the network stays busy while earlier files decode.
         fetching = threading.Lock()
@@ -930,21 +868,10 @@ class MassiveClient:
     ) -> RestPull:
         """Pull one REST endpoint's new rows into the raw tier.
 
-        The first page asks for ``<date_field>.gte`` the day after the
-        endpoint's watermark less its ``overlap_days`` (``earliest`` without
-        one), and ``.lte`` ``end`` when given, sorted by the date field
-        ascending; every ``next_url`` is followed with no other parameter
-        (its cursor carries the filters), after any ``apiKey`` in it is
-        dropped. Each page is written as the vendor returned it
-        (``raw.rest_page_file``), and the watermark moves after each one: to
-        the day before its last row's day while more pages follow (that day
-        may continue on the next page), and to the last day asked for once
-        the last page is in. The watermark never passes yesterday in New
-        York, so today's and future rows (a split announced ahead) are asked
-        for again by the next pull, and it never moves back. A snapshot
-        endpoint (``date_field`` ``None``) is pulled whole and keeps no
-        watermark; it and a session of an as-of endpoint appear in one step
-        (``raw_tier.stage_snapshot``, ``raw_tier.stage_as_of``).
+        The endpoint's pull shape says what is asked for and kept
+        (``quantlab.acquisition.massive.shapes``). Every ``next_url`` is
+        followed after any key in it is dropped, and a watermark never passes
+        yesterday in New York and never moves back.
 
         Parameters
         ----------
@@ -973,8 +900,9 @@ class MassiveClient:
             If a page kept failing after ``retries`` back-offs; likewise, so
             the next pull resumes from the watermark.
         MassiveResponseError
-            If a page is not JSON, or a record lacks the field the watermark
-            or the id it was asked by needs; likewise.
+            If a page is not JSON, a record lacks the field the watermark or
+            the id it was asked by needs, or a condition table page holds no
+            ``results``; likewise.
 
         Examples
         --------
@@ -988,214 +916,13 @@ class MassiveClient:
             if endpoint not in ENDPOINTS:
                 raise ValueError(f"Unknown Massive REST endpoint {endpoint!r}; expected one of {list(ENDPOINTS)}.")
             endpoint = ENDPOINTS[endpoint]
-        vendor_root = Path(download_root) / VENDOR_DIR
-        pulled_at = datetime.now(UTC)
-        if endpoint.ids_from is not None:
-            return self._pull_ids(endpoint, vendor_root, pulled_at, end)
-        if endpoint.as_of_param is not None:
-            return self._pull_as_of(endpoint, vendor_root, end, today)
-        if endpoint.date_field is None:
-            return self._pull_snapshot(endpoint, vendor_root, pulled_at, today)
-        field = endpoint.date_field
-        params: dict[str, str] = {**endpoint.params, "limit": str(endpoint.limit)}
-        watermark = cap = None
-        if field is not None:
-            watermark = read_rest_watermark(vendor_root, endpoint.name)
-            start = resume_from(watermark, endpoint.earliest, endpoint.overlap_days)
-            cap = (today if today is not None else _new_york_today()) - timedelta(days=1)
-            bounds = {f"{field}.gte": start.isoformat()}
-            if end is not None:
-                cap = min(cap, end)
-                if endpoint.timestamped:
-                    bounds[f"{field}.lt"] = (end + timedelta(days=1)).isoformat()
-                else:
-                    bounds[f"{field}.lte"] = end.isoformat()
-            params = {**bounds, **params, **endpoint.sort_params}
-            logger.info(f"Massive: pulling {endpoint.name} from {field} {start} (watermark {watermark}).")
-            if endpoint.window_days is not None:
-                return self._pull_windows(endpoint, vendor_root, pulled_at, start, cap, watermark)
-
-        url: str | None = endpoint.url
-        pages = rows = 0
-        files: list[Path] = []
-        while url:
-            page = self._get_json(url, params)
-            pages += 1
-            records = page.get("results") or []
-            following = page.get("next_url")
-            if records:
-                path = rest_page_file(vendor_root, endpoint.name, pulled_at, len(files) + 1)
-                write_rest_page(path, records)
-                files.append(path)
-                rows += len(records)
-            if field is not None:
-                through = cap
-                if following:
-                    # The last row's day may continue on the next page.
-                    through = _day_of(records[-1], field, endpoint.name) - timedelta(days=1) if records else None
-                if through is not None:
-                    through = min(through, cap)
-                    if not holds(watermark, through):  # a REST watermark never moves back
-                        write_rest_watermark(vendor_root, endpoint.name, field, through)
-                        watermark = through
-            url, params = (self._policy.keyless(following) if following else None), {}
-        logger.info(f"Massive: {endpoint.name}: {rows:,} row(s) in {pages} page(s); watermark {watermark}.")
-        return RestPull(endpoint.name, pages, rows, watermark, tuple(files))
-
-    def _pull_windows(
-        self, endpoint: RestEndpoint, vendor_root: Path, pulled_at: datetime,
-        start: date, cap: date, watermark: date | None,
-    ) -> RestPull:
-        """Pull an endpoint that will not sort on its date field, ``window_days`` at a time.
-
-        Each window ``[first, last]`` is asked with ``.gte``/``.lte`` and no
-        ``sort``, every ``next_url`` followed; its rows come in no date order,
-        so the watermark moves to ``last`` only once the window's last page
-        is in, and an interrupted window is asked again whole.
-        """
-        field = endpoint.date_field
-        pages = rows = 0
-        files: list[Path] = []
-        first = start
-        while first <= cap:
-            last = min(first + timedelta(days=endpoint.window_days - 1), cap)
-            url: str | None = endpoint.url
-            params: dict[str, str] = {
-                **endpoint.params, "limit": str(endpoint.limit),
-                f"{field}.gte": first.isoformat(), f"{field}.lte": last.isoformat(),
-            }
-            while url:
-                page = self._get_json(url, params)
-                pages += 1
-                records = page.get("results") or []
-                following = page.get("next_url")
-                if records:
-                    path = rest_page_file(vendor_root, endpoint.name, pulled_at, len(files) + 1)
-                    write_rest_page(path, records)
-                    files.append(path)
-                    rows += len(records)
-                url, params = (self._policy.keyless(following) if following else None), {}
-            if not holds(watermark, last):  # a REST watermark never moves back
-                write_rest_watermark(vendor_root, endpoint.name, field, last)
-                watermark = last
-            first = last + timedelta(days=1)
-        logger.info(f"Massive: {endpoint.name}: {rows:,} row(s) in {pages} page(s); watermark {watermark}.")
-        return RestPull(endpoint.name, pages, rows, watermark, tuple(files))
-
-    def _pull_snapshot(
-        self, endpoint: RestEndpoint, vendor_root: Path, pulled_at: datetime, today: date | None
-    ) -> RestPull:
-        """Pull a snapshot endpoint whole; its pages appear only once the last one is in."""
-        today = today if today is not None else _new_york_today()
-        watermark = read_rest_watermark(vendor_root, endpoint.name) if endpoint.once_a_day else None
-        if holds(watermark, today):
-            logger.info(f"Massive: {endpoint.name}: today's snapshot ({today}) is already kept.")
-            return RestPull(endpoint.name, 0, 0, watermark)
-        staged = stage_snapshot(vendor_root, endpoint.name, pulled_at)
-        rows = pages = 0
-        for records in self._pages(endpoint.url, {**endpoint.params, "limit": str(endpoint.limit)}):
-            pages += 1
-            if records:
-                staged.add_page(records)
-                rows += len(records)
-        files = staged.commit()
-        if endpoint.once_a_day:
-            write_rest_watermark(vendor_root, endpoint.name, "snapshot", today)
-            watermark = today
-        logger.info(f"Massive: {endpoint.name}: snapshot of {rows:,} row(s) in {len(files)} page file(s).")
-        return RestPull(endpoint.name, pages, rows, watermark, files)
-
-    def _pull_as_of(
-        self, endpoint: RestEndpoint, vendor_root: Path, end: date | None, today: date | None
-    ) -> RestPull:
-        """Pull a table whole as of every session after the watermark; a session appears once it is whole."""
-        watermark = read_rest_watermark(vendor_root, endpoint.name)
-        start = resume_from(watermark, endpoint.earliest)
-        cap = (today if today is not None else _new_york_today()) - timedelta(days=1)
-        if end is not None:
-            cap = min(cap, end)
-        sessions = _sessions(start, cap)
-        logger.info(f"Massive: pulling {endpoint.name} as of {len(sessions)} session(s) from {start} "
-                    f"(watermark {watermark}).")
-        pages = rows = 0
-        files: list[Path] = []
-        for day in sessions:
-            staged = stage_as_of(vendor_root, endpoint.name, day, datetime.now(UTC))
-            params = {endpoint.as_of_param: day.isoformat(), **endpoint.params, "limit": str(endpoint.limit)}
-            for records in self._pages(endpoint.url, params):
-                pages += 1
-                if records:
-                    staged.add_page(records)
-                    rows += len(records)
-            files.extend(staged.commit())
-            write_rest_watermark(vendor_root, endpoint.name, endpoint.as_of_param, day)
-            watermark = day
-        logger.info(f"Massive: {endpoint.name}: {rows:,} row(s) in {pages} page(s); watermark {watermark}.")
-        return RestPull(endpoint.name, pages, rows, watermark, tuple(files))
-
-    def _pull_ids(self, endpoint: RestEndpoint, vendor_root: Path, pulled_at: datetime, end: date | None) -> RestPull:
-        """Pull an endpoint one id at a time, for the ids new or changed in its source's new sessions."""
-        source = ENDPOINTS[endpoint.ids_from]
-        watermark = read_rest_watermark(vendor_root, endpoint.name)
-        days = [day for day in rest_as_of_days(vendor_root, source.name)
-                if not holds(watermark, day) and (end is None or day <= end)]
-        if not days:
-            logger.info(f"Massive: {endpoint.name}: no new session of {source.name} after {watermark}.")
-            return RestPull(endpoint.name, 0, 0, watermark)
-        kept = {record[endpoint.key] for record in read_rest_records(vendor_root, endpoint.name, endpoint.key)}
-        previous: dict[str, object] = {}
-        if watermark is not None and watermark in rest_as_of_days(vendor_root, source.name):
-            previous = {r[endpoint.id_field]: r.get(source.key)
-                        for r in read_rest_as_of(vendor_root, source.name, watermark) if r.get(endpoint.id_field)}
-        wanted: set[str] = set()
-        for day in days:
-            for record in read_rest_as_of(vendor_root, source.name, day):
-                ident = record.get(endpoint.id_field)
-                if not ident:
-                    continue
-                value = record.get(source.key)
-                if ident not in kept or (ident in previous and previous[ident] != value):
-                    wanted.add(ident)
-                previous[ident] = value
-        logger.info(f"Massive: pulling {endpoint.name} for {len(wanted):,} {endpoint.id_field}(s) "
-                    f"of {source.name} through {days[-1]}.")
-        batch: list[dict] = []
-        files: list[Path] = []
-        rows = missing = 0
-
-        def flush() -> None:
-            path = rest_page_file(vendor_root, endpoint.name, pulled_at, len(files) + 1)
-            write_rest_page(path, batch)
-            files.append(path)
-            batch.clear()
-
-        for ident in sorted(wanted):
-            page = self._get_json(endpoint.url.format(id=quote(ident, safe="")), endpoint.params, missing_ok=True)
-            if page is None:
-                missing += 1
-                continue
-            record = page.get("results")
-            if not isinstance(record, dict) or record.get(endpoint.key) != ident:
-                raise MassiveResponseError(f"Massive {endpoint.name} for {ident!r} returned no record keyed by "
-                                 f"{endpoint.key!r}: {record}")
-            batch.append(record)
-            rows += 1
-            if len(batch) >= endpoint.limit:
-                flush()
-        if batch:
-            flush()
-        write_rest_watermark(vendor_root, endpoint.name, source.name, days[-1])
-        logger.info(f"Massive: {endpoint.name}: {rows:,} record(s), {missing:,} unknown to Massive (404); "
-                    f"watermark {days[-1]}.")
-        return RestPull(endpoint.name, len(wanted), rows, days[-1], tuple(files))
-
-    def _pages(self, url: str | None, params: Mapping[str, str]) -> Iterator[list[dict]]:
-        """Yield each page's records from ``url``, following every ``next_url`` stripped of a key."""
-        while url:
-            page = self._get_json(url, params)
-            yield page.get("results") or []
-            following = page.get("next_url")
-            url, params = (self._policy.keyless(following) if following else None), {}
+        return endpoint.pull(PullRun(
+            self._get_json,
+            self._policy.keyless,
+            Path(download_root) / VENDOR_DIR,
+            today if today is not None else _new_york_today(),
+            end,
+        ))
 
     def condition_table(self, download_root: str | Path) -> Path:
         """Pull the stock condition table over REST and store it as a snapshot.
@@ -1218,6 +945,8 @@ class MassiveClient:
         ------
         MassiveEntitlementError
             If Massive refused the API key.
+        MassiveResponseError
+            If a page is not JSON or holds no ``results``; no file is written.
 
         Examples
         --------
@@ -1225,19 +954,7 @@ class MassiveClient:
 
             path = client.condition_table("/data/quantlab/downloads")
         """
-        pulled_at = datetime.now(UTC)
-        records: list[dict] = []
-        url, params = CONDITIONS_URL, {"asset_class": "stocks", "limit": "1000"}
-        while url:
-            page = self._get_json(url, params)
-            records.extend(page.get("results", []))
-            following = page.get("next_url")
-            url, params = (self._policy.keyless(following) if following else None), {}
-        path = conditions_file(Path(download_root) / VENDOR_DIR, pulled_at)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_json_atomically(path, records)
-        logger.info(f"Massive: {len(records)} condition(s) -> {path}.")
-        return path
+        return self.pull(CONDITIONS, download_root).files[0]
 
 
 def _new_york_today() -> date:
@@ -1245,14 +962,6 @@ def _new_york_today() -> date:
     from zoneinfo import ZoneInfo
 
     return datetime.now(ZoneInfo("America/New_York")).date()
-
-
-def _sessions(start: date, end: date) -> list[date]:
-    """Return the XNYS sessions from ``start`` through ``end``, ascending."""
-    if end < start:
-        return []
-    sessions = xcals.get_calendar("XNYS").sessions_in_range(start.isoformat(), end.isoformat())
-    return [stamp.date() for stamp in sessions]
 
 
 class _NotWholeGzip(MassiveTransportError):
@@ -1267,16 +976,6 @@ def _check_gzip(path: Path, key: str) -> None:
                 pass
     except (OSError, EOFError, zlib.error) as error:
         raise _NotWholeGzip(f"{key}: not a whole gzip ({type(error).__name__}: {error})") from error
-
-
-def _day_of(record: Mapping[str, object], field: str, endpoint: str) -> date:
-    """Return the day of a record's date field (a date, or an ISO timestamp's date)."""
-    value = record.get(field)
-    if not value:
-        raise MassiveResponseError(
-            f"A Massive {endpoint} record has no {field!r}; cannot move its watermark: {record}"
-        )
-    return date.fromisoformat(str(value)[:10])
 
 
 def _vendor_error(body: bytes) -> str:
