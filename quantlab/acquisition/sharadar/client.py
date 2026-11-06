@@ -47,7 +47,6 @@ import csv
 import io
 import os
 import shutil
-import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
@@ -68,21 +67,16 @@ from quantlab.acquisition._support.request_policy import (
     retry_after,
 )
 from quantlab.acquisition.sharadar.raw_tier import (
-    fold_tickers_history,
-    prune_tickers_snapshots,
-    write_bulk_pull,
+    bulk_scratch,
+    publish_bulk,
     write_table_watermark,
 )
 from quantlab.dataset.sharadar.tables import (
-    UPDATED_PREFIX,
     VENDOR_DIR,
-    WINDOW_PREFIX,
     SharadarTable,
-    raw_table_dir,
     read_watermark,
     scan_raw_table,
     table,
-    tickers_snapshot_file,
     updated_file,
     vendor_today,
     window_file,
@@ -200,11 +194,12 @@ class SharadarClient:
     def bulk_table(self, code: str, download_dir: str | Path, *, years: str = "full") -> Path:
         """Pull a whole table as a bulk zip and write it as raw parquet.
 
-        The parquet replaces any earlier bulk pull of the table and is
-        written only once the whole zip has been read and checked, so an
-        interrupted pull leaves the previous file in place. When the pull
-        was asked for is recorded beside it (``tables.BULK_PULL_FILE``), and
-        a TICKERS pull also keeps a copy of itself as a snapshot
+        The parquet supersedes any earlier bulk pull of the table and is
+        published only once the whole zip has been read and checked, in one
+        rename (``raw_tier.publish_bulk``), so an interrupted pull leaves the
+        previous data in place. Its name says when the pull was asked for
+        (``tables.bulk_file``), and a TICKERS pull also keeps a copy of itself
+        as a snapshot
         (``tables.tickers_snapshot_file``): a raw file names securities by
         the tickers of its own pull, and is later mapped with the snapshot
         of its run (``quantlab.dataset.sharadar.permatickers``). Snapshots no
@@ -258,32 +253,13 @@ class SharadarClient:
                 f"Sharadar table {code!r}: a bulk pull answered HTTP "
                 f"{response.status} without a redirect to the zip."
             )
-        directory = raw_table_dir(Path(download_dir) / VENDOR_DIR, code)
-        directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"{code}.parquet"
-        with tempfile.TemporaryDirectory(dir=directory, prefix=".pull-") as scratch:
-            archive = Path(scratch) / f"{code}.zip"
-            self._download_zip(spec, response.headers["Location"], archive)
-            csv_path = self._extract_csv(spec, archive, Path(scratch))
-            partial = Path(scratch) / target.name
-            spec.stored_types(pl.scan_csv(csv_path, schema=spec.csv_schema)).sink_parquet(partial)
-            os.replace(partial, target)
-        # The bulk file is the newest copy of every row, so it supersedes the
-        # window and updated pulls; the watermark (the day of the pull) is
-        # written last.
         vendor_root = Path(download_dir) / VENDOR_DIR
-        for prefix in (WINDOW_PREFIX, UPDATED_PREFIX):
-            for pull in directory.glob(f"{prefix}*.parquet"):
-                pull.unlink()
-        write_bulk_pull(vendor_root, code, pulled_at)
-        if code == "tickers":
-            snapshot = tickers_snapshot_file(vendor_root, pulled_at)
-            partial = snapshot.with_name(f".{snapshot.name}.partial")
-            shutil.copyfile(target, partial)
-            os.replace(partial, snapshot)
-        # A snapshot about to be pruned is kept in the TICKERS history (#263).
-        fold_tickers_history(vendor_root)
-        prune_tickers_snapshots(vendor_root)
+        with bulk_scratch(vendor_root, code) as scratch:
+            archive = scratch / f"{code}.zip"
+            self._download_zip(spec, response.headers["Location"], archive)
+            csv_path = self._extract_csv(spec, archive, scratch)
+            rows = spec.stored_types(pl.scan_csv(csv_path, schema=spec.csv_schema))
+            target = publish_bulk(vendor_root, code, pulled_at, rows, scratch)
         if "date" in spec.schema:
             write_table_watermark(vendor_root, code, vendor_today())
         logger.info(f"Sharadar {code}: bulk pull (years={years}) written to {target}")

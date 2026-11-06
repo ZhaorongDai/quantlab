@@ -33,6 +33,7 @@ from quantlab.dataset.sharadar.stores import (
     store,
     update_stores,
 )
+from quantlab.dataset.sharadar.tables import latest_bulk
 from quantlab.utils.cli import inside_repository
 
 DATA_ROOT = get_data_root()
@@ -57,7 +58,7 @@ TRAILING_DAYS = 10
 def pull_new_tables() -> list[str]:
     """Bulk-pull every table not on disk yet, and return their codes."""
     client = SharadarClient()
-    new = [code for code in TABLES if not (DOWNLOADS / "sharadar" / code / f"{code}.parquet").exists()]
+    new = [code for code in TABLES if latest_bulk(DOWNLOADS / "sharadar", code) is None]
     for code in new:
         print(f"bulk pull: {client.bulk_table(code, DOWNLOADS, years=YEARS)}", flush=True)
     return new

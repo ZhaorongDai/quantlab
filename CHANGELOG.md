@@ -6,8 +6,20 @@ compatibility shims or config migrations.
 
 ## Unreleased
 
+### Added
+
+- `tables.latest_bulk(vendor_root, code)`, the path of a table's newest Sharadar bulk pull, for
+  code outside the library that reads it directly.
+- `utils.atomic.move_durably`, for a finished file too large to write from memory.
+
 ### Changed
 
+- A Sharadar bulk file is named by its pull time, `<code>/bulk_<stamp>.parquet`, and `bulk_file`
+  takes `pulled_at`. Readers take the newest bulk and ignore window and updated pulls older than
+  it. A bulk under the old name `<code>.parquet` raises `ValueError`: rename it, with the time from
+  its `_bulk_pull.json`. `write_bulk_pull`, `BULK_PULL_FILE` and `pull_time`'s fall back to the
+  file's modification time are gone.
+- `write_parquet_atomically` syncs the file and its directory.
 - A Massive snapshot, or a session of an as-of table, is kept as one directory per pull,
   `rest/<endpoint>/<YYYY>/<stamp>/000001.jsonl` and
   `rest/<endpoint>/<YYYY>/<day>/<stamp>/000001.jsonl`. Pages kept the old way are not read: move
@@ -19,6 +31,9 @@ compatibility shims or config migrations.
 
 ### Fixed
 
+- A Sharadar bulk pull commits in one rename (`raw_tier.publish_bulk`). A pull killed after the file
+  was replaced left older window and updated pulls overriding the new bulk until the next one, and
+  a kill before its record was written paired the new file with the old pull time.
 - A Massive snapshot or as-of pull is published by one directory rename
   (`raw_tier.stage_snapshot`, `raw_tier.stage_as_of`). Pages used to be renamed one at a time, so a
   pull killed while publishing left part of a snapshot that `read_rest_snapshot` read as whole.

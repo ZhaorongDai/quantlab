@@ -25,6 +25,7 @@ every value is SYNTHETIC.
 
 from __future__ import annotations
 
+from quantlab.dataset.sharadar.tables import latest_bulk
 import polars as pl
 
 from tests.sharadar_fixtures import sep_row, tickers_row
@@ -229,4 +230,4 @@ def test_without_a_history_nothing_changes(tmp_path):
     root = tmp_path / "sharadar"
     _tickers(root, [OTHER], "2026-10-14")
     assert tickers_history(root) is None
-    assert _scan(root).equals(pl.read_parquet(root / "tickers" / "tickers.parquet"))
+    assert _scan(root).equals(pl.read_parquet(latest_bulk(root, "tickers")))

@@ -13,6 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from quantlab.dataset.sharadar.tables import latest_bulk
 from tests.sharadar_fixtures import (
     ACTIONS_COLUMNS,
     SEP_COLUMNS,
@@ -145,9 +146,7 @@ def test_a_failed_window_pull_leaves_the_raw_tier_and_watermark_unchanged(tmp_pa
         _window(vendor, tmp_path, DAYS[4], codes=("sep",))
     assert read_watermark(root, "sep") == before
     assert _raw(root, "sep").height == 4
-    assert sorted(p.name for p in (root / "sep").iterdir() if p.suffix == ".parquet") == [
-        "sep.parquet"
-    ]
+    assert [p for p in (root / "sep").iterdir() if p.suffix == ".parquet"] == [latest_bulk(root, "sep")]
 
 
 def test_a_bulk_pull_supersedes_the_windows(tmp_path):
@@ -156,7 +155,7 @@ def test_a_bulk_pull_supersedes_the_windows(tmp_path):
     vendor.tables["stocks"][1].append(sep_row("AAA", DAYS[4], 104.0))  # SYNTHETIC
     _window(vendor, tmp_path, DAYS[4], codes=("sep",))
     _client(vendor).bulk_table("sep", tmp_path)
-    assert sorted(p.name for p in (root / "sep").glob("*.parquet")) == ["sep.parquet"]
+    assert list((root / "sep").glob("*.parquet")) == [latest_bulk(root, "sep")]
     assert _raw(root, "sep").height == 5
 
 

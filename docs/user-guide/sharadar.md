@@ -24,8 +24,11 @@ table. Converting and reading a store need no key and no network.
 
 {py:meth}`SharadarClient.bulk_table <quantlab.acquisition.sharadar.client.SharadarClient.bulk_table>`
 pulls one whole table as Sharadar's bulk zip and writes it as
-`<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's columns checked against the
-declared schema. The tables are `sep` (stock prices), `sfp` (fund prices), `sf1`
+`<download_dir>/sharadar/<code>/bulk_<pull time>.parquet`, with the vendor's columns checked
+against the declared schema. The file appears in one rename, and a later pull of the table is read
+over it, so a pull stopped part way, by a killed process or a power loss, leaves correct data
+behind. {py:func}`~quantlab.dataset.sharadar.tables.latest_bulk` names a table's current bulk file.
+The tables are `sep` (stock prices), `sfp` (fund prices), `sf1`
 (fundamentals), `daily` (valuations), `events` (8-K filings), `sf2` (insider transactions),
 `sf3` (13F holdings) with its sums `sf3a` and `sf3b`, `actions` (dividends, splits and other
 corporate actions), `sp500` (index changes), `tickers` (the ticker-to-permaticker mapping) and

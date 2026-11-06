@@ -29,7 +29,6 @@ PosixPath('/data/downloads/sharadar/sep')
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -447,9 +446,47 @@ def raw_table_dir(vendor_root: str | Path, code: str) -> Path:
     return Path(vendor_root) / table(code).code
 
 
-def bulk_file(vendor_root: str | Path, code: str) -> Path:
-    """Return the path of a table's bulk pull, ``<code>/<code>.parquet``."""
-    return raw_table_dir(vendor_root, code) / f"{table(code).code}.parquet"
+def bulk_file(vendor_root: str | Path, code: str, pulled_at: datetime) -> Path:
+    """Return the path of a table's bulk pull started at ``pulled_at``.
+
+    The name carries the pull time, so publishing the file is the whole commit:
+    its rename also says when it was pulled, and which later pulls overlay it.
+
+    Examples
+    --------
+    >>> bulk_file("/d/sharadar", "sep", datetime(2024, 1, 11, 8, 30)).name
+    'bulk_20240111T083000000000.parquet'
+    """
+    return raw_table_dir(vendor_root, code) / f"{BULK_PREFIX}{pulled_at:{_STAMP_FORMAT}}.parquet"
+
+
+def latest_bulk(vendor_root: str | Path, code: str) -> Path | None:
+    """Return a table's newest bulk pull, or ``None`` when it has none.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/sharadar``.
+    code : str
+        The table's code.
+
+    Raises
+    ------
+    ValueError
+        If a bulk file is kept under its old name, ``<code>.parquet``: read
+        without it, the table would be only its later pulls.
+
+    Examples
+    --------
+    Needs the Sharadar raw tier; every security in the latest TICKERS pull::
+
+        tickers = pl.read_parquet(latest_bulk("/data/downloads/sharadar", "tickers"))
+    """
+    directory = raw_table_dir(vendor_root, code)
+    old = directory / f"{table(code).code}.parquet"
+    if old.exists():
+        raise ValueError(f"Sharadar bulk file {str(old)!r} has the old name: rename it to bulk_<pull stamp>.parquet.")
+    return max(directory.glob(f"{BULK_PREFIX}*.parquet"), key=lambda path: path.name, default=None)
 
 
 def window_file(
@@ -472,6 +509,9 @@ def window_file(
         f"{WINDOW_PREFIX}{pulled_at:%Y%m%dT%H%M%S%f}_{start}_{end}.parquet"
     )
 
+
+#: Filename prefix of a bulk pull (see ``bulk_file``).
+BULK_PREFIX = "bulk_"
 
 #: Filename prefix of a date-window pull (see ``window_file``).
 WINDOW_PREFIX = "window_"
@@ -513,19 +553,25 @@ Annotate = Callable[[Path, pl.LazyFrame], pl.LazyFrame]
 
 
 def raw_files(vendor_root: str | Path, code: str) -> list[Path]:
-    """Return a table's raw parquet files: the bulk file, then its windows and updated pulls in pull order.
+    """Return a table's current raw parquet files: its newest bulk, then its later pulls in pull order.
+
+    A window or updated pull older than the newest bulk is left out: the bulk
+    is the newer copy of its rows, whether or not the file is deleted yet.
 
     Examples
     --------
     >>> [p.name for p in raw_files("/data/downloads/sharadar", "sep")][:1]
-    ['sep.parquet']
+    ['bulk_20261016T080000000000.parquet']
     """
-    directory = raw_table_dir(vendor_root, code)
-    return (
-        [p for p in [bulk_file(vendor_root, code)] if p.exists()]
-        + sorted(directory.glob(f"{WINDOW_PREFIX}*.parquet"))
-        + sorted(directory.glob(f"{UPDATED_PREFIX}*.parquet"))
-    )
+    bulk = latest_bulk(vendor_root, code)
+    return [*([] if bulk is None else [bulk]), *_later_pulls(vendor_root, code, WINDOW_PREFIX, bulk),
+            *_later_pulls(vendor_root, code, UPDATED_PREFIX, bulk)]
+
+
+def _later_pulls(vendor_root: str | Path, code: str, prefix: str, bulk: Path | None) -> list[Path]:
+    """Return a table's pulls of one kind, in pull order, leaving out those older than ``bulk``."""
+    pulls = sorted(raw_table_dir(vendor_root, code).glob(f"{prefix}*.parquet"))
+    return pulls if bulk is None else [path for path in pulls if pull_time(path) >= pull_time(bulk)]
 
 
 def scan_raw_table(
@@ -573,9 +619,10 @@ def scan_raw_table(
     ['table', 'permaticker', 'ticker']
     """
     directory = raw_table_dir(vendor_root, code)
-    windows = sorted(directory.glob(f"{WINDOW_PREFIX}*.parquet"))
-    updates = sorted(directory.glob(f"{UPDATED_PREFIX}*.parquet"))
-    files = [p for p in [bulk_file(vendor_root, code)] if p.exists()] + windows
+    bulk = latest_bulk(vendor_root, code)
+    windows = _later_pulls(vendor_root, code, WINDOW_PREFIX, bulk)
+    updates = _later_pulls(vendor_root, code, UPDATED_PREFIX, bulk)
+    files = [*([] if bulk is None else [bulk]), *windows]
     if not files:
         raise FileNotFoundError(
             f"no raw Sharadar {code!r} table under {directory}; pull it first "
@@ -633,9 +680,6 @@ def _overlay_windows(
     return pl.concat(frames)
 
 
-#: Name of the file recording when a table's bulk file was pulled, beside it.
-BULK_PULL_FILE = "_bulk_pull.json"
-
 #: Filename prefix of a TICKERS snapshot (see ``tickers_snapshot_file``).
 SNAPSHOT_PREFIX = "snapshot_"
 
@@ -649,10 +693,10 @@ _STAMP_FORMAT = "%Y%m%dT%H%M%S%f"
 
 
 def tickers_snapshot_file(vendor_root: str | Path, pulled_at: datetime) -> Path:
-    """Return the path of the TICKERS snapshot of a pull, beside ``tickers.parquet``.
+    """Return the path of the TICKERS snapshot of a pull, beside its bulk file.
 
-    A TICKERS pull replaces ``tickers.parquet``; the snapshot keeps that
-    pull's copy, so a raw file pulled in the same run can later be mapped
+    A later bulk pull supersedes the bulk file; the snapshot keeps that pull's
+    copy, so a raw file pulled in the same run can later be mapped
     with the tickers the vendor used when it was pulled.
 
     Examples
@@ -668,9 +712,12 @@ def tickers_snapshot_file(vendor_root: str | Path, pulled_at: datetime) -> Path:
 def pull_time(path: str | Path) -> datetime:
     """Return when a raw file was pulled, in UTC.
 
-    A window, updated pull or TICKERS snapshot carries it in its name. A
-    bulk file's is in ``BULK_PULL_FILE`` beside it; a bulk file pulled before
-    that file existed falls back to its modification time.
+    Every raw file carries it in its name.
+
+    Raises
+    ------
+    ValueError
+        If ``path`` is not named as a pull.
 
     Examples
     --------
@@ -678,14 +725,11 @@ def pull_time(path: str | Path) -> datetime:
     datetime.datetime(2024, 1, 11, 8, 30, tzinfo=datetime.timezone.utc)
     """
     path = Path(path)
-    for prefix in (WINDOW_PREFIX, UPDATED_PREFIX, SNAPSHOT_PREFIX):
+    for prefix in (BULK_PREFIX, WINDOW_PREFIX, UPDATED_PREFIX, SNAPSHOT_PREFIX):
         if path.name.startswith(prefix):
             stamp = path.stem.removeprefix(prefix).split("_")[0]
             return datetime.strptime(stamp, _STAMP_FORMAT).replace(tzinfo=UTC)
-    record = path.parent / BULK_PULL_FILE
-    if record.exists():
-        return datetime.fromisoformat(json.loads(record.read_text())["pulled_at"]).astimezone(UTC)
-    return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+    raise ValueError(f"{str(path)!r} is not named as a Sharadar pull.")
 
 
 def pull_day(path: str | Path) -> date:
@@ -787,7 +831,7 @@ def split_basis_change(
     )
 
 
-#: Name of the TICKERS history, beside ``tickers.parquet``
+#: Name of the TICKERS history, beside the bulk file
 #: (``quantlab.acquisition.sharadar.raw_tier.fold_tickers_history``).
 TICKERS_HISTORY_FILE = "_history.parquet"
 

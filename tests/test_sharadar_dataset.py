@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from quantlab.dataset.sharadar.tables import latest_bulk
 from tests.sharadar_fixtures import (
     ACTIONS_COLUMNS,
     SEP_COLUMNS,
@@ -181,7 +182,7 @@ def test_a_ticker_no_source_maps_is_left_out_and_reported(tmp_path):
             "first_date": "2024-01-02",
             "last_date": "2024-01-03",
             "rows": 2,
-            "raw_files": ["sep.parquet"],
+            "raw_files": [latest_bulk(vendor_root, "sep").name],
             "reason": "no permaticker",
         }
     ]
