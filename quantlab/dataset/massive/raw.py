@@ -524,7 +524,7 @@ def read_rest_snapshot(vendor_root: str | Path, endpoint: str, pulled_at: dateti
     vendor_root : str or Path
         ``<download-dir>/massive``.
     endpoint : str
-        A snapshot endpoint's name (``RestEndpoint.date_field`` ``None``).
+        A snapshot endpoint's name (a ``SnapshotEndpoint``).
     pulled_at : datetime, optional
         The snapshot's pull time, from ``rest_snapshots``; the newest
         snapshot when omitted.
@@ -548,7 +548,7 @@ def read_rest_snapshot(vendor_root: str | Path, endpoint: str, pulled_at: dateti
 
 
 def rest_as_of_dir(vendor_root: str | Path, endpoint: str, day: date) -> Path:
-    """Return the directory of an endpoint's table as of ``day`` (``RestEndpoint.as_of_param``).
+    """Return the directory of an endpoint's table as of ``day`` (an ``AsOfEndpoint``).
 
     Examples
     --------
@@ -616,8 +616,7 @@ def read_rest_records(vendor_root: str | Path, endpoint: str, key: str = "id") -
         The endpoint's name (``quantlab.acquisition.massive.rest.ENDPOINTS``).
     key : str or None, default "id"
         The field identifying a record; ``None`` identifies a record by all
-        its fields, for an endpoint whose records have no id
-        (``RestEndpoint.key``).
+        its fields, for an endpoint whose records have no id.
 
     Raises
     ------

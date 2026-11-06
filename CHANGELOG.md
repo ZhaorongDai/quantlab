@@ -16,6 +16,15 @@ compatibility shims or config migrations.
 
 ### Changed
 
+- Massive's REST pull shapes moved from `MassiveClient` to `quantlab.acquisition.massive.shapes`.
+  `RestEndpoint` is now their base class, and each shape has its own config class holding only its
+  fields: `DatedEndpoint`, `WindowedEndpoint`, `SnapshotEndpoint`, `AsOfEndpoint`, `IdsEndpoint`
+  and `ConditionTableEndpoint`. `once_a_day`, `order_param` and `tiebreak` are gone (a snapshot is
+  always once a day, and `DatedSort` names the order), `key` stays only on `IdsEndpoint`, and
+  `ids_from` holds the `AsOfEndpoint` itself. `CONDITIONS_URL` is now `rest.CONDITIONS.url`.
+  `MassiveClient.pull`, `condition_table` and `refresh_raw_tier` are unchanged for callers.
+- A condition table page that holds no `results` raises `MassiveResponseError` and writes no file,
+  so the newest table stays whole.
 - A Sharadar bulk file is named by its pull time, `<code>/bulk_<stamp>.parquet`, and `bulk_file`
   takes `pulled_at`. Readers take the newest bulk and ignore window and updated pulls older than
   it. A bulk under the old name `<code>.parquet` raises `ValueError`: rename it, with the time from

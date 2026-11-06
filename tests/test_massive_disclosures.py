@@ -287,12 +287,13 @@ def test_a_store_without_the_taxonomy_is_refused(tmp_path):
 
 def test_the_endpoints_are_registered_for_the_rest_pull():
     from quantlab.acquisition.massive.rest import ENDPOINTS
+    from quantlab.acquisition.massive.shapes import SnapshotEndpoint
 
     disclosures, taxonomy = ENDPOINTS["8k_disclosures"], ENDPOINTS["disclosure_taxonomy"]
     assert disclosures.url == "https://api.massive.com/stocks/filings/8-K/vX/disclosures"
     assert (disclosures.date_field, disclosures.earliest, disclosures.limit) == ("filing_date", date(2020, 1, 1), 1000)
     assert taxonomy.url == "https://api.massive.com/stocks/taxonomies/vX/disclosures"
-    assert taxonomy.date_field is None
+    assert isinstance(taxonomy, SnapshotEndpoint)
 
 
 def test_a_filing_dated_before_seps_first_day_is_not_stamped_on_it(tmp_path):

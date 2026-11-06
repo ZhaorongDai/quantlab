@@ -77,15 +77,26 @@ fetched again.
 
 The REST endpoints are kept in the same raw tier, one directory per endpoint, by
 {py:meth}`MassiveClient.pull <quantlab.acquisition.massive.client.MassiveClient.pull>`. Each
-endpoint is a {py:class}`~quantlab.acquisition.massive.rest.RestEndpoint` of
-`quantlab.acquisition.massive.rest.ENDPOINTS`:
+endpoint is an entry of `quantlab.acquisition.massive.rest.ENDPOINTS`, and its config class names
+how it is pulled:
 
-- **Date-ranged:** `splits`, `dividends`, `short_interest`, `short_volume`, `8k_disclosures`,
-  `news`, `ipos`, and the filing tables `10k_sections`, `8k_text`, `risk_factors`, `form_3`,
-  `form_4` and `13f`.
-- **Snapshots, once a day:** `float` and `disclosure_taxonomy`.
-- **As of each session:** `tickers` (the reference tickers listed that day), and `ticker_events`
-  (each composite FIGI's ticker changes).
+- **Date-ranged** ({py:class}`~quantlab.acquisition.massive.shapes.DatedEndpoint`): `splits`,
+  `dividends`, `short_interest`, `short_volume`, `8k_disclosures`, `news`, `ipos`, and the filing
+  tables `8k_text`, `risk_factors`, `form_3`, `form_4` and `13f`.
+- **By windows of days** ({py:class}`~quantlab.acquisition.massive.shapes.WindowedEndpoint`):
+  `10k_sections`, which filters on its date but will not sort on it.
+- **Snapshots, once a day** ({py:class}`~quantlab.acquisition.massive.shapes.SnapshotEndpoint`):
+  `float` and `disclosure_taxonomy`.
+- **As of each session** ({py:class}`~quantlab.acquisition.massive.shapes.AsOfEndpoint`): `tickers`,
+  the reference tickers listed that day.
+- **One id at a time** ({py:class}`~quantlab.acquisition.massive.shapes.IdsEndpoint`):
+  `ticker_events`, each composite FIGI's ticker changes.
+
+The condition table is a sixth shape
+({py:class}`~quantlab.acquisition.massive.shapes.ConditionTableEndpoint`). A day's conversion needs
+it, so it is pulled with
+{py:meth}`MassiveClient.condition_table <quantlab.acquisition.massive.client.MassiveClient.condition_table>`
+and is not in `ENDPOINTS`.
 
 ```python
 from quantlab.acquisition.massive.client import MassiveClient
@@ -120,6 +131,32 @@ tickers, the news and the filing text is a long backfill; pass `end=` to run it 
 
 The API key goes in an `Authorization: Bearer` header only, never in a URL, a log line or a raw
 file.
+
+### Adding an endpoint
+
+An endpoint served in a shape the raw tier already has is one more entry of `ENDPOINTS` in
+`quantlab/acquisition/massive/rest.py`. Its config class takes only the fields of that shape, so
+a combination the shape does not have cannot be written:
+
+```python
+from datetime import date
+
+from quantlab.acquisition.massive.rest import REST_HOST
+from quantlab.acquisition.massive.shapes import DatedEndpoint, DatedSort
+
+DatedEndpoint(
+    "form_144",                                 # its directory under massive/rest/
+    f"{REST_HOST}/stocks/filings/vX/form-144",  # its URL
+    "filing_date",                              # the field the pull filters and sorts on
+    date(2020, 1, 1),                           # the first day a first pull asks for
+    limit=1000,                                 # the endpoint's largest page
+    overlap_days=7,                             # days asked for again, for rows added late
+    sort=DatedSort.DATE,                        # how the endpoint takes its order
+)
+```
+
+An endpoint served in a new way needs a new shape; see
+[Extending quantlab](../dev/extending.md#a-massive-pull-shape).
 
 ## Trade bars
 

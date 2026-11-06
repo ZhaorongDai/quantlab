@@ -82,7 +82,7 @@ class MassiveRestPanel:
     #: The REST endpoints read (``quantlab.acquisition.massive.rest.ENDPOINTS``);
     #: the store is built only through the day each one is pulled through.
     REST_ENDPOINTS: ClassVar[tuple[str, ...]] = ()
-    #: The latest first day of those endpoints (their ``RestEndpoint.earliest``):
+    #: The latest first day of those endpoints (their ``DatedEndpoint.earliest``):
     #: a first build starts no earlier. Declared here because the dataset layer
     #: comes before acquisition; a test locks it to ``ENDPOINTS``.
     EARLIEST: ClassVar[date] = date(1970, 1, 1)

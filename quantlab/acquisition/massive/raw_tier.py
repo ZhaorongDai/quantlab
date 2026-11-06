@@ -1,9 +1,10 @@
-"""The writers of Massive's raw tier: REST pages, whole pulls and watermarks.
+"""The writers of Massive's raw tier: REST pages, whole pulls, the condition table and watermarks.
 
 ``MassiveClient`` (``quantlab.acquisition.massive.client``) downloads day
-files and pulls REST endpoints into ``<download-dir>/massive/`` and records
-them with these writers. The layout (``raw_file``, ``rest_page_file``,
-``rest_pending_dir``, ...) and every reader of it (``read_watermark``,
+files, and the pull shapes (``quantlab.acquisition.massive.shapes``) pull REST
+endpoints, into ``<download-dir>/massive/`` and record them with these writers.
+The layout (``raw_file``, ``rest_page_file``, ``rest_pending_dir``, ...) and
+every reader of it (``read_watermark``,
 ``read_rest_watermark``, ``read_rest_records``, ``rest_frame``, ...) stay in
 ``quantlab.dataset.massive.raw``: the dataset layer reads the raw tier, only
 the acquisition layer writes it.
@@ -41,7 +42,9 @@ from datetime import date, datetime
 from pathlib import Path
 
 from quantlab.dataset.massive.raw import (
+    conditions_file,
     rest_as_of_pull_dir,
+    rest_page_file,
     rest_pending_dir,
     rest_pull_page_name,
     rest_pull_pages,
@@ -49,7 +52,12 @@ from quantlab.dataset.massive.raw import (
     rest_watermark_file,
     watermark_file,
 )
-from quantlab.utils.atomic import make_directories_durably, sync_directory, write_jsonl_atomically
+from quantlab.utils.atomic import (
+    make_directories_durably,
+    sync_directory,
+    write_json_atomically,
+    write_jsonl_atomically,
+)
 from quantlab.utils.watermark import write_watermark
 
 
@@ -77,6 +85,64 @@ def write_rest_page(path: str | Path, records: list[dict]) -> None:
         write_rest_page(rest_page_file(root, "splits", pulled_at, 1), page["results"])
     """
     write_jsonl_atomically(path, records)
+
+
+class PageFiles:
+    """The page files of one pull of an endpoint kept by date, each landing as it is written.
+
+    A reader may see the first pages of such a pull: the watermark, written
+    after them, is what says how far it reached.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/massive``.
+    endpoint : str
+        The endpoint's name.
+    pulled_at : datetime
+        When the pull started; it names the pages.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> from datetime import UTC
+    >>> pages = PageFiles(tempfile.mkdtemp(), "splits", datetime(2026, 10, 16, tzinfo=UTC))
+    >>> pages.add_page([{"id": "S1"}])
+    >>> len(pages.written)
+    1
+    """
+
+    def __init__(self, vendor_root: str | Path, endpoint: str, pulled_at: datetime):
+        self._vendor_root = vendor_root
+        self._endpoint = endpoint
+        self._pulled_at = pulled_at
+        self._written: list[Path] = []
+
+    def add_page(self, records: list[dict]) -> None:
+        """Write one page's records, the next in the pull.
+
+        Examples
+        --------
+        >>> import tempfile
+        >>> from datetime import UTC
+        >>> PageFiles(tempfile.mkdtemp(), "splits", datetime(2026, 10, 16, tzinfo=UTC)).add_page([{"id": "S1"}])
+        """
+        path = rest_page_file(self._vendor_root, self._endpoint, self._pulled_at, len(self._written) + 1)
+        write_rest_page(path, records)
+        self._written.append(path)
+
+    @property
+    def written(self) -> tuple[Path, ...]:
+        """The page files written so far, in order.
+
+        Examples
+        --------
+        >>> import tempfile
+        >>> from datetime import UTC
+        >>> PageFiles(tempfile.mkdtemp(), "splits", datetime(2026, 10, 16, tzinfo=UTC)).written
+        ()
+        """
+        return tuple(self._written)
 
 
 class StagedPull:
@@ -218,6 +284,35 @@ def stage_as_of(vendor_root: str | Path, endpoint: str, day: date, pulled_at: da
     """
     final = rest_as_of_pull_dir(vendor_root, endpoint, day, pulled_at)
     return StagedPull(rest_pending_dir(vendor_root, endpoint), final)
+
+
+def write_conditions(vendor_root: str | Path, pulled_at: datetime, records: list[dict]) -> Path:
+    """Write the condition table, the vendor's records verbatim, as one file.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/massive``.
+    pulled_at : datetime
+        When the pull started; it names the file.
+    records : list of dict
+        Every record of the table.
+
+    Returns
+    -------
+    Path
+        The file (``quantlab.dataset.massive.raw.conditions_file``).
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> from datetime import UTC
+    >>> write_conditions(tempfile.mkdtemp(), datetime(2026, 10, 9, 12, tzinfo=UTC), [{"id": 1}]).name
+    'conditions_20261009T120000000000.json'
+    """
+    path = conditions_file(vendor_root, pulled_at)
+    write_json_atomically(path, records)
+    return path
 
 
 def write_rest_watermark(vendor_root: str | Path, endpoint: str, field: str, through: date) -> None:
