@@ -57,9 +57,13 @@ def _merged(config, updates):
 
 
 def _read_wandb(tracker, workdir):
+    import wandb
     from wandb.proto import wandb_internal_pb2 as pb
     from wandb.sdk.internal import datastore
 
+    # ``finish`` returns before wandb-core has written the log, which may still
+    # be its 7-byte header; stopping the service waits for the write.
+    wandb.teardown()
     runs = []
     for run_dir in sorted((workdir / "wandb").glob("offline-run-*")):
         (log,) = run_dir.glob("*.wandb")

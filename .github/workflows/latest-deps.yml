@@ -1,0 +1,48 @@
+name: Latest dependencies
+
+# CI tests the locked versions, but `pip install quantlab-py` resolves the newest ones
+# the bounds in pyproject.toml allow. This runs the suite on those every week and opens
+# an issue when it fails.
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: Resolve the newest versions
+        run: uv lock --upgrade
+
+      - name: Install
+        run: uv sync --dev --all-extras
+
+      - name: Test suite
+        run: uv run pytest -n auto -q
+
+      - name: Report a failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: The test suite fails on the latest dependencies
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          open=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "Failed again: $RUN"
+          else
+            gh issue create --title "$TITLE" --body "Failed run: $RUN"
+          fi

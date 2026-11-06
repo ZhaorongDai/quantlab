@@ -1,29 +1,44 @@
 name: Release
 
-# Waits for the tagged commit's CI run to succeed, then builds the distributions from
-# the pushed tag's own checkout, so nothing outside the tagged commit (untracked files,
-# a stale egg-info) can reach the package, checks them,
-# imports every module from the installed wheel outside the repository, and publishes
-# to PyPI through trusted publishing (no API token is stored anywhere).
+# A v* tag publishes to PyPI through trusted publishing (no API token is stored anywhere)
+# and creates the GitHub Release. PyPI trusts this file and the pypi environment, so the
+# publish job stays here. A manual run only builds and checks.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
 jobs:
-  build:
+  gate:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: The tag is on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+
+      - name: The tag names the package version
+        run: |
+          version=$(uv run --no-project python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != version ${version}"; exit 1; }
+
+      - name: The CHANGELOG has a section for the version
+        run: grep -q "^## ${GITHUB_REF_NAME#v} (" CHANGELOG.md
 
       - name: The tagged commit passed CI
         # A release ships only a commit whose CI run succeeded. The tag push starts its
         # own CI run on the same commit, so this waits (up to 90 minutes) for one of the
         # commit's CI runs to succeed, and fails once every run has finished without one.
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -39,42 +54,14 @@ jobs:
           done
           echo "CI on $GITHUB_SHA did not finish within 90 minutes"; exit 1
 
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: "3.13"
-
-      - name: The tag names the package version
-        if: github.ref_type == 'tag'
-        run: |
-          version=$(uv run --no-project python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
-          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != version ${version}"; exit 1; }
-
-      - name: Build
-        run: uv build --out-dir dist
-
-      - name: Check metadata
-        run: uvx twine check --strict dist/*
-
-      - name: Import every module from the installed wheel
-        run: |
-          uv venv --python 3.13 /tmp/wheel-env
-          uv pip install --python /tmp/wheel-env/bin/python "$(ls dist/*.whl)[all]"
-          cd /tmp
-          /tmp/wheel-env/bin/python -c "
-          import importlib, pkgutil, quantlab
-          names = [m.name for m in pkgutil.walk_packages(quantlab.__path__, 'quantlab.')]
-          for name in names:
-              importlib.import_module(name)
-          print(len(names), 'modules imported from', quantlab.__file__)
-          "
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
+  package:
+    needs: gate
+    # The gate is skipped on a manual run, and the build still runs.
+    if: ${{ !failure() && !cancelled() }}
+    uses: ./.github/workflows/package.yml
 
   publish:
-    needs: build
+    needs: package
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     environment: pypi
@@ -86,4 +73,21 @@ jobs:
           name: dist
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Pinned to a commit: this step holds the right to publish.
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the GitHub Release from the version's CHANGELOG section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v head="## ${version} (" 'index($0, "## ") == 1 { on = index($0, head) == 1; next } on' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" --title "quantlab ${version}" --notes-file notes.md --verify-tag
