@@ -8,7 +8,8 @@ same rows from its own fills, adding the cash a position received while open
 (dividends, distributions) to that round trip's PnL. What is locked here:
 
 - **Equal to vectorbt.** On vectorbt's own fills, with no cash flows, every
-  row equals what ``Portfolio.stats`` reports in the position trade view,
+  row equals, to float rounding, what ``Portfolio.stats`` reports in the
+  position trade view,
   on fixtures with shorts, reversals, partial closes, adds, fees and
   positions still open at the end, and on a quantlab run's ``whole`` block.
 - **Gross exposure.** ``exposure_stats`` gives vectorbt's ``Max Gross
@@ -89,6 +90,9 @@ def _assert_rows_equal(got: dict, want: dict) -> None:
             assert isinstance(got[key], float) and np.isnan(got[key]), key
         elif value is pd.NaT:
             assert got[key] is pd.NaT, key
+        elif isinstance(value, float):
+            # vectorbt's own sums move in the last bits between its versions.
+            assert got[key] == pytest.approx(value, rel=1e-12), (key, got[key], value)
         else:
             assert got[key] == value, (key, got[key], value)
 
