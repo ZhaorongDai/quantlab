@@ -7,6 +7,7 @@
 
 <p align="center">
   <a href="https://github.com/ZhaorongDai/quantlab/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/ZhaorongDai/quantlab/ci.yml?branch=main&label=ci"></a>
+  <a href="https://codecov.io/gh/ZhaorongDai/quantlab"><img alt="Coverage" src="https://codecov.io/gh/ZhaorongDai/quantlab/graph/badge.svg?branch=main"></a>
   <a href="https://zhaorongdai.github.io/quantlab/"><img alt="Docs" src="https://img.shields.io/badge/docs-online-3776ab"></a>
   <a href="https://pypi.org/project/quantlab-py/"><img alt="PyPI" src="https://img.shields.io/pypi/v/quantlab-py?label=pypi&color=3776ab"></a>
   <a href="https://www.python.org/downloads/"><img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-3776ab?logo=python&logoColor=white"></a>
