@@ -27,6 +27,9 @@ jobs:
         # ubuntu matches the Linux training server; macos (arm64) matches the dev host,
         # where the darwin-only paths run (OpenMP guard, KunQuant symbol padding).
         os: [ubuntu-latest, macos-latest]
+    permissions:
+      contents: read
+      id-token: write  # OIDC upload to Codecov
     env:
       MPLBACKEND: Agg
     steps:
@@ -47,7 +50,17 @@ jobs:
         run: uv sync --locked --dev --all-extras
 
       - name: Test suite
-        run: uv run pytest -n auto -q
+        run: uv run pytest -n auto -q --cov=quantlab --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        # OIDC authenticates the upload, so the repository needs no Codecov token.
+        # Codecov merges the two operating systems' reports into one figure.
+        uses: codecov/codecov-action@v7
+        with:
+          use_oidc: true
+          files: ./coverage.xml
+          flags: ${{ runner.os }}
+          fail_ci_if_error: false
 
       - name: API doctests
         run: uv run pytest -q --doctest-modules quantlab/api/
