@@ -48,7 +48,11 @@ def log_lines():
 
 
 def _client(vendor, clock, **kwargs):
-    from quantlab.acquisition.stockfit.client import StockFitClient
+    if isinstance(vendor, FakeVendor):
+        return vendor.client(**kwargs)
+    from quantlab.acquisition.stockfit.client import (
+        StockFitClient,  # a wrapped vendor: the test's clock
+    )
 
     return StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now, **kwargs)
 

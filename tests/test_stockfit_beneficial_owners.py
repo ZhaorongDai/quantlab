@@ -14,7 +14,14 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.stockfit_fixtures import KEY, PLUG, FakeClock, FakeVendor, company_row, fixture
+from tests.stockfit_fixtures import (
+    KEY,
+    PLUG,
+    FakeClock,
+    FakeVendor,
+    company_row,
+    fixture,
+)
 
 
 @pytest.fixture
@@ -45,14 +52,13 @@ PLUG_FILINGS = [
 
 
 def _refresh(download_dir, clock):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
     vendor = FakeVendor(clock, companies=[company_row(PLUG, "Plug Power Inc")])
     vendor.bodies[("/api/filings", frozenset({("cik", str(PLUG))}))] = {
         "page": 1, "pageSize": 100, "totalPages": 1, "totalResults": len(PLUG_FILINGS), "data": PLUG_FILINGS,
     }
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     result = refresh_raw_tier(
         download_dir, client=client, endpoints=("symbols", "beneficial_owners_history", "filings"),
     )
@@ -62,7 +68,9 @@ def _refresh(download_dir, clock):
 
 def _panel(download_dir, start, end):
     from quantlab.dataset.config import StockFitBeneficialOwnersConfig
-    from quantlab.dataset.stockfit.beneficial_owners import StockFitBeneficialOwnersDataset
+    from quantlab.dataset.stockfit.beneficial_owners import (
+        StockFitBeneficialOwnersDataset,
+    )
 
     def dataset():
         return StockFitBeneficialOwnersDataset(StockFitBeneficialOwnersConfig(

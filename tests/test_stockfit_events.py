@@ -10,7 +10,15 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from tests.stockfit_fixtures import GOOGL, KEY, PLUG, FakeClock, FakeVendor, company_row, fixture
+from tests.stockfit_fixtures import (
+    GOOGL,
+    KEY,
+    PLUG,
+    FakeClock,
+    FakeVendor,
+    company_row,
+    fixture,
+)
 
 SPLITS = ("/api/company/stock-splits", frozenset({("cik", str(GOOGL))}))
 DETAILS = ("/api/company/details", frozenset({("cik", str(GOOGL))}))
@@ -44,10 +52,9 @@ def _vendor(clock, *, splits=(), dividends=()):
 
 
 def _refresh(tmp_path, vendor, clock):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     result = refresh_raw_tier(tmp_path, client=client, endpoints=EVENT_ENDPOINTS)
     assert not result.failed, result.summary()
 

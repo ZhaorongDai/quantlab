@@ -117,9 +117,8 @@ BY_ADVISER = {
 
 
 def _client(vendor, clock):
-    from quantlab.acquisition.stockfit.client import StockFitClient
 
-    return StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    return vendor.client()
 
 
 def _refresh(tmp_path, vendor, clock, endpoints=FUND_ENDPOINTS):

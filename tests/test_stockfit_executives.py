@@ -32,7 +32,6 @@ def annual(period, fiscal_year):
 
 
 def _refresh(download_dir, clock):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
     vendor = FakeVendor(clock, companies=[company_row(GOOGL, "Alphabet Inc."), company_row(SEPTEMBER, "September Co")])
@@ -48,7 +47,7 @@ def _refresh(download_dir, clock):
         "avgOfficerTotalComp": 27000000, "avgOfficerActuallyPaidComp": 60000000,
         "companyTsr": 250.0, "peerGroupTsr": 200.0,
     }]
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     result = refresh_raw_tier(download_dir, client=client, endpoints=(
         "symbols", "income_statement_annual",
         "executives_compensation", "executives_governance", "executives_performance_measures",

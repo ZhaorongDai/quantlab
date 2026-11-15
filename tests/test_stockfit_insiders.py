@@ -12,8 +12,15 @@ from datetime import UTC, datetime
 
 import pytest
 
-from tests.stockfit_fixtures import GOOGL, KEY, PLUG, FakeClock, FakeVendor, company_row, fixture
-
+from tests.stockfit_fixtures import (
+    GOOGL,
+    KEY,
+    PLUG,
+    FakeClock,
+    FakeVendor,
+    company_row,
+    fixture,
+)
 
 #: The Sharadar insider panel's variables, (``SharadarInsidersDataset``).
 SHARADAR_INSIDER_VARIABLES = [
@@ -57,10 +64,9 @@ def _vendor(clock, trades_by_cik):
 
 
 def _refresh(download_dir, vendor, clock):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     return refresh_raw_tier(download_dir, client=client, endpoints=("symbols", "insider_transactions"))
 
 
@@ -139,7 +145,6 @@ def test_the_insider_variables_carry_the_sharadar_panels_names_and_signs(env, tm
 def test_a_new_insider_13d_13g_or_proxy_filing_re_pulls_only_its_filers_pulls_of_that_kind(env, tmp_path, form, paths):
     from datetime import timedelta
 
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
     from tests.stockfit_fixtures import filing_row
 
@@ -149,7 +154,7 @@ def test_a_new_insider_13d_13g_or_proxy_filing_re_pulls_only_its_filers_pulls_of
     }
     clock = FakeClock()
     vendor = FakeVendor(clock)
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     refresh_raw_tier(tmp_path, client=client)
     clock.advance(days=1)
     accepted = (clock.now() - timedelta(hours=2)).isoformat()

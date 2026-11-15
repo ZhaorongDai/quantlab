@@ -54,10 +54,9 @@ def _vendor(clock, filings_by_cik):
 
 
 def _refresh(download_dir, vendor, clock, ciks=None):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     return refresh_raw_tier(download_dir, client=client, endpoints=("symbols", "filings"), ciks=ciks)
 
 

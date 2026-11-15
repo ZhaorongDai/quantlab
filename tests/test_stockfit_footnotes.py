@@ -9,13 +9,20 @@ Realty Income; edits to them are marked SYNTHETIC.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from datetime import timedelta
-
-from tests.stockfit_fixtures import GOOGL, KEY, FakeClock, FakeVendor, filing_row, fixture
+from tests.stockfit_fixtures import (
+    GOOGL,
+    KEY,
+    FakeClock,
+    FakeVendor,
+    filing_row,
+    fixture,
+)
 
 BA, O = 12927, 726728
 COMPANIES = (GOOGL, BA, O)
@@ -32,13 +39,12 @@ def clock():
 
 
 def _refresh(tmp_path, vendor, clock, ciks=COMPANIES):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
     from quantlab.dataset.stockfit.footnotes import FOOTNOTES, footnote_endpoint
 
     footnotes = [footnote_endpoint(name, period) for name in FOOTNOTES for period in ("annual", "quarter")]
     endpoints = ["filings_latest", *footnotes]  # the feed whose new reports re-pull the footnotes
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     result = refresh_raw_tier(tmp_path, client=client, endpoints=endpoints, ciks=ciks)
     assert not result.failed, result.summary()
     return result

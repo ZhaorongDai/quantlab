@@ -79,7 +79,11 @@ def list_requests(names) -> int:
     ``FakeVendor`` serves every list and feed it holds in one page, so each
     variant (entity) of a ``MarketList`` row costs one request.
     """
-    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS, MarketList, PullContext
+    from quantlab.acquisition.stockfit.endpoints import (
+        ENDPOINTS,
+        MarketList,
+        PullContext,
+    )
 
     context = PullContext(Path("/nonexistent/stockfit"))
     return sum(
@@ -194,6 +198,16 @@ class FakeVendor:
         self.calls: list[tuple[str, dict, dict]] = []
         self.statuses: list[int] = []
         self._times: list[datetime] = []
+
+    def client(self, **kwargs):
+        """Return a ``StockFitClient`` over this vendor that sleeps on and reads the vendor's clock.
+
+        A client on another clock would wait out a 429 without the vendor's
+        minute window ever rolling, so every test client is made here.
+        """
+        from quantlab.acquisition.stockfit.client import StockFitClient
+
+        return StockFitClient(http_get=self, sleep=self.clock.sleep, now=self.clock.now, **kwargs)
 
     def requested(self, path: str) -> list[dict]:
         """Return the parameters of every call made to ``path``, in order."""

@@ -30,12 +30,10 @@ def env(monkeypatch):
 
 
 def _raw_tier(tmp_path, vendor=None):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
-    clock = vendor.clock if vendor is not None else FakeClock()
-    vendor = vendor if vendor is not None else FakeVendor(clock)
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    vendor = vendor if vendor is not None else FakeVendor(FakeClock())
+    client = vendor.client()
     result = refresh_raw_tier(tmp_path / "downloads", endpoints=QUARTER_ENDPOINTS, ciks=(PLUG, TWTR), client=client)
     assert not result.failed, result.summary()
     return tmp_path / "downloads" / "stockfit"

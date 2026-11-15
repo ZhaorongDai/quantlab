@@ -39,10 +39,9 @@ def clock():
 
 
 def _refresh(tmp_path, vendor, clock, *endpoints, ciks=None):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     result = refresh_raw_tier(tmp_path, client=client, endpoints=("symbols", "company_delisted", *endpoints), ciks=ciks)
     assert not result.failed, result.summary()
     return result

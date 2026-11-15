@@ -105,7 +105,6 @@ THIRTEEN_F = ("symbols", "institutional_holders", "manager_13f_filings", "manage
 
 def _refresh(tmp_path, vendor, clock, *, end=date(2024, 7, 1), first_quarter=date(2024, 3, 31), names=THIRTEEN_F, runs=3):
     """Run the refresh ``runs`` times: holders land, then their managers' filings, then the portfolios."""
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
@@ -114,7 +113,7 @@ def _refresh(tmp_path, vendor, clock, *, end=date(2024, 7, 1), first_quarter=dat
         else ENDPOINTS[name]
         for name in names
     ]
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     for _ in range(runs):
         result = refresh_raw_tier(tmp_path, client=client, endpoints=rows, end=end)
         assert not result.failed, result.summary()

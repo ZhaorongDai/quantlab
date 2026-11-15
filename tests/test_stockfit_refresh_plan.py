@@ -16,11 +16,11 @@ from tests.stockfit_fixtures import (
     GOOGL,
     KEY,
     PLUG,
+    STATEMENT_PATHS,
     TSM,
     TWTR,
     FakeClock,
     FakeVendor,
-    STATEMENT_PATHS,
     all_but_13f,
     company_row,
     filing_row,
@@ -41,10 +41,9 @@ def clock():
 
 
 def _refresh(tmp_path, vendor, clock, **kwargs):
-    from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
-    client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
+    client = vendor.client()
     kwargs.setdefault("endpoints", all_but_13f())
     return refresh_raw_tier(tmp_path, client=client, **kwargs)
 
