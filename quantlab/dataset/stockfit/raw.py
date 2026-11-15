@@ -24,7 +24,7 @@ entity are the changes the vendor made to it, each kept.
 
 The writer (``quantlab.acquisition.stockfit.raw_tier``) takes every path from
 here; the readers are ``pulls``, ``read_pull``, ``read_pull_as_of``,
-``entities``, ``read_watermark`` and ``company_ciks``. This module only
+``entities``, ``read_watermark``, ``last_pulled`` and ``company_ciks``. This module only
 reads.
 
 Examples
@@ -173,6 +173,24 @@ def read_watermark(vendor_root: str | Path, endpoint: str, entity: str) -> date 
     True
     """
     return _read_watermark(watermark_file(vendor_root, endpoint, entity))
+
+
+def last_pulled(vendor_root: str | Path, endpoint: str, entity: str) -> datetime | None:
+    """Return when an entity was last pulled (UTC), published or not; ``None`` if never.
+
+    The time of the pull, which the watermark file records beside its day;
+    the refresh compares it with the filings made since.
+
+    Examples
+    --------
+    >>> last_pulled("/nonexistent/stockfit", "symbols", "operating") is None
+    True
+    """
+    path = watermark_file(vendor_root, endpoint, entity)
+    if not path.exists():
+        return None
+    stamp = json.loads(path.read_text(encoding="utf-8"))["pulled_at"]
+    return datetime.strptime(stamp, STAMP_FORMAT).replace(tzinfo=UTC)
 
 
 def _pull_dirs(vendor_root: str | Path, endpoint: str, entity: str) -> dict[datetime, Path]:

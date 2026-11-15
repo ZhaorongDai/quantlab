@@ -14,9 +14,13 @@ reads them from the headers and hard-codes neither:
 - once the vendor says no more than ``day_reserve`` requests remain today, it
   refuses to send more (``StockFitDailyCapReached``) until the UTC day
   changes, so a refresh stops cleanly instead of running into HTTP 429;
-- an HTTP 429 or 5xx, or a broken connection, is retried after the server's
-  ``Retry-After`` (a full minute window for a 429 without one), up to
-  ``retries`` times (``quantlab.acquisition._support.request_policy``).
+- an HTTP 429 while requests remain today is waited out (the server's
+  ``Retry-After``, or a full minute window without one) and sent again, as
+  often as it takes: a throttle never fails a request; a 429 with none left
+  today raises ``StockFitDailyCapReached``;
+- an HTTP 5xx, or a broken connection, is retried after the server's
+  ``Retry-After``, up to ``retries`` times
+  (``quantlab.acquisition._support.request_policy``).
 
 A 401 or 403 raises ``StockFitEntitlementError``; a 404 returns ``None``
 (the vendor holds nothing for that entity); any other 4xx, or a 200 body that
@@ -78,7 +82,7 @@ class StockFitEntitlementError(RuntimeError):
 
 
 class StockFitTransportError(TransientError):
-    """The connection failed or broke, StockFit throttled, or answered an error status; retried."""
+    """The connection failed or broke, or StockFit answered a server error; retried."""
 
 
 class StockFitResponseError(ValueError):
@@ -165,7 +169,7 @@ class StockFitClient:
         ``http_get(url, params=..., headers=...) -> HttpResponse``; the real
         HTTP adapter ``http_transport`` when omitted. Tests pass a fake vendor.
     retries : int, default 5
-        Retries of a throttled or failed request before it raises.
+        Retries of a failed request (a 5xx or a broken connection) before it raises.
     backoff : float, default 2.0
         Seconds before the first retry of a failure without ``Retry-After``;
         doubled on each later one.
@@ -293,7 +297,7 @@ class StockFitClient:
         StockFitEntitlementError
             If StockFit refused the key (401) or the endpoint (403).
         StockFitTransportError
-            If the request kept failing or being throttled past ``retries``.
+            If the request kept failing past ``retries``.
         StockFitResponseError
             If a 200 body is not JSON.
 
@@ -305,24 +309,29 @@ class StockFitClient:
         query = {name: str(value) for name, value in params.items()}
         headers = {"Authorization": f"Bearer {self.credentials.api_key}"}
 
+        def send() -> HttpResponse:
+            """Send until StockFit answers other than 429: a throttle is waited out, never counted as a failure."""
+            while True:
+                self._make_room()
+                self._sent.append(self.now())
+                self.requests += 1
+                response = self.http_get(BASE_URL + path, params=query, headers=headers)
+                self._read_limits(response.headers)
+                if response.status != 429:
+                    return response
+                response.read()
+                if self.remaining_day == 0:
+                    raise StockFitDailyCapReached(f"StockFit answered 429 on {path} with no requests left today.")
+                self._remaining_minute = None
+                self._wait(retry_after(response.headers) or WINDOW_SECONDS)
+
         def attempt() -> object | None:
-            self._make_room()
-            self._sent.append(self.now())
-            self.requests += 1
-            response = self.http_get(BASE_URL + path, params=query, headers=headers)
+            response = send()
             body = response.read()
-            self._read_limits(response.headers)
             if response.status == 404:
                 return None
             if response.status in REFUSAL_STATUSES:
                 raise policy.refusal(response.status, where=path, detail=policy.scrub(body[:200].decode(errors="replace")))
-            if response.status == 429:
-                if self.remaining_day == 0:
-                    raise StockFitDailyCapReached(f"StockFit answered 429 on {path} with no requests left today.")
-                self._remaining_minute = None
-                raise StockFitTransportError(
-                    f"HTTP 429 on {path}", retry_after=retry_after(response.headers) or WINDOW_SECONDS
-                )
             if response.status >= 500:
                 raise StockFitTransportError(
                     policy.scrub(f"HTTP {response.status} on {path}: {body[:200].decode(errors='replace')}"),
