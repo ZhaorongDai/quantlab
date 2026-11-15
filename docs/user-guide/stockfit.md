@@ -75,11 +75,12 @@ The same call does the first backfill and every later update; run it once a day.
    each from its last pull's day;
 2. plans the per-entity pulls due, in this order, within the requests left today:
    - the entities a filing made since their last pull touches: a new 10-K, 10-Q or 20-F re-pulls
-     that company's statements;
+     that company's statements, and a new filing of any form the feed follows re-pulls its filing
+     list;
    - the entities never pulled, in the table's order, which is the backfill order (for the
      statements: income statement, balance sheet and cash-flow statement, annual, quarterly and
      TTM, with as many periods as StockFit serves);
-   - the periodic re-pulls: every company's statements once a week, which catches a filing the
+   - the periodic re-pulls: every company's statements and filing list once a week, which catches a filing the
      feed missed.
 
 The pulls that do not fit in the day's requests are deferred, and the next run plans them again
@@ -161,3 +162,53 @@ config = StockFitCongressTradesConfig(
 StockFitCongressTradesDataset(config).update()
 panel = StockFitCongressTradesDataset(config).panel("2024-01-02", "2024-03-28")
 ```
+
+## Available dates
+
+Every StockFit panel places a row on the NYSE trading day it became public, by one rule
+({py:mod}`quantlab.dataset.stockfit.available`):
+
+- a row with the SEC's acceptance time (`acceptedAt`) is available on the day it was accepted when
+  accepted before that session's close (16:00 New York time, 13:00 on an early close), and on the
+  next trading day when accepted at or after the close, on a weekend or on a holiday;
+- a row with only a filing date (`dateFiled`) is available on that day, or the next trading day
+  when it is not one.
+
+So a close-based backtest never trades on a filing made after the close. A panel's days are NYSE's
+trading days through the day before the newest pull of the endpoint it reads: a refresh made on a
+day holds every filing public by the previous close.
+
+## The filing panel
+
+The refresh pulls each company's filing list (`/api/filings`, every form, newest first) into
+`filings/<cik>/`. {py:func}`quantlab.dataset.stockfit.filings.read_filings` returns the newest list
+of every company as one table (CIK, accession number, form type, filing date, acceptance time,
+period, amendment flag, 8-K events), the table accession lookups read. Item text stays raw.
+
+{py:class}`~quantlab.dataset.stockfit.filings.StockFitFilingsDataset` turns it into a daily panel
+by CIK, each filing on its available date only; a day without a filing holds 0 and `False`:
+
+| Variable | Meaning |
+|---|---|
+| `form_10_k`, `form_10_q`, `form_8_k`, `form_def_14a`, `form_13f_hr`, ... | Filings of each form StockFit names (17 forms), amendments included |
+| `form_other` | Filings of any other form (Form 144, S-1, ...) |
+| `event_earnings`, `event_officer_change`, ... | An 8-K of the day lists the event (StockFit's 31 8-K events; `earnings` is Item 2.02) |
+| `amendment` | A filing of the day is an amendment |
+
+```python
+from quantlab.dataset.config import StockFitFilingsConfig
+from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
+
+config = StockFitFilingsConfig(
+    zarr_file_path="/data/market/stockfit/stockfit_filings_1d/stockfit_filings_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    start_date="2000-01-01",
+)
+StockFitFilingsDataset(config).update()
+panel = StockFitFilingsDataset(config).panel("2026-10-01", "2026-10-31")
+panel["event_earnings"].sel(symbol=1652044)  # Alphabet's CIK
+```
+
+StockFit's filing lists have gaps (a company's early 10-Ks can be missing, and a delisted company
+may list only a few filings), so a zero means StockFit lists no filing that day, not that none was
+made.
