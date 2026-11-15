@@ -33,7 +33,7 @@ converts it to a panel.
 |---|---|---|
 | `sharadar` | US stock and fund daily prices, fundamentals, valuations, events, insider and 13F holdings, S&P 500 membership, tickers | `SHARADAR_API_KEY` |
 | `massive` | Every US-equity SIP trade, minute and day aggregates, dividends, short interest and volume, news, 8-K disclosures, IPOs | `MASSIVE_API_KEY`, `MASSIVE_S3_ACCESS_KEY_ID` (`MASSIVE_S3_SECRET_ACCESS_KEY` optional) |
-| `stockfit` | SEC-filing data parsed from EDGAR: company lists and the income, balance-sheet and cash-flow statements per CIK (raw tier) | `STOCKFIT_API_KEY` |
+| `stockfit` | SEC-filing data parsed from EDGAR: company lists and the income, balance-sheet and cash-flow statements per CIK; quarterly and TTM statement panels, as known on each day | `STOCKFIT_API_KEY` |
 | `fred` | Interest-rate series such as DTB3, the 3-month Treasury bill rate | none |
 | `tiingo` | US equity daily bars | `TIINGO_API_KEY` |
 | `alpaca` | US equity daily and minute bars; tick quotes and trades | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` |

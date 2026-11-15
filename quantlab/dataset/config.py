@@ -1554,3 +1554,42 @@ class MassiveNewsConfig(MassiveRestPanelConfig):
     >>> cfg.vendor, cfg.table
     ('massive', 'sep')
     """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitStatementsConfig(DatasetConfig):
+    """Config of a StockFit statement panel on the CIK axis: quarterly or TTM, as known or originally reported.
+
+    The panel is built from StockFit's raw tier alone (``raw_data_dir_path``
+    is ``<download-dir>/stockfit``), on NYSE's trading calendar. One store
+    holds one ``period`` (``"quarter"``: each fiscal quarter; ``"ttm"``:
+    the trailing four quarters) and one ``reported`` set (``"as_known"``:
+    each value as known on the day, restatements included from their own
+    available date; ``"original"``: each value as first reported, never
+    changed). Annual statements stay in the raw tier. ``symbols``, when
+    set, are the CIKs to build.
+
+    Examples
+    --------
+    >>> cfg = StockFitStatementsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_statements_quarter.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.vendor, cfg.period, cfg.reported, cfg.stale_after_days
+    ('stockfit', 'quarter', 'as_known', 365)
+    """
+
+    #: Always US equity for this vendor.
+    market: Market = "us_equity"
+    #: Always daily for this vendor.
+    frequency: Frequency = "1d"
+    #: Always StockFit for this dataset.
+    vendor: Vendor | None = "stockfit"
+    #: The periods the store holds: ``"quarter"`` or ``"ttm"``.
+    period: str = "quarter"
+    #: The values the store holds: ``"as_known"`` or ``"original"``.
+    reported: str = "as_known"
+    #: Days after the shown quarter's filing date a row stops being shown
+    #: when no newer quarter has replaced it, as for the Sharadar and
+    #: Compustat panels. ``None`` shows it until it is replaced.
+    stale_after_days: int | None = 365
