@@ -151,8 +151,8 @@ def test_a_snapshot_pulled_after_the_close_shows_from_the_next_trading_day(env, 
     clock.advance(hours=7)  # 21:00 UTC is 16:00 in New York: the session has closed
     vendor = _vendor(clock, dividends=[_declared_dividend(["PLUG"], "2026-11-20", 0.25)])
     _refresh(tmp_path, vendor, clock)
-    clock.advance(days=1)
-    _refresh(tmp_path, vendor, clock)
+    clock.advance(days=2)
+    _refresh(tmp_path, vendor, clock)  # Wednesday: the raw tier is complete through Tuesday
 
     panel = _declared(tmp_path).update().panel("2026-11-02", "2026-11-17").load()
 
@@ -167,6 +167,8 @@ def test_declared_rows_whose_tickers_name_no_company_are_left_out(env, tmp_path,
         _declared_dividend(["ZZZZ"], "2026-11-17", 9.0),
     ])
     _refresh(tmp_path, vendor, clock)
+    clock.advance(days=1)
+    _refresh(tmp_path, vendor, clock)  # the raw tier is complete through the first refresh's day
 
     panel = _declared(tmp_path).update().panel("2026-11-02", "2026-11-17").load()
 

@@ -17,7 +17,8 @@ known from the moment it was seen:
 - a row a pull serves unchanged, or no longer serves, adds nothing.
 
 ``observed_versions`` applies these rules to the rows of each pull;
-``pull_day`` turns a pull's time into the day its content counts from.
+``quantlab.dataset.stockfit.available.pull_day`` turns a pull's time into
+the day its content counts from.
 
 Examples
 --------
@@ -37,13 +38,11 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
-from functools import lru_cache
+from datetime import date, datetime
 
 import pandas as pd
 
-#: The time zone the NYSE session close is read in.
-NEW_YORK = "America/New_York"
+from quantlab.dataset.stockfit.available import NEW_YORK
 
 
 @dataclass(frozen=True)
@@ -158,54 +157,3 @@ def observed_versions(pulls: Sequence[tuple[datetime, Mapping[str, ServedRow]]])
             found.append(Version(key, row.filed, row.values, None if filed_since else pulled_at, False))
         previous, previous_day = rows, pd.Timestamp(pulled_at).tz_convert(NEW_YORK).date()
     return found
-
-
-def pull_day(pulled_at: datetime) -> date:
-    """Return the day what a pull made at ``pulled_at`` saw counts from.
-
-    A pull made before the NYSE session's close (13:00 New York time on a
-    half day) counts on its New York day; one made at or after the close, or
-    on a day without a session, on the next day, which a trading calendar's
-    ``place`` rolls onto the next trading day.
-
-    Parameters
-    ----------
-    pulled_at : datetime
-        The pull's time, timezone-aware.
-
-    Returns
-    -------
-    date
-        A New York calendar day.
-
-    Examples
-    --------
-    >>> from datetime import UTC, datetime
-    >>> pull_day(datetime(2026, 11, 16, 14, tzinfo=UTC))  # 09:00 in New York
-    datetime.date(2026, 11, 16)
-    >>> pull_day(datetime(2024, 7, 3, 18, tzinfo=UTC))  # 14:00, after the 13:00 close
-    datetime.date(2024, 7, 4)
-    """
-    local = pd.Timestamp(pulled_at).tz_convert(NEW_YORK)
-    day = local.date()
-    close = _session_close(day)
-    return day if close is not None and local.time() < close else day + timedelta(days=1)
-
-
-@lru_cache(maxsize=1)
-def _nyse():
-    """Return the XNYS session calendar, built once."""
-    from quantlab.dataset._support.session_calendar import XnysSessionCalendar
-
-    return XnysSessionCalendar().calendar
-
-
-def _session_close(day: date) -> time | None:
-    """Return the NYSE close of ``day`` in New York time; 16:00 past the calendar's end; ``None`` without a session."""
-    calendar = _nyse()
-    label = pd.Timestamp(day)
-    if label > calendar.last_session:
-        return time(16) if day.weekday() < 5 else None
-    if label < calendar.first_session or not calendar.is_session(label):
-        return None
-    return calendar.session_close(label).tz_convert(NEW_YORK).time()

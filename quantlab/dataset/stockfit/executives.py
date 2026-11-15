@@ -63,10 +63,9 @@ import polars as pl
 
 from quantlab.dataset._support.point_in_time import ReleasePanelDataset, ReleaseSpec, TradingCalendar
 from quantlab.dataset.config import DatasetConfig, StockFitExecutivesConfig
-from quantlab.dataset.stockfit.available import nyse_calendar
+from quantlab.dataset.stockfit.available import nyse_calendar, pull_day
 from quantlab.dataset.stockfit.period_panel import as_float as as_number
 from quantlab.dataset.stockfit.raw import entities, pulls, read_pull, read_pull_as_of
-from quantlab.dataset.stockfit.vintages import pull_day
 
 #: The raw tier's endpoints of the per-company proxy data.
 EXECUTIVES_COMPENSATION = "executives_compensation"
@@ -270,14 +269,10 @@ class StockFitExecutivesDataset(ReleasePanelDataset):
     def _trading_calendar(self) -> TradingCalendar:
         """Return NYSE's trading days through the oldest endpoint's last complete day (cached)."""
         if self._calendar_cache is None:
-            calendars = [
-                nyse_calendar(
-                    self.config.raw_data_dir_path, endpoint,
-                    start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
-                )
-                for endpoint in ENDPOINTS
-            ]
-            self._calendar_cache = min(calendars, key=lambda calendar: calendar.through)
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, ENDPOINTS,
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
+            )
         return self._calendar_cache
 
     def _spec(self) -> ReleaseSpec:

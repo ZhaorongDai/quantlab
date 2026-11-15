@@ -23,7 +23,7 @@ filing that made it public. It hides what the chain is made of:
   chain: its latest value is dated at the period's original filing.
 
 ``StockFitStatementsDataset`` places every value at its available date
-(``quantlab.dataset.stockfit.placement``: accepted before the NYSE close,
+(``quantlab.dataset.stockfit.available``: accepted before the NYSE close,
 that day; at or after it, the next trading day; with only ``dateFiled``,
 that day) on NYSE's calendar, and shows on every trading day the latest
 fiscal quarter filed by then, each fact as known that day (``reported=
@@ -68,7 +68,7 @@ from __future__ import annotations
 import bisect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 
 import numpy as np
 import polars as pl
@@ -80,7 +80,7 @@ from quantlab.dataset._support.point_in_time import (
 )
 from quantlab.dataset.config import DatasetConfig, StockFitStatementsConfig
 from quantlab.dataset.stockfit import raw
-from quantlab.dataset.stockfit.placement import available_dates
+from quantlab.dataset.stockfit.available import nyse_calendar, parse_accepted, place_released
 from quantlab.utils.timer import Timer
 
 #: The income statement's facts, in the vendor's order.
@@ -310,10 +310,6 @@ class _Quarter:
         return found[index - 1][1] if index else None
 
 
-def _parse_accepted(text: str | None) -> datetime | None:
-    return None if not text else datetime.fromisoformat(text).astimezone(UTC)
-
-
 def _parse_filed(text: str | None) -> date | None:
     return None if not text else date.fromisoformat(text[:10])
 
@@ -332,13 +328,15 @@ class _Placer:
             return
         rows = pl.DataFrame(
             {
-                "accepted_at": [_parse_accepted(accepted) for accepted, _ in new],
+                "accepted_at": [parse_accepted(accepted) for accepted, _ in new],
                 "date_filed": [_parse_filed(filed) for _, filed in new],
                 "_pair": list(range(len(new))),
             },
             schema={"accepted_at": pl.Datetime("us", "UTC"), "date_filed": pl.Date, "_pair": pl.Int64},
         )
-        found = dict(available_dates(rows, self.calendar).select("_pair", "available").iter_rows())
+        found = dict(
+            place_released(rows, self.calendar, drop_earlier=False).select("_pair", "available").iter_rows()
+        )
         for index, pair in enumerate(new):
             available = found.get(index)
             self.placed[pair] = None if available is None else np.datetime64(available, "ns")
@@ -525,28 +523,17 @@ class StockFitStatementsDataset(ReleasePanelDataset):
         return found
 
     def _trading_calendar(self) -> TradingCalendar:
-        """Return NYSE's sessions through the day before the newest quarterly statement pull.
+        """Return NYSE's sessions through the day the quarterly statements are complete through.
 
         Raises
         ------
         ValueError
-            If no quarterly statement was ever pulled.
+            If a quarterly statement endpoint was never pulled.
         """
         if self._calendar_cache is None:
-            root = self.config.raw_data_dir_path
-            pulled = [
-                day
-                for endpoint in QUARTER_ENDPOINTS
-                for cik in raw.entities(root, endpoint)
-                if (day := raw.read_watermark(root, endpoint, cik)) is not None
-            ]
-            if not pulled:
-                raise ValueError(
-                    f"{self.class_name}: no quarterly statement is pulled under {root!r}; "
-                    f"refresh StockFit's raw tier first."
-                )
-            self._calendar_cache = TradingCalendar.of_nyse(
-                max(pulled) - timedelta(days=1), start=self.config.start_date, end=self.config.end_date
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, QUARTER_ENDPOINTS,
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
             )
         return self._calendar_cache
 

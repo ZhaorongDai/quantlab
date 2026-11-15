@@ -56,7 +56,7 @@ Build the N-PORT summary of every fund series and read one::
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import timedelta
 
 import polars as pl
 
@@ -66,6 +66,7 @@ from quantlab.dataset._support.point_in_time import (
     TradingCalendar,
 )
 from quantlab.dataset.config import StockFitFundConfig
+from quantlab.dataset.stockfit.available import nyse_calendar
 from quantlab.dataset.stockfit import raw
 
 __all__ = [
@@ -193,32 +194,11 @@ class StockFitFundPanel(ReleasePanelDataset):
     def _trading_calendar(self) -> TradingCalendar:
         """Return NYSE's sessions up to the day before the endpoints read were last pulled."""
         if self._calendar_cache is None:
-            self._calendar_cache = TradingCalendar.of_nyse(
-                self._through(), start=self.config.start_date, end=self.config.end_date
+            self._calendar_cache = nyse_calendar(
+                self._vendor_root(), tuple(source.endpoint for source in self.SOURCES),
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
             )
         return self._calendar_cache
-
-    def _through(self) -> date:
-        """The oldest endpoint's last pull day, less one: a later filing that day may be missing.
-
-        Raises
-        ------
-        ValueError
-            If an endpoint read was never pulled.
-        """
-        lasts = []
-        for source in self.SOURCES:
-            days = [
-                day for series in raw.entities(self._vendor_root(), source.endpoint)
-                if (day := raw.read_watermark(self._vendor_root(), source.endpoint, series)) is not None
-            ]
-            if not days:
-                raise ValueError(
-                    f"{self.class_name}: StockFit's raw tier at {self._vendor_root()!r} holds no "
-                    f"{source.endpoint} pull; run the StockFit refresh first."
-                )
-            lasts.append(max(days))
-        return min(lasts) - timedelta(days=1)
 
     def _rows(self, source: FundSource, series: str) -> list[dict]:
         """The rows of one series' newest pull of ``source``."""

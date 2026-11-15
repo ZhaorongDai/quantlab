@@ -50,6 +50,13 @@ def _file_report(vendor, clock, cik=GOOGL, form="10-Q"):
     vendor.lists["/api/filings/latest"] = [filing_row(form, cik, filed.date().isoformat(), filed.isoformat())]  # SYNTHETIC
 
 
+def _next_day_refresh(tmp_path, vendor, clock):
+    """Re-pull the next day, nothing new served: the raw tier is complete through the day before."""
+    clock.advance(days=1)
+    _file_report(vendor, clock)
+    _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
+
+
 def _dataset(tmp_path, footnote, period="annual", start="2014-01-01", **kwargs):
     from quantlab.dataset.config import StockFitFootnoteConfig
     from quantlab.dataset.stockfit.footnotes import StockFitFootnoteDataset
@@ -176,6 +183,7 @@ def test_a_change_a_re_pull_sees_is_shown_from_the_pull_on_and_not_flagged(env, 
     clock.advance(days=2)  # Wednesday 2026-11-18, 09:00 in New York
     _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
+    _next_day_refresh(tmp_path, vendor, clock)
     panel = _panel(tmp_path, "backlog", start="2024-06-01")
 
     assert _on(panel, RPO, "2026-11-17") == 242_800_000_000
@@ -194,7 +202,7 @@ def test_a_change_pulled_after_the_close_is_shown_from_the_next_trading_day(env,
     clock.advance(days=4, hours=8)  # Friday 2026-11-20, 17:00 in New York
     _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
-    clock.advance(days=3)  # the raw tier is complete through Monday
+    clock.advance(days=4)  # Tuesday: the raw tier is complete through Monday
     _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
     panel = _panel(tmp_path, "backlog", start="2024-06-01")
@@ -229,6 +237,7 @@ def test_a_restated_older_period_never_replaces_the_newer_one_shown(env, tmp_pat
     clock.advance(days=2)
     _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
+    _next_day_refresh(tmp_path, vendor, clock)
     panel = _panel(tmp_path, "backlog", start="2024-06-01")
 
     assert _on(panel, RPO, "2026-11-18") == 242_800_000_000

@@ -40,8 +40,8 @@ show on NYSE's trading calendar, one column per company (its CIK):
 No event here adjusts any price, and quantlab takes no price from StockFit:
 the ratios and amounts are what the vendor says was declared or tagged.
 
-Each panel is built through the day every endpoint it reads was last pulled
-(the newest watermark among the endpoint's entities).
+Each panel is built through the day before the endpoints it reads were
+last pulled (``quantlab.dataset.stockfit.available.nyse_calendar``).
 
 Examples
 --------
@@ -58,10 +58,8 @@ Build the corporate event store and read a company's split disclosures::
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
 from typing import ClassVar
 
-import pandas as pd
 import polars as pl
 import xarray as xr
 
@@ -72,12 +70,12 @@ from quantlab.dataset._support.point_in_time import (
     on_grid,
     to_panel,
 )
-from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.config import (
     StockFitCorporateEventsConfig,
     StockFitDeclaredEventsConfig,
     StockFitPanelConfig,
 )
+from quantlab.dataset.stockfit.available import nyse_calendar, pull_day
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DETAILS,
     STOCK_SPLITS,
@@ -86,7 +84,6 @@ from quantlab.dataset.stockfit.raw import (
     UPCOMING_STOCK_SPLITS,
     WHOLE_LIST,
     entities,
-    newest_watermark,
     pulls,
     read_pull,
     read_pull_as_of,
@@ -94,14 +91,11 @@ from quantlab.dataset.stockfit.raw import (
 
 __all__ = ["StockFitCorporateEventsDataset", "StockFitDeclaredEventsDataset"]
 
-#: New York, whose wall clock decides the trading day of a pull.
-NEW_YORK = "America/New_York"
-
 _DAY = pl.Datetime("ns")
 
 
 class _StockFitEventPanel(ReleasePanelDataset):
-    """A StockFit panel on the CIK axis, on NYSE's calendar through the day its endpoints were last pulled."""
+    """A StockFit panel on the CIK axis, on NYSE's calendar through the day before its endpoints were last pulled."""
 
     #: The raw-tier endpoints read; the calendar ends on the last day all were pulled.
     ENDPOINTS: ClassVar[tuple[str, ...]] = ()
@@ -126,7 +120,7 @@ class _StockFitEventPanel(ReleasePanelDataset):
         return config
 
     def _trading_calendar(self) -> TradingCalendar:
-        """Return NYSE's sessions through the last day every endpoint read was pulled.
+        """Return NYSE's sessions through the day the endpoints read are complete through (``nyse_calendar``).
 
         Raises
         ------
@@ -134,18 +128,9 @@ class _StockFitEventPanel(ReleasePanelDataset):
             If an endpoint was never pulled into the raw tier.
         """
         if self._calendar_cache is None:
-            root = self.config.raw_data_dir_path
-            ends = {}
-            for endpoint in self.ENDPOINTS:
-                through = newest_watermark(root, endpoint)
-                if through is None:
-                    raise ValueError(
-                        f"{self.class_name}: StockFit's {endpoint!r} endpoint was never pulled into {root}; "
-                        f"run quantlab.acquisition.stockfit.refresh.refresh_raw_tier first."
-                    )
-                ends[endpoint] = through
-            self._calendar_cache = TradingCalendar.of_nyse(
-                min(ends.values()), start=self.config.start_date, end=self.config.end_date
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, self.ENDPOINTS,
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
             )
         return self._calendar_cache
 
@@ -260,32 +245,6 @@ class StockFitCorporateEventsDataset(_StockFitEventPanel):
         return to_panel(cells, days, symbols, self.VARIABLES)
 
 
-def _trading_day(pulled_at: datetime) -> date:
-    """Return the day a pull made at ``pulled_at`` counts on, before rolling onto the calendar.
-
-    A pull made before its New York day's session close (13:00 on a half
-    day) counts on that day; one made at or after the close, or on a day
-    without a session, on the next day, which ``TradingCalendar.place``
-    rolls onto the next trading day.
-
-    Examples
-    --------
-    NYSE closed at 13:00 New York time (17:00 UTC) on 2024-07-03:
-
-    >>> from datetime import UTC
-    >>> _trading_day(datetime(2024, 7, 3, 16, 59, tzinfo=UTC)), _trading_day(datetime(2024, 7, 3, 17, tzinfo=UTC))
-    (datetime.date(2024, 7, 3), datetime.date(2024, 7, 4))
-    """
-    calendar = XnysSessionCalendar().calendar
-    at = pd.Timestamp(pulled_at)
-    day = at.tz_convert(NEW_YORK).date()
-    label = pd.Timestamp(day)
-    if calendar.first_session <= label <= calendar.last_session and calendar.is_session(label):
-        if at < calendar.session_close(label):
-            return day
-    return day + timedelta(days=1)
-
-
 def _ticker_ciks(companies: object) -> dict[str, int]:
     """Return each ticker of a company list that names exactly one CIK, and that CIK."""
     found: dict[str, set[int]] = {}
@@ -351,7 +310,7 @@ class StockFitDeclaredEventsDataset(_StockFitEventPanel):
         if self._snapshots_cache is None:
             root = self.config.raw_data_dir_path
             found = [
-                (endpoint, pulled_at, _trading_day(pulled_at))
+                (endpoint, pulled_at, pull_day(pulled_at))
                 for endpoint in self._CALENDARS
                 for pulled_at in pulls(root, endpoint, WHOLE_LIST)
             ]

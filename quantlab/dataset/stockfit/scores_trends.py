@@ -8,7 +8,7 @@ The raw tier keeps every pull that changed, so a history accumulates from a
 company's first pull on.
 
 ``StockFitScoresTrendsDataset`` shows each pull's values from the day of the
-pull (``quantlab.dataset.stockfit.vintages.pull_day``: its New York day when
+pull (``quantlab.dataset.stockfit.available.pull_day``: its New York day when
 made before the NYSE close, otherwise the next trading day) and nothing
 before a company's first pull. ``period_end`` is the fiscal year the values
 describe (``period`` of the scores, ``latestPeriod`` of the trends) and
@@ -36,12 +36,12 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 
 from quantlab.dataset.config import DatasetConfig, StockFitScoresTrendsConfig
+from quantlab.dataset.stockfit.available import pull_day
 from quantlab.dataset.stockfit.period_panel import (
     PeriodRow,
     VersionedPeriodDataset,
     as_float,
 )
-from quantlab.dataset.stockfit.vintages import pull_day
 
 #: The Altman zones, coded.
 ALTMAN_ZONES: dict[str, float] = {"distress": 0.0, "grey": 1.0, "safe": 2.0}

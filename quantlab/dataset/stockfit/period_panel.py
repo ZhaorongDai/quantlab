@@ -14,8 +14,8 @@ trail of what they replaced. Their panels are built here the same way:
   after it; a row a later pull adds or changes counts from its filing date
   when filed since the pull before, and from the day of the pull otherwise;
 - each version is placed on NYSE's calendar by StockFit's rule
-  (``quantlab.dataset.stockfit.placement``; a pull's day by
-  ``vintages.pull_day``), and on every trading day the panel shows the
+  (``quantlab.dataset.stockfit.available``; a pull's day by
+  ``available.pull_day``), and on every trading day the panel shows the
   latest fiscal period available by then, in its latest version known that
   day. A later filing of an older period never replaces a newer one.
 
@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime
 
 import numpy as np
 import polars as pl
@@ -48,13 +48,8 @@ from quantlab.dataset._support.point_in_time import (
     TradingCalendar,
 )
 from quantlab.dataset.stockfit import raw
-from quantlab.dataset.stockfit.placement import available_dates
-from quantlab.dataset.stockfit.vintages import (
-    ServedRow,
-    Version,
-    observed_versions,
-    pull_day,
-)
+from quantlab.dataset.stockfit.available import nyse_calendar, place_released, pull_day
+from quantlab.dataset.stockfit.vintages import ServedRow, Version, observed_versions
 from quantlab.utils.timer import Timer
 
 #: The variables saying which period a cell shows.
@@ -103,17 +98,6 @@ def as_float(value) -> float:
     if isinstance(value, int | float):
         return float(value)
     return float("nan")
-
-
-def parse_accepted(text: str | None) -> datetime | None:
-    """Return an ISO acceptance time as an aware UTC datetime, or ``None``.
-
-    Examples
-    --------
-    >>> parse_accepted("2026-11-09T22:01:51Z")
-    datetime.datetime(2026, 11, 9, 22, 1, 51, tzinfo=datetime.timezone.utc)
-    """
-    return None if not text else datetime.fromisoformat(text).astimezone(UTC)
 
 
 class VersionedPeriodDataset(ReleasePanelDataset):
@@ -173,18 +157,9 @@ class VersionedPeriodDataset(ReleasePanelDataset):
             If the endpoint was never pulled.
         """
         if self._calendar_cache is None:
-            root, endpoint = self.config.raw_data_dir_path, self._endpoint()
-            pulled = [
-                day for cik in raw.entities(root, endpoint)
-                if (day := raw.read_watermark(root, endpoint, cik)) is not None
-            ]
-            if not pulled:
-                raise ValueError(
-                    f"{self.class_name}: nothing of {endpoint!r} is pulled under {root!r}; "
-                    f"refresh StockFit's raw tier first."
-                )
-            self._calendar_cache = TradingCalendar.of_nyse(
-                max(pulled) - timedelta(days=1), start=self.config.start_date, end=self.config.end_date
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, self._endpoint(),
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
             )
         return self._calendar_cache
 
@@ -219,7 +194,11 @@ class VersionedPeriodDataset(ReleasePanelDataset):
             },
             schema={"accepted_at": pl.Datetime("us", "UTC"), "date_filed": pl.Date, "_version": pl.Int64},
         )
-        placed = dict(available_dates(frame, self._trading_calendar()).select("_version", "available").iter_rows())
+        placed = dict(
+            place_released(frame, self._trading_calendar(), drop_earlier=False)
+            .select("_version", "available")
+            .iter_rows()
+        )
         return [None if (day := placed.get(index)) is None else np.datetime64(day, "ns") for index in range(len(versions))]
 
     def _released(self) -> pl.DataFrame:

@@ -1,18 +1,27 @@
 """When a StockFit row becomes available: the one rule every StockFit panel places its rows by.
 
-A row that carries the SEC's acceptance time (``acceptedAt``) is available on
-the NYSE trading day it was accepted on when accepted before that session's
-close (16:00 New York time, 13:00 on an early close), and on the next trading
-day when accepted at or after the close or on a day without a session. So a
-filing made after the close never reaches the day's bar. A row with only a
-filing date (``dateFiled``) is available on that day, or on the next trading
-day when it is not one, as Sharadar's filings are.
+StockFit dates a filing by its EDGAR acceptance time (``acceptedAt``, UTC to
+the second) and its filing date (``dateFiled``). A row is available on:
 
-``release_day`` gives each row the calendar day the rule picks, and
-``place_released`` rolls it onto the trading calendar (``TradingCalendar.place``).
-``nyse_calendar`` is the calendar every StockFit panel uses: NYSE's sessions
-through the day the endpoint's raw tier is complete through
-(``raw_through``).
+- with an acceptance time: its New York day when it was accepted before
+  that day's NYSE close (16:00, or 13:00 on a half day), otherwise the next
+  NYSE trading day; a row accepted on a day without a session rolls to the
+  next trading day. So a close-based backtest never trades on a filing made
+  after the close;
+- with only a filing date: that day, or the next trading day when it is not
+  one (the Sharadar convention: a filing counts on its filing date).
+
+A pull of a snapshot the vendor keeps no history of counts by the same rule,
+its pull time taken as the acceptance time (``pull_day``).
+
+``release_day`` gives each row the calendar day the rule picks and
+``place_released`` rolls it onto a ``TradingCalendar``; ``pull_day`` is the
+rule for one time. ``nyse_calendar`` is the calendar every StockFit panel
+uses: NYSE's sessions through the day the endpoints it reads are complete
+through, the day before the oldest of their newest pulls
+(``quantlab.dataset.stockfit.raw.newest_watermark``). The daily refresh
+re-pulls only the entities a filing touched, so an endpoint is dated by the
+newest pull of any of its entities, not the oldest.
 
 Examples
 --------
@@ -31,7 +40,8 @@ A filing accepted at 16:30 on Friday 2026-11-06 is available on Monday:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
@@ -39,7 +49,7 @@ import polars as pl
 
 from quantlab.dataset._support.point_in_time import NYSE_FIRST_DAY, TradingCalendar
 from quantlab.dataset._support.session_calendar import XnysSessionCalendar
-from quantlab.dataset.stockfit.raw import endpoint_dir, read_watermark
+from quantlab.dataset.stockfit.raw import newest_watermark
 
 #: The time zone of the sessions.
 NEW_YORK = "America/New_York"
@@ -62,10 +72,22 @@ def _closes(days: list[date]) -> pl.DataFrame:
     calendar = sessions.calendar
     first, last = calendar.first_session.date(), calendar.last_session.date()
     inside = [day for day in days if first <= day <= last and sessions.is_session(day)]
-    closes = sessions.session_bounds(inside).select(
+    return sessions.session_bounds(inside).select(
         pl.col("date").alias("_local_day"), pl.col("close").dt.replace_time_zone("UTC").alias("_close")
     )
-    return closes
+
+
+def parse_accepted(text: str | None) -> datetime | None:
+    """Return an ISO acceptance time as an aware UTC datetime, or ``None``.
+
+    Examples
+    --------
+    >>> parse_accepted("2026-11-09T22:01:51Z")
+    datetime.datetime(2026, 11, 9, 22, 1, 51, tzinfo=datetime.timezone.utc)
+    >>> parse_accepted(None) is None
+    True
+    """
+    return None if not text else datetime.fromisoformat(text).astimezone(UTC)
 
 
 def release_day(rows: pl.DataFrame, accepted: str = "accepted_at", filed: str = "date_filed") -> pl.DataFrame:
@@ -119,12 +141,19 @@ def release_day(rows: pl.DataFrame, accepted: str = "accepted_at", filed: str = 
 
 
 def place_released(
-    rows: pl.DataFrame, calendar: TradingCalendar, accepted: str = "accepted_at", filed: str = "date_filed"
+    rows: pl.DataFrame,
+    calendar: TradingCalendar,
+    accepted: str = "accepted_at",
+    filed: str = "date_filed",
+    *,
+    drop_earlier: bool = True,
 ) -> pl.DataFrame:
     """Return ``rows`` with ``available``: the first trading day on or after each row's ``release_day``.
 
-    A row with neither time, dated before the calendar's first day, or past
-    the day the calendar is complete through is dropped.
+    A row with neither time, or past the day the calendar is complete
+    through, is dropped; so, with ``drop_earlier``, is a row dated before
+    the calendar's first day (an event), which is otherwise placed on that
+    day (a state that still holds). Row order is not kept.
 
     Examples
     --------
@@ -139,44 +168,63 @@ def place_released(
     [datetime.date(2026, 11, 9)]
     """
     dated = release_day(rows, accepted, filed).filter(pl.col("release_day").is_not_null())
-    return calendar.place(dated, on="release_day", drop_earlier=True)
+    return calendar.place(dated, on="release_day", drop_earlier=drop_earlier)
 
 
-def raw_through(vendor_root: str | Path, endpoint: str) -> date | None:
-    """Return the last day an endpoint's raw tier is complete through; ``None`` if never pulled.
+@lru_cache(maxsize=4096)
+def _close_of(day: date) -> datetime | None:
+    """Return the NYSE close of ``day`` as a UTC time; ``None`` without a session."""
+    closes = _closes([day])
+    return closes.get_column("_close").item() if closes.height else None
 
-    That is the day before its newest watermark (the UTC day of the latest
-    pull of any of its entities): a refresh made on a day holds every row
-    public by the close of the day before, whatever time it ran. The daily
-    refresh re-pulls only the entities with new filings, so the newest
-    watermark, not the oldest, dates the endpoint.
+
+def pull_day(pulled_at: datetime) -> date:
+    """Return the day what a pull made at ``pulled_at`` saw counts from: ``release_day`` of one time.
+
+    A pull made before its New York day's NYSE close (13:00 on a half day)
+    counts on that day; one made at or after the close, or on a day without
+    a session, on the next day, which ``TradingCalendar.place`` rolls onto
+    the next trading day.
+
+    Parameters
+    ----------
+    pulled_at : datetime
+        The pull's time, timezone-aware.
+
+    Returns
+    -------
+    date
+        A New York calendar day.
 
     Examples
     --------
-    >>> raw_through("/nonexistent/stockfit", "filings") is None
-    True
+    >>> pull_day(datetime(2026, 11, 16, 14, tzinfo=UTC))  # 09:00 in New York
+    datetime.date(2026, 11, 16)
+    >>> pull_day(datetime(2024, 7, 3, 18, tzinfo=UTC))  # 14:00, after the 13:00 close
+    datetime.date(2024, 7, 4)
     """
-    root = endpoint_dir(vendor_root, endpoint)
-    if not root.exists():
-        return None
-    marks = [
-        mark
-        for path in root.iterdir()
-        if path.is_dir() and not path.name.startswith((".", "_"))
-        if (mark := read_watermark(vendor_root, endpoint, path.name)) is not None
-    ]
-    return max(marks) - timedelta(days=1) if marks else None
+    at = pulled_at.astimezone(UTC)
+    day = pl.Series([at]).dt.convert_time_zone(NEW_YORK).dt.date().item()
+    close = _close_of(day)
+    return day if close is not None and at < close else day + timedelta(days=1)
 
 
-def nyse_calendar(vendor_root: str | Path, endpoint: str, *, start, end, owner: str) -> TradingCalendar:
-    """Return NYSE's trading days through the day ``endpoint``'s raw tier is complete through.
+def nyse_calendar(
+    vendor_root: str | Path, endpoints: str | Sequence[str], *, start, end, owner: str
+) -> TradingCalendar:
+    """Return NYSE's trading days through the day the endpoints a panel reads are complete through.
+
+    That is the day before the oldest of their newest watermarks (each the
+    UTC day of the latest pull of any of the endpoint's entities, published
+    or not): a refresh made on a day holds every row public by the close of
+    the day before, whatever time it ran.
 
     Parameters
     ----------
     vendor_root : str or Path
         ``<download-dir>/stockfit``.
-    endpoint : str
-        The raw tier's endpoint the panel reads.
+    endpoints : str or sequence of str
+        The raw tier's endpoints the panel reads.
     start, end : date-like
         The configured window.
     owner : str
@@ -185,7 +233,7 @@ def nyse_calendar(vendor_root: str | Path, endpoint: str, *, start, end, owner: 
     Raises
     ------
     ValueError
-        If the endpoint was never pulled.
+        If an endpoint was never pulled.
 
     Examples
     --------
@@ -193,10 +241,12 @@ def nyse_calendar(vendor_root: str | Path, endpoint: str, *, start, end, owner: 
 
         nyse_calendar("/data/quantlab/downloads/stockfit", "filings", start="2020-01-01", end=None, owner="me")
     """
-    through = raw_through(vendor_root, endpoint)
-    if through is None:
+    names = (endpoints,) if isinstance(endpoints, str) else tuple(endpoints)
+    marks = {name: newest_watermark(vendor_root, name) for name in names}
+    missing = [name for name, mark in marks.items() if mark is None]
+    if missing:
         raise ValueError(
-            f"{owner}: StockFit's {endpoint!r} endpoint was never pulled under {str(vendor_root)!r}; "
-            f"refresh the StockFit raw tier first."
+            f"{owner}: StockFit's {', '.join(map(repr, missing))} endpoint(s) were never pulled under "
+            f"{str(vendor_root)!r}; refresh the StockFit raw tier first."
         )
-    return TradingCalendar.of_nyse(through, start=start, end=end)
+    return TradingCalendar.of_nyse(min(marks.values()) - timedelta(days=1), start=start, end=end)

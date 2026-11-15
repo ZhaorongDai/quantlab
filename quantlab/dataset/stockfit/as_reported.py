@@ -45,11 +45,11 @@ from pathlib import Path
 
 from quantlab.dataset.config import DatasetConfig, StockFitAsReportedConfig
 from quantlab.dataset.stockfit import raw
+from quantlab.dataset.stockfit.available import parse_accepted
 from quantlab.dataset.stockfit.period_panel import (
     PeriodRow,
     VersionedPeriodDataset,
     as_float,
-    parse_accepted,
 )
 
 #: The prefix of the concepts a panel may hold.

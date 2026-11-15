@@ -56,7 +56,7 @@ Build the store and read the holders of Alphabet's class A shares::
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import timedelta
 
 import pandas as pd
 import polars as pl
@@ -69,23 +69,19 @@ from quantlab.dataset._support.point_in_time import (
     on_grid,
     to_panel,
 )
-from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.config import DatasetConfig, StockFitHoldingsConfig
+from quantlab.dataset.stockfit.available import nyse_calendar, release_day
 from quantlab.dataset.stockfit.raw import (
     INSTITUTIONAL_HOLDERS,
     MANAGER_13F_FILINGS,
     entities,
     pulls,
     read_pull,
-    read_watermark,
     split_quarter_entity,
 )
 
 #: Days after a quarter's end until its 13F filings are all due.
 AVAILABILITY_LAG = timedelta(days=45)
-
-#: New York, where NYSE's session closes.
-NEW_YORK = "America/New_York"
 
 #: The panel's variables and their attributes.
 VARIABLES: dict[str, dict] = {
@@ -107,82 +103,6 @@ _HOLDER_SCHEMA = {
     "value": pl.Float64,
     "pulled": pl.Date,
 }
-
-
-def _session_closes(days: list[date]) -> pl.DataFrame:
-    """Return each NYSE session's actual close among ``days`` as a UTC time: ``date``, ``_close``.
-
-    A weekday past the session calendar's last day closes at 16:00; a day
-    without a session has no row.
-    """
-    sessions = XnysSessionCalendar()
-    known = set(sessions.calendar.sessions.date)
-    last = sessions.calendar.last_session.date()
-    closes = sessions.session_bounds(sorted(day for day in days if day in known)).select(
-        "date", pl.col("close").alias("_close")
-    )
-    beyond = sorted(day for day in days if day > last and day.weekday() < 5)
-    if beyond:
-        regular = [
-            pd.Timestamp(datetime.combine(day, time(16))).tz_localize(NEW_YORK).tz_convert("UTC").tz_localize(None)
-            for day in beyond
-        ]
-        closes = pl.concat([closes, pl.DataFrame(
-            {"date": beyond, "_close": regular}, schema={"date": pl.Date, "_close": pl.Datetime("ns")}
-        )])
-    return closes
-
-
-def filing_days(filings: pl.DataFrame) -> pl.DataFrame:
-    """Return the day each filing counts from, before rolling onto the trading calendar.
-
-    A filing accepted before its New York day's session close counts on
-    that day; one accepted at or after the close, or on a day without a
-    session, on the next day (which ``TradingCalendar.place`` rolls onto the
-    next trading day). A filing without ``acceptedAt`` counts on its
-    ``dateFiled``.
-
-    Parameters
-    ----------
-    filings : pl.DataFrame
-        ``accession``, ``dateFiled`` and ``acceptedAt`` (ISO text, UTC;
-        null when not served).
-
-    Returns
-    -------
-    pl.DataFrame
-        ``accession`` and ``public`` (a date).
-
-    Examples
-    --------
-    NYSE closed at 13:00 on 2024-07-03:
-
-    >>> filings = pl.DataFrame({
-    ...     "accession": ["a", "b", "c"],
-    ...     "dateFiled": ["2024-07-03", "2024-07-03", "2024-07-05"],
-    ...     "acceptedAt": ["2024-07-03T16:59:00Z", "2024-07-03T17:00:00Z", None],
-    ... })
-    >>> filing_days(filings).get_column("public").to_list()
-    [datetime.date(2024, 7, 3), datetime.date(2024, 7, 4), datetime.date(2024, 7, 5)]
-    """
-    frame = filings.with_columns(
-        pl.col("acceptedAt").str.to_datetime(time_zone="UTC", strict=False, time_unit="ns").alias("_accepted"),
-        pl.col("dateFiled").str.slice(0, 10).str.to_date(strict=False).alias("_filed"),
-    ).with_columns(pl.col("_accepted").dt.convert_time_zone(NEW_YORK).dt.date().alias("_local_day"))
-    closes = _session_closes(frame.get_column("_local_day").drop_nulls().unique().to_list())
-    before_close = pl.col("_accepted").dt.replace_time_zone(None) < pl.col("_close")
-    return (
-        frame.join(closes, left_on="_local_day", right_on="date", how="left")
-        .with_columns(
-            pl.when(pl.col("_accepted").is_null())
-            .then(pl.col("_filed"))
-            .when(before_close.fill_null(False))
-            .then(pl.col("_local_day"))
-            .otherwise(pl.col("_local_day") + pl.duration(days=1))
-            .alias("public")
-        )
-        .select("accession", "public")
-    )
 
 
 class StockFitHoldingsDataset(ReleasePanelDataset):
@@ -256,22 +176,19 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
             if row.get("accessionNumber")
         ]
         schema = {"accession": pl.String, "dateFiled": pl.String, "acceptedAt": pl.String}
-        filings = pl.DataFrame(rows, schema=schema, orient="row")
-        return filing_days(filings).group_by("accession").agg(pl.col("public").min())
+        filings = pl.DataFrame(rows, schema=schema, orient="row").select(
+            "accession",
+            pl.col("acceptedAt").str.to_datetime(time_zone="UTC", strict=False, time_unit="us").alias("accepted_at"),
+            pl.col("dateFiled").str.slice(0, 10).str.to_date(strict=False).alias("date_filed"),
+        )
+        return release_day(filings).group_by("accession").agg(pl.col("release_day").min().alias("public"))
 
     def _trading_calendar(self) -> TradingCalendar:
-        """Return NYSE's sessions through the last day the holder rows were pulled."""
+        """Return NYSE's sessions through the day the holder rows are complete through (``nyse_calendar``)."""
         if self._calendar_cache is None:
-            root = self.config.raw_data_dir_path
-            marks = [read_watermark(root, INSTITUTIONAL_HOLDERS, e) for e in entities(root, INSTITUTIONAL_HOLDERS)]
-            marks = [mark for mark in marks if mark is not None]
-            if not marks:
-                raise ValueError(
-                    f"{self.class_name}: StockFit's raw tier under {self.config.raw_data_dir_path!r} holds "
-                    f"no 13F holder rows; refresh the {INSTITUTIONAL_HOLDERS!r} endpoint first."
-                )
-            self._calendar_cache = TradingCalendar.of_nyse(
-                max(marks), start=self.config.start_date, end=self.config.end_date
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, INSTITUTIONAL_HOLDERS,
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
             )
         return self._calendar_cache
 
@@ -365,7 +282,7 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
             self._quarter_starts(), left_on="timestamp", right_on="available", strategy="backward"
         ).select("timestamp", "quarter_end")
         cells = (
-            on_grid(days, symbols, text=True)
+            on_grid(days, symbols, text=self.TEXT_SYMBOLS)
             .join(current, on="timestamp", how="left")
             .join_asof(
                 self._released_rows(),
@@ -379,4 +296,4 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
         )
         shown = cells.get_column("holders").is_not_null()
         cells = cells.with_columns(pl.when(shown).then(pl.col("quarter_end")).alias("quarter_end"))
-        return to_panel(cells, days, symbols, self._spec().variables, text=True)
+        return to_panel(cells, days, symbols, self._spec().variables, text=self.TEXT_SYMBOLS)

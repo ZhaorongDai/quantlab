@@ -67,13 +67,13 @@ import polars as pl
 
 from quantlab.dataset._support.point_in_time import FilingPanelDataset, TradingCalendar
 from quantlab.dataset.config import DatasetConfig, StockFitCongressTradesConfig
+from quantlab.dataset.stockfit.available import nyse_calendar
 from quantlab.dataset.stockfit.raw import (
     COMPANY_LISTS,
     CONGRESS_HOUSE_TRADES,
     CONGRESS_SENATE_TRADES,
     pulls,
     read_pull,
-    read_watermark,
 )
 from quantlab.utils.timer import Timer
 
@@ -267,13 +267,9 @@ class StockFitCongressTradesDataset(FilingPanelDataset):
             If a feed was never pulled.
         """
         if self._calendar_cache is None:
-            root = self.config.raw_data_dir_path
-            pulled = [read_watermark(root, endpoint, "all") for endpoint in FEEDS.values()]
-            if any(day is None for day in pulled):
-                raise ValueError(f"{self.class_name}: both Congress feeds must be pulled into {root!r} first.")
-            through = min(pulled) - timedelta(days=1)
-            self._calendar_cache = TradingCalendar.of_nyse(
-                through, start=self.config.start_date, end=self.config.end_date
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, tuple(FEEDS.values()),
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
             )
         return self._calendar_cache
 

@@ -80,7 +80,8 @@ import polars as pl
 from quantlab.dataset._support.point_in_time import ReleasePanelDataset, ReleaseSpec, TradingCalendar
 from quantlab.dataset.config import StockFitFootnoteConfig
 from quantlab.dataset.stockfit import raw
-from quantlab.dataset.stockfit.vintages import ServedRow, observed_versions, pull_day
+from quantlab.dataset.stockfit.available import nyse_calendar, pull_day
+from quantlab.dataset.stockfit.vintages import ServedRow, observed_versions
 
 #: The period types a footnote is pulled for, the ``period`` query parameter.
 PERIODS = ("annual", "quarter")
@@ -597,18 +598,11 @@ class StockFitFootnoteDataset(ReleasePanelDataset):
         return footnote_endpoint(self.config.footnote, self.config.period)
 
     def _trading_calendar(self) -> TradingCalendar:
-        """Return NYSE's sessions through the last day any company's footnote was pulled."""
+        """Return NYSE's sessions through the day the footnote's raw tier is complete through."""
         if self._calendar_cache is None:
-            root = self.config.raw_data_dir_path
-            days = [raw.read_watermark(root, self.endpoint, entity) for entity in raw.entities(root, self.endpoint)]
-            days = [day for day in days if day is not None]
-            if not days:
-                raise ValueError(
-                    f"{self.class_name}: the raw tier at {root!r} holds no pull of {self.endpoint}; "
-                    f"refresh StockFit first."
-                )
-            self._calendar_cache = TradingCalendar.of_nyse(
-                max(days), start=self.config.start_date, end=self.config.end_date
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, self.endpoint,
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
             )
         return self._calendar_cache
 

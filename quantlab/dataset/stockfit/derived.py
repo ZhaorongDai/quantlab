@@ -49,11 +49,11 @@ from loguru import logger
 
 from quantlab.dataset.config import DatasetConfig, StockFitDerivedConfig
 from quantlab.dataset.stockfit import raw
+from quantlab.dataset.stockfit.available import parse_accepted
 from quantlab.dataset.stockfit.period_panel import (
     PeriodRow,
     VersionedPeriodDataset,
     as_float,
-    parse_accepted,
 )
 from quantlab.dataset.stockfit.statements import STATEMENTS
 

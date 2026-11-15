@@ -154,14 +154,10 @@ class StockFitBeneficialOwnersDataset(FilingPanelDataset):
     def _trading_calendar(self) -> TradingCalendar:
         """Return NYSE's trading days through the older endpoint's last complete day (cached)."""
         if self._calendar_cache is None:
-            calendars = [
-                nyse_calendar(
-                    self.config.raw_data_dir_path, endpoint,
-                    start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
-                )
-                for endpoint in (BENEFICIAL_OWNERS, FILINGS)
-            ]
-            self._calendar_cache = min(calendars, key=lambda calendar: calendar.through)
+            self._calendar_cache = nyse_calendar(
+                self.config.raw_data_dir_path, (BENEFICIAL_OWNERS, FILINGS),
+                start=self.config.start_date, end=self.config.end_date, owner=self.class_name,
+            )
         return self._calendar_cache
 
     def _empty(self) -> dict[str, object]:
