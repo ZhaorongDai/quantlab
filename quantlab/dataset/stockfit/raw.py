@@ -6,10 +6,10 @@ The raw tier keeps every pull of one endpoint for one entity as a directory
 named by the pull's UTC stamp, under the StockFit directory of the download
 root::
 
-    <download-dir>/stockfit/symbols/operating/20261116T140000000000/000001.json
-    <download-dir>/stockfit/symbols/operating/20261116T140000000000/_pull.json
-    <download-dir>/stockfit/income_statement_quarter/1093691/20261116T140000000000/000001.json
-    <download-dir>/stockfit/income_statement_quarter/1093691/_watermark.json
+    <root>/downloads/stockfit/symbols/operating/20261116T140000000000/000001.json
+    <root>/downloads/stockfit/symbols/operating/20261116T140000000000/_pull.json
+    <root>/downloads/stockfit/income_statement_quarter/1093691/20261116T140000000000/000001.json
+    <root>/downloads/stockfit/income_statement_quarter/1093691/_watermark.json
 
 A pull directory holds the response body of each page as the vendor returned
 it (``000001.json``, ``000002.json``, ... for a paged list; one file
@@ -316,7 +316,7 @@ def read_pull(vendor_root: str | Path, endpoint: str, entity: str, pulled_at: da
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     endpoint, entity : str
         The endpoint's and the entity's directory names.
     pulled_at : datetime, optional
@@ -337,7 +337,7 @@ def read_pull(vendor_root: str | Path, endpoint: str, entity: str, pulled_at: da
     --------
     Needs a raw tier on disk; every version of a company's quarterly income statement::
 
-        root = "/data/quantlab/downloads/stockfit"
+        root = "/data/downloads/stockfit"
         versions = [read_pull(root, "income_statement_quarter", "1093691", at)
                     for at in pulls(root, "income_statement_quarter", "1093691")]
     """

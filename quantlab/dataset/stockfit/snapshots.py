@@ -47,7 +47,7 @@ Examples
 Build the listing store and read a week::
 
     config = StockFitListingConfig(
-        zarr_file_path="/data/stores/stockfit_listing_1d.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_listing_1d/stockfit_listing_1d.zarr",
         raw_data_dir_path="/data/downloads/stockfit",
     )
     StockFitListingDataset(config).update()
@@ -158,7 +158,7 @@ def market_states(
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     sources : sequence of (endpoint, entity)
         The snapshots read together.
     combine : callable

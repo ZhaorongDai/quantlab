@@ -46,7 +46,7 @@ Examples
 Build the store and read a year::
 
     config = StockFitExecutivesConfig(
-        zarr_file_path="/data/stockfit_executives_1d.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_executives_1d/stockfit_executives_1d.zarr",
         raw_data_dir_path="/data/downloads/stockfit",
         start_date="2022-01-01",
     )
@@ -193,7 +193,7 @@ def executive_years(vendor_root) -> pl.DataFrame:
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
 
     Returns
     -------
@@ -246,7 +246,7 @@ class StockFitExecutivesDataset(ReleasePanelDataset):
     Parameters
     ----------
     config : StockFitExecutivesConfig
-        ``raw_data_dir_path`` is ``<download-dir>/stockfit``. The calendar
+        ``raw_data_dir_path`` is ``<root>/downloads/stockfit``. The calendar
         is NYSE's trading days through the oldest last complete day of the
         three executive endpoints and the annual income statements.
 

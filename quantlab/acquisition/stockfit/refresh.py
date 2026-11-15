@@ -43,7 +43,7 @@ Needs ``STOCKFIT_API_KEY`` and the network::
     from quantlab.acquisition.registry import refresh_raw_tier
     from quantlab.acquisition.base import DataSourceRegistry
 
-    result = refresh_raw_tier(DataSourceRegistry.get("stockfit"), "/data/quantlab/downloads")
+    result = refresh_raw_tier(DataSourceRegistry.get("stockfit"), "/data/downloads")
     result.summary()  # per endpoint: published, unchanged, deferred to the next run
 """
 
@@ -171,7 +171,7 @@ def refresh_raw_tier(
     --------
     Needs the key and the network; two companies' quarterly income statements::
 
-        refresh_raw_tier("/data/quantlab/downloads", endpoints=("income_statement_quarter",), ciks=(320193, 789019))
+        refresh_raw_tier("/data/downloads", endpoints=("income_statement_quarter",), ciks=(320193, 789019))
     """
     if not 0 <= snapshot_share <= 1:
         raise ValueError(f"snapshot_share must be between 0 and 1, got {snapshot_share}.")

@@ -48,7 +48,7 @@ Examples
 Build the store and read a quarter::
 
     config = StockFitCongressTradesConfig(
-        zarr_file_path="/data/stockfit_congress_trades_1d.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_congress_trades_1d/stockfit_congress_trades_1d.zarr",
         raw_data_dir_path="/data/downloads/stockfit",
     )
     StockFitCongressTradesDataset(config).update()
@@ -208,7 +208,7 @@ class StockFitCongressTradesDataset(FilingPanelDataset):
     Parameters
     ----------
     config : StockFitCongressTradesConfig
-        ``raw_data_dir_path`` is ``<download-dir>/stockfit``.
+        ``raw_data_dir_path`` is ``<root>/downloads/stockfit``.
 
     Examples
     --------

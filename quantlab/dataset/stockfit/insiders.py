@@ -48,7 +48,7 @@ Examples
 Build the store and read the net buying of a quarter::
 
     config = StockFitInsidersConfig(
-        zarr_file_path="/data/stockfit_insiders_1d.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_insiders_1d/stockfit_insiders_1d.zarr",
         raw_data_dir_path="/data/downloads/stockfit",
         start_date="2004-01-01",
     )
@@ -115,7 +115,7 @@ def read_insider_transactions(vendor_root, ciks=None) -> pl.DataFrame:
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     ciks : iterable of int, optional
         The issuers to read; every one with a pull when omitted.
 
@@ -172,7 +172,7 @@ class StockFitInsidersDataset(FilingPanelDataset):
     Parameters
     ----------
     config : StockFitInsidersConfig
-        ``raw_data_dir_path`` is ``<download-dir>/stockfit``. The calendar
+        ``raw_data_dir_path`` is ``<root>/downloads/stockfit``. The calendar
         is NYSE's trading days through the day before the newest pull of
         the insider transactions.
 

@@ -45,8 +45,8 @@ Examples
 Build the N-PORT summary of every fund series and read one::
 
     config = StockFitFundConfig(
-        zarr_file_path="/data/quantlab/market/stockfit/stockfit_fund_profile_1d/stockfit_fund_profile_1d.zarr",
-        raw_data_dir_path="/data/quantlab/downloads/stockfit",
+        zarr_file_path="/data/market/stockfit/stockfit_fund_profile_1d/stockfit_fund_profile_1d.zarr",
+        raw_data_dir_path="/data/downloads/stockfit",
         start_date="2019-01-02",
     )
     panel = StockFitFundProfileDataset(config).update().panel("2024-01-02", "2024-12-31")

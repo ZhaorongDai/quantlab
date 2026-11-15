@@ -27,8 +27,8 @@ Examples
 Build the store and see which companies reported earnings on a day::
 
     config = StockFitFilingsConfig(
-        zarr_file_path="/data/quantlab/market/stockfit/stockfit_filings_1d/stockfit_filings_1d.zarr",
-        raw_data_dir_path="/data/quantlab/downloads/stockfit",
+        zarr_file_path="/data/market/stockfit/stockfit_filings_1d/stockfit_filings_1d.zarr",
+        raw_data_dir_path="/data/downloads/stockfit",
         start_date="2000-01-01",
     )
     StockFitFilingsDataset(config).update()
@@ -101,7 +101,7 @@ def read_filings(vendor_root: str | Path, ciks=None) -> pl.DataFrame:
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     ciks : iterable of int, optional
         The companies to read; every company with a pulled filing list
         when omitted.
@@ -124,7 +124,7 @@ def read_filings(vendor_root: str | Path, ciks=None) -> pl.DataFrame:
 
     The acceptance time of one filing, with a raw tier on disk::
 
-        rows = read_filings("/data/quantlab/downloads/stockfit", ciks=[1652044])
+        rows = read_filings("/data/downloads/stockfit", ciks=[1652044])
         rows.filter(pl.col("accession_number") == "0001652044-26-000084")["accepted_at"]
     """
     wanted = entities(vendor_root, FILINGS) if ciks is None else [str(int(cik)) for cik in ciks]
@@ -165,7 +165,7 @@ class StockFitFilingsDataset(FilingPanelDataset):
     Parameters
     ----------
     config : StockFitFilingsConfig
-        ``raw_data_dir_path`` is ``<download-dir>/stockfit``. The calendar
+        ``raw_data_dir_path`` is ``<root>/downloads/stockfit``. The calendar
         is NYSE's trading days through the day before the newest pull of
         the filing lists.
 

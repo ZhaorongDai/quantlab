@@ -48,7 +48,7 @@ Examples
 Build the corporate event store and read a company's split disclosures::
 
     config = StockFitCorporateEventsConfig(
-        zarr_file_path="/data/stores/stockfit_corporate_events_1d.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_corporate_events_1d/stockfit_corporate_events_1d.zarr",
         raw_data_dir_path="/data/downloads/stockfit",
         start_date="2010-01-04",
     )

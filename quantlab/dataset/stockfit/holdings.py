@@ -46,8 +46,8 @@ Examples
 Build the store and read the holders of Alphabet's class A shares::
 
     config = StockFitHoldingsConfig(
-        zarr_file_path="/data/quantlab/market/stockfit/stockfit_holdings_1d/stockfit_holdings_1d.zarr",
-        raw_data_dir_path="/data/quantlab/downloads/stockfit",
+        zarr_file_path="/data/market/stockfit/stockfit_holdings_1d/stockfit_holdings_1d.zarr",
+        raw_data_dir_path="/data/downloads/stockfit",
     )
     StockFitHoldingsDataset(config).update()
     panel = StockFitHoldingsDataset(config).panel("2024-01-02", "2024-12-31")
@@ -113,7 +113,7 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
     Parameters
     ----------
     config : StockFitHoldingsConfig
-        ``raw_data_dir_path`` is ``<download-dir>/stockfit``.
+        ``raw_data_dir_path`` is ``<root>/downloads/stockfit``.
 
     Examples
     --------

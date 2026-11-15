@@ -56,7 +56,7 @@ Needs a raw tier with the footnote pulls::
     from quantlab.dataset.config import StockFitFootnoteConfig
 
     config = StockFitFootnoteConfig(
-        zarr_file_path="/data/factors/stockfit_leases_quarter.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_leases_quarter/stockfit_leases_quarter.zarr",
         raw_data_dir_path="/data/downloads/stockfit",
         footnote="leases",
         period="quarter",
@@ -89,7 +89,7 @@ from quantlab.dataset.stockfit.raw import as_number
 from quantlab.dataset.stockfit.vintages import ServedRow, observed_versions
 
 #: The period types a footnote is pulled for, the ``period`` query parameter.
-PERIODS = ("annual", "quarter")
+PERIODS: tuple[str, ...] = StockFitFootnoteConfig.PERIODS
 
 #: The variables every footnote panel has, before its spec's.
 COMMON_VARIABLES: dict[str, dict] = {
@@ -553,7 +553,7 @@ class StockFitFootnoteDataset(ReleasePanelDataset):
     Needs a raw tier with the footnote pulls::
 
         config = StockFitFootnoteConfig(
-            zarr_file_path="/data/factors/stockfit_backlog_annual.zarr",
+            zarr_file_path="/data/market/stockfit/stockfit_backlog_annual/stockfit_backlog_annual.zarr",
             raw_data_dir_path="/data/downloads/stockfit",
             footnote="backlog",
             period="annual",

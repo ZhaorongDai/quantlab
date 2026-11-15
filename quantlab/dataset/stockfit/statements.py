@@ -56,8 +56,8 @@ Examples
 Build the quarterly store from a StockFit raw tier and read a quarter::
 
     config = StockFitStatementsConfig(
-        zarr_file_path="/data/quantlab/market/stockfit/stockfit_statements_quarter/stockfit_statements_quarter.zarr",
-        raw_data_dir_path="/data/quantlab/downloads/stockfit",
+        zarr_file_path="/data/market/stockfit/stockfit_statements_quarter/stockfit_statements_quarter.zarr",
+        raw_data_dir_path="/data/downloads/stockfit",
     )
     panel = StockFitStatementsDataset(config).update().panel("2024-01-02", "2024-03-28")
     panel["revenue"].sel(symbol=320193)
@@ -195,11 +195,11 @@ TTM_AVERAGED: frozenset[str] = frozenset(
 #: The fiscal periods of a quarterly statement, by number.
 _QUARTERS = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4}
 
-#: The values a store may hold.
-REPORTED: tuple[str, ...] = ("as_known", "original")
+#: The values a store may hold (``StockFitStatementsConfig.REPORTED``).
+REPORTED: tuple[str, ...] = StockFitStatementsConfig.REPORTED
 
-#: The periods a store may hold.
-PERIODS: tuple[str, ...] = ("quarter", "ttm")
+#: The periods a store may hold (``StockFitStatementsConfig.PERIODS``).
+PERIODS: tuple[str, ...] = StockFitStatementsConfig.PERIODS
 
 
 @dataclass(frozen=True)
@@ -467,7 +467,7 @@ class StockFitStatementsDataset(ReleasePanelDataset):
     Parameters
     ----------
     config : StockFitStatementsConfig
-        ``raw_data_dir_path`` is ``<download-dir>/stockfit``, holding the
+        ``raw_data_dir_path`` is ``<root>/downloads/stockfit``, holding the
         quarterly statement pulls; ``period`` is ``"quarter"`` or ``"ttm"``,
         ``reported`` is ``"as_known"`` or ``"original"``.
 

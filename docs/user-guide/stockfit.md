@@ -24,10 +24,10 @@ for one *entity* (a company's CIK, or a market-wide list) at a time. Each pull i
 by its UTC pull stamp:
 
 ```text
-<download-dir>/stockfit/symbols/operating/20261116T140000000000/000001.json
-<download-dir>/stockfit/symbols/operating/20261116T140000000000/_pull.json
-<download-dir>/stockfit/income_statement_quarter/1093691/20261116T140000000000/000001.json
-<download-dir>/stockfit/income_statement_quarter/1093691/_watermark.json
+<root>/downloads/stockfit/symbols/operating/20261116T140000000000/000001.json
+<root>/downloads/stockfit/symbols/operating/20261116T140000000000/_pull.json
+<root>/downloads/stockfit/income_statement_quarter/1093691/20261116T140000000000/000001.json
+<root>/downloads/stockfit/income_statement_quarter/1093691/_watermark.json
 ```
 
 A pull directory holds each page's response body as StockFit returned it and a manifest
@@ -117,7 +117,7 @@ from quantlab.dataset.config import StockFitFootnoteConfig
 from quantlab.dataset.stockfit.footnotes import StockFitFootnoteDataset
 
 config = StockFitFootnoteConfig(
-    zarr_file_path="/data/factors/stockfit_leases_quarter.zarr",
+    zarr_file_path="/data/market/stockfit/stockfit_leases_quarter/stockfit_leases_quarter.zarr",
     raw_data_dir_path="/data/downloads/stockfit",
     footnote="leases",      # a key of FOOTNOTES
     period="quarter",       # or "annual"
@@ -210,7 +210,7 @@ from quantlab.dataset.config import StockFitCorporateEventsConfig
 from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset
 
 config = StockFitCorporateEventsConfig(
-    zarr_file_path="/data/stores/stockfit_corporate_events_1d.zarr",
+    zarr_file_path="/data/market/stockfit/stockfit_corporate_events_1d/stockfit_corporate_events_1d.zarr",
     raw_data_dir_path="/data/downloads/stockfit",
     start_date="2010-01-04",
 )
@@ -498,7 +498,7 @@ from quantlab.dataset.config import StockFitFundConfig
 from quantlab.dataset.stockfit.funds import StockFitFundProfileDataset
 
 config = StockFitFundConfig(
-    zarr_file_path="/data/market/stockfit/stockfit_fund_profile_1d.zarr",
+    zarr_file_path="/data/market/stockfit/stockfit_fund_profile_1d/stockfit_fund_profile_1d.zarr",
     raw_data_dir_path="/data/downloads/stockfit",
     start_date="2019-01-02",
 )
@@ -552,7 +552,7 @@ from quantlab.dataset.config import StockFitCongressTradesConfig
 from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
 
 config = StockFitCongressTradesConfig(
-    zarr_file_path="/data/stores/stockfit_congress_trades_1d.zarr",
+    zarr_file_path="/data/market/stockfit/stockfit_congress_trades_1d/stockfit_congress_trades_1d.zarr",
     raw_data_dir_path="/data/downloads/stockfit",
 )
 StockFitCongressTradesDataset(config).update()
@@ -726,7 +726,7 @@ from quantlab.dataset.config import StockFitEarningsConsensusConfig
 from quantlab.dataset.stockfit.snapshots import StockFitEarningsConsensusDataset
 
 config = StockFitEarningsConsensusConfig(
-    zarr_file_path="/data/stores/stockfit_earnings_consensus_1d.zarr",
+    zarr_file_path="/data/market/stockfit/stockfit_earnings_consensus_1d/stockfit_earnings_consensus_1d.zarr",
     raw_data_dir_path="/data/downloads/stockfit",
 )
 StockFitEarningsConsensusDataset(config).update()

@@ -33,7 +33,7 @@ Examples
 Build the store and read a year::
 
     config = StockFitBeneficialOwnersConfig(
-        zarr_file_path="/data/stockfit_beneficial_owners_1d.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_beneficial_owners_1d/stockfit_beneficial_owners_1d.zarr",
         raw_data_dir_path="/data/downloads/stockfit",
         start_date="2025-01-01",
     )
@@ -75,7 +75,7 @@ def read_beneficial_owners(vendor_root, ciks=None) -> pl.DataFrame:
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     ciks : iterable of int, optional
         The companies to read; every one with a pull when omitted.
 
@@ -122,7 +122,7 @@ class StockFitBeneficialOwnersDataset(FilingPanelDataset):
     Parameters
     ----------
     config : StockFitBeneficialOwnersConfig
-        ``raw_data_dir_path`` is ``<download-dir>/stockfit``. The calendar
+        ``raw_data_dir_path`` is ``<root>/downloads/stockfit``. The calendar
         is NYSE's trading days through the older of the two endpoints'
         last complete days (the 13D/13G filings and the filing lists).
 

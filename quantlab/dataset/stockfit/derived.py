@@ -28,8 +28,8 @@ Examples
 Build the growth store from a StockFit raw tier holding the statements::
 
     config = StockFitDerivedConfig(
-        zarr_file_path="/data/quantlab/market/stockfit/stockfit_growth_quarter/stockfit_growth_quarter.zarr",
-        raw_data_dir_path="/data/quantlab/downloads/stockfit",
+        zarr_file_path="/data/market/stockfit/stockfit_growth_quarter/stockfit_growth_quarter.zarr",
+        raw_data_dir_path="/data/downloads/stockfit",
         table="growth",
     )
     dataset = StockFitDerivedDataset(config).update()
@@ -180,7 +180,7 @@ def statement_filings(vendor_root: str | Path, cik: int | str) -> dict[str, tupl
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     cik : int or str
         The company.
 

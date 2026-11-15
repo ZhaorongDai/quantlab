@@ -27,9 +27,9 @@ Examples
 --------
 Regenerate the list, then build the quarterly store::
 
-    root = "/data/quantlab/downloads/stockfit"
+    root = "/data/downloads/stockfit"
     config = StockFitAsReportedConfig(
-        zarr_file_path="/data/quantlab/market/stockfit/stockfit_as_reported_quarter/stockfit_as_reported_quarter.zarr",
+        zarr_file_path="/data/market/stockfit/stockfit_as_reported_quarter/stockfit_as_reported_quarter.zarr",
         raw_data_dir_path=root,
         concepts=as_reported_concepts(root),
     )
@@ -55,11 +55,12 @@ from quantlab.dataset.stockfit.raw import as_number
 #: The prefix of the concepts a panel may hold.
 US_GAAP = "us-gaap:"
 
-#: The periods a store may hold, and the fiscal periods each keeps.
+#: The fiscal periods each of ``StockFitAsReportedConfig.PERIODS`` keeps.
 PERIODS: dict[str, frozenset[str]] = {
     "quarter": frozenset({"Q1", "Q2", "Q3", "Q4"}),
     "annual": frozenset({"FY"}),
 }
+assert tuple(PERIODS) == StockFitAsReportedConfig.PERIODS
 
 
 def endpoint(period: str) -> str:
@@ -83,7 +84,7 @@ def as_reported_concepts(vendor_root: str | Path, period: str = "quarter", min_s
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     period : str, default "quarter"
         ``"quarter"`` or ``"annual"``.
     min_share : float, default 0.05

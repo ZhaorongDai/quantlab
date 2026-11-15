@@ -222,7 +222,7 @@ def nyse_calendar(
     Parameters
     ----------
     vendor_root : str or Path
-        ``<download-dir>/stockfit``.
+        ``<root>/downloads/stockfit``.
     endpoints : str or sequence of str
         The raw tier's endpoints the panel reads.
     start, end : date-like
@@ -239,7 +239,7 @@ def nyse_calendar(
     --------
     With a raw tier on disk::
 
-        nyse_calendar("/data/quantlab/downloads/stockfit", "filings", start="2020-01-01", end=None, owner="me")
+        nyse_calendar("/data/downloads/stockfit", "filings", start="2020-01-01", end=None, owner="me")
     """
     names = (endpoints,) if isinstance(endpoints, str) else tuple(endpoints)
     marks = {name: newest_watermark(vendor_root, name) for name in names}

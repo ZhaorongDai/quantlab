@@ -23,8 +23,8 @@ Examples
 Build the scores store::
 
     config = StockFitScoresTrendsConfig(
-        zarr_file_path="/data/quantlab/market/stockfit/stockfit_scores/stockfit_scores.zarr",
-        raw_data_dir_path="/data/quantlab/downloads/stockfit",
+        zarr_file_path="/data/market/stockfit/stockfit_scores/stockfit_scores.zarr",
+        raw_data_dir_path="/data/downloads/stockfit",
         table="scores",
     )
     StockFitScoresTrendsDataset(config).update().panel("2026-11-02", "2026-11-27")["piotroskiFScore"]
