@@ -17,7 +17,12 @@ from its ``firstpricedate`` to its ``lastpricedate``.
   and a security without a CIK, or whose CIK the company panel lacks, is
   not on the axis.
 
-Each day is decided from that day's securities alone, so the map adds no
+Each day is decided from that day's securities alone. One caveat: TICKERS
+holds one row per security, its current ``secfilings`` URL, so a security's
+CIK is today's and is applied to its whole history. A security whose filer
+changed CIK (a new holding company after a reorganization, say) shows the
+current CIK's values on days the old CIK filed for it; TICKERS does not
+date the change, so the map cannot. Short of that, the map adds no
 look-ahead to the company panel. The map is a dataset view
 (``DatasetView``) of the company panel: a factor given it in place of a
 permaticker panel changes nothing else. Its calendar is the company panel's;
