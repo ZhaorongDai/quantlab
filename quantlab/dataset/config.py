@@ -1554,3 +1554,34 @@ class MassiveNewsConfig(MassiveRestPanelConfig):
     >>> cfg.vendor, cfg.table
     ('massive', 'sep')
     """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitFundConfig(DatasetConfig):
+    """Config of a StockFit fund panel on the fund-series axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier (``<download-dir>/stockfit``,
+    ``quantlab.dataset.stockfit.raw``). The panel's symbols are fund series,
+    ``<cik>-<series id>``; ``symbols`` keeps only the listed ones. The days are
+    NYSE's sessions up to the day before the endpoints read were last pulled.
+
+    Examples
+    --------
+    >>> cfg = StockFitFundConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_fund_profile_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ...     symbols=("36405-2839",),
+    ... )
+    >>> cfg.vendor, cfg.frequency, cfg.stale_after_days
+    ('stockfit', '1d', None)
+    """
+
+    #: Fund series trade on US exchanges; the calendar is NYSE's.
+    market: Market = "us_equity"
+    #: One value per trading day.
+    frequency: Frequency = "1d"
+    #: Always StockFit.
+    vendor: Vendor | None = "stockfit"
+    #: Days after its date (quarter end, filing date) a row no newer row has
+    #: replaced stops being shown; ``None`` never.
+    stale_after_days: int | None = None

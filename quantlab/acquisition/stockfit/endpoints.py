@@ -15,6 +15,12 @@ Shapes:
   companies are those of the newest company lists in the raw tier
   (``quantlab.dataset.stockfit.raw.company_ciks``), or the CIKs a refresh is
   given.
+- ``PerFundSeries``: one request per fund series (``<cik>-<series id>``) of
+  the newest fund lists (``quantlab.dataset.stockfit.raw.fund_listings``),
+  asked for by its ticker or Composite FIGI (``fund_selector``);
+  ``PerFundQuarter``: one per series and quarter, each asked once;
+  ``PerAdviser``: one per adviser CRD found in the series' N-CEN service
+  providers.
 
 A pull is written through ``quantlab.acquisition.stockfit.raw_tier``: staged,
 then published by one rename, or dropped when equal to the entity's newest
@@ -35,22 +41,44 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 
 from quantlab.acquisition.stockfit.client import StockFitClient, StockFitResponseError
 from quantlab.acquisition.stockfit.raw_tier import StagedPull, write_entity_watermark
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
+    FUND_DAILY_SUPPORTED,
+    FUND_LISTS,
+    FUND_SYMBOLS,
     SYMBOLS,
     WHOLE_LIST,
     company_ciks,
+    daily_supported,
+    fund_listings,
+    newest_pull_dir,
+    read_pull,
+    read_watermark,
 )
+from quantlab.dataset.stockfit.raw import entities as raw_entities
 
 #: The most periods one statement request returns.
 STATEMENT_LIMIT = 80
 
 #: The largest page ``/api/symbols`` and ``/api/company/delisted`` serve.
 LIST_PAGE_SIZE = 1000
+
+#: The largest page of the fund fee and performance tables.
+FUND_PAGE_SIZE = 100
+
+#: The largest page of N-PORT and daily fund holdings.
+HOLDINGS_PAGE_SIZE = 1000
+
+#: The largest page of the funds of one adviser.
+ADVISER_PAGE_SIZE = 500
+
+#: The most N-CEN reporting years ``/api/fund/service-providers`` returns.
+PROVIDER_YEARS = 40
 
 
 class Outcome(Enum):
@@ -72,10 +100,14 @@ class PullContext:
     ciks : tuple of int or None, default None
         The companies to pull; those of the raw tier's company lists when
         ``None``.
+    fund_series : tuple of str or None, default None
+        The fund series (``<cik>-<series id>``) to pull; every series of the
+        raw tier's fund lists when ``None``.
     """
 
     vendor_root: Path
     ciks: tuple[int, ...] | None = None
+    fund_series: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +140,10 @@ class Endpoint(ABC):
     def query(self, entity: str) -> dict:
         """Return the query of one entity's pull, without paging."""
 
+    def _query_in(self, vendor_root: Path, entity: str) -> dict:
+        """Return the query of one entity's pull from this raw tier; ``query(entity)`` unless the shape needs the tier."""
+        return self.query(entity)
+
     def pull(self, client: StockFitClient, vendor_root: Path, entity: str) -> Outcome:
         """Pull one entity: stage every page, then publish or drop it; the watermark moves.
 
@@ -121,7 +157,7 @@ class Endpoint(ABC):
             published and the watermark stays.
         """
         pulled_at = client.now()
-        query = self.query(entity)
+        query = self._query_in(vendor_root, entity)
         if self.page_size is None:
             body = client.get_json(self.path, query)
             if body is None:
@@ -134,6 +170,9 @@ class Endpoint(ABC):
             page, pages = 1, 1
             while page <= pages:
                 body = client.get_json(self.path, {**query, "page": page, "pageSize": self.page_size})
+                if body is None and page == 1:  # the vendor holds nothing for the entity
+                    write_entity_watermark(vendor_root, self.name, entity, pulled_at)
+                    return Outcome.MISSING
                 if not isinstance(body, dict) or not isinstance(body.get("data"), list) or "totalPages" not in body:
                     raise StockFitResponseError(f"{self.path} page {page} is not a paged object with data.")
                 staged.add_page(body)
@@ -189,6 +228,213 @@ class PerCompany(Endpoint):
         return {**self.params, "cik": int(entity)}
 
 
+# -- fund series ------------------------------------------------------------------
+
+
+def _listings_key(vendor_root: Path) -> tuple:
+    """The newest pulls the fund listings are read from: a new pull of any makes a new key."""
+    return tuple(
+        str(newest_pull_dir(vendor_root, endpoint, entity))
+        for endpoint, entity in (*FUND_LISTS, (FUND_DAILY_SUPPORTED, WHOLE_LIST))
+    )
+
+
+@lru_cache(maxsize=4)
+def _listings_at(vendor_root: Path, key: tuple) -> tuple[dict[str, dict], frozenset[str]]:
+    del key  # only keys the cache
+    return fund_listings(vendor_root), frozenset(daily_supported(vendor_root))
+
+
+def _listings(vendor_root: Path) -> tuple[dict[str, dict], frozenset[str]]:
+    """The fund series of the raw tier's newest fund lists, and the tickers with daily holdings."""
+    vendor_root = Path(vendor_root)
+    return _listings_at(vendor_root, _listings_key(vendor_root))
+
+
+def fund_selector(listing: Mapping, supported: frozenset[str] | None = None) -> dict | None:
+    """Return the selector that asks StockFit's fund endpoints for one fund series; ``None`` if nothing does.
+
+    Fund endpoints take a security selector, not the series id, so a series
+    is asked for by one of its tickers (the first listed, or with
+    ``supported`` the first StockFit has daily holdings for), else by its
+    Composite FIGI. A ticker is today's; the fund lists are today's too.
+
+    Examples
+    --------
+    >>> fund_selector({"symbols": ["VOO"], "composite_figi": "BBG000BHTMY2"})
+    {'symbol': 'VOO'}
+    >>> fund_selector({"symbols": [], "composite_figi": "BBG000BHTMY2"})
+    {'composite_figi': 'BBG000BHTMY2'}
+    >>> fund_selector({"symbols": ["VFIAX", "VOO"], "composite_figi": None}, frozenset({"VOO"}))
+    {'symbol': 'VOO'}
+    """
+    if supported is not None:
+        tickers = [ticker for ticker in listing["symbols"] if ticker in supported]
+        return {"symbol": tickers[0]} if tickers else None
+    if listing["symbols"]:
+        return {"symbol": listing["symbols"][0]}
+    if listing.get("composite_figi"):
+        return {"composite_figi": listing["composite_figi"]}
+    return None
+
+
+@dataclass(frozen=True)
+class PerFundSeries(Endpoint):
+    """One request per fund series (``<cik>-<series id>``), asked for by its selector (``fund_selector``).
+
+    The series are those of the newest fund lists in the raw tier
+    (``quantlab.dataset.stockfit.raw.fund_listings``), or the ones a
+    refresh is given; a series nothing selects is not pulled.
+
+    Parameters
+    ----------
+    daily : bool, default False
+        Pull only the series with a ticker StockFit has daily website
+        holdings for (``/api/fund/holdings/daily/supported-funds``), asked
+        for by that ticker.
+
+    Examples
+    --------
+    >>> ENDPOINTS["fund_profile"].query("36405-2839", {"symbol": "VOO"})
+    {'symbol': 'VOO'}
+    """
+
+    daily: bool = False
+
+    def _selectors(self, context: PullContext) -> dict[str, dict]:
+        listings, supported = _listings(context.vendor_root)
+        wanted = listings if context.fund_series is None else {
+            name: listings[name] for name in context.fund_series if name in listings
+        }
+        selectors = {name: fund_selector(listing, supported if self.daily else None)
+                     for name, listing in wanted.items()}
+        return {name: selector for name, selector in selectors.items() if selector is not None}
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return the fund series to pull, sorted by CIK, then series id."""
+        return list(self._selectors(context))
+
+    def query(self, entity: str, selector: Mapping | None = None) -> dict:
+        """Return the fixed parameters and the series' selector.
+
+        Raises
+        ------
+        ValueError
+            If ``selector`` is omitted: a series id alone selects nothing.
+        """
+        if selector is None:
+            raise ValueError(f"StockFit fund series {entity!r} is asked for by a selector; none was given.")
+        return {**self.params, **selector}
+
+    def _query_in(self, vendor_root: Path, entity: str) -> dict:
+        """Return the query with the series' selector from the raw tier's fund lists."""
+        selector = self._selectors(PullContext(vendor_root, fund_series=(entity,))).get(entity)
+        return self.query(entity, selector)
+
+
+@dataclass(frozen=True)
+class PerFundQuarter(PerFundSeries):
+    """One request per fund series and quarter end its N-PORT summary lists, each asked once.
+
+    The quarters are the ``reportDate`` of the series' newest
+    ``fund_profile`` pull; the entity is ``<series>_<YYYY-MM-DD>``. A quarter
+    already asked for (its watermark is set, whether or not the vendor
+    served it) is not asked again: a past quarter's N-PORT does not change.
+
+    Examples
+    --------
+    >>> ENDPOINTS["fund_holdings"].query("36405-2839_2026-06-30", {"symbol": "VOO"})
+    {'symbol': 'VOO', 'reportDate': '2026-06-30'}
+    """
+
+    quarters_from: str = "fund_profile"
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return each series' quarters not yet asked for, series by series, newest quarter first."""
+        found = []
+        for series in self._selectors(context):
+            if newest_pull_dir(context.vendor_root, self.quarters_from, series) is None:
+                continue
+            rows = read_pull(context.vendor_root, self.quarters_from, series)
+            for day in dict.fromkeys(str(row["reportDate"]) for row in rows if row.get("reportDate")):
+                entity = f"{series}_{day}"
+                if read_watermark(context.vendor_root, self.name, entity) is None:
+                    found.append(entity)
+        return found
+
+    def query(self, entity: str, selector: Mapping | None = None) -> dict:
+        """Return the fixed parameters, the series' selector and the quarter's ``reportDate``."""
+        series, day = entity.split("_")
+        return {**super().query(series, selector), "reportDate": day}
+
+    def _query_in(self, vendor_root: Path, entity: str) -> dict:
+        """Return the query with the series' selector from the raw tier's fund lists."""
+        series = entity.split("_")[0]
+        selector = self._selectors(PullContext(vendor_root, fund_series=(series,))).get(series)
+        return self.query(entity, selector)
+
+
+@dataclass(frozen=True)
+class PerAdviser(Endpoint):
+    """One request per investment adviser, by CRD number, from the fund series' N-CEN service providers.
+
+    The advisers are the providers whose role names an adviser in the
+    newest pull of every series of ``providers_from``.
+
+    Examples
+    --------
+    >>> ENDPOINTS["fund_by_adviser"].query("105958")
+    {'crd': '105958'}
+    """
+
+    providers_from: str = "fund_service_providers"
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return the advisers' CRD numbers, sorted."""
+        crds: set[str] = set()
+        for series in raw_entities(context.vendor_root, self.providers_from):
+            body = read_pull(context.vendor_root, self.providers_from, series)
+            for year in body.get("providersByYear") or [] if isinstance(body, dict) else []:
+                crds.update(
+                    str(provider["crdNumber"]) for provider in year.get("providers") or []
+                    if provider.get("crdNumber") and "advis" in str(provider.get("providerRole", "")).lower()
+                )
+        return sorted(crds, key=lambda crd: (len(crd), crd))
+
+    def query(self, entity: str) -> dict:
+        """Return the fixed parameters and ``crd``."""
+        return {**self.params, "crd": entity}
+
+
+def _funds() -> list[Endpoint]:
+    """The fund endpoints, in pull order: the lists first, the adviser lookup after its providers."""
+    return [
+        # Every fund series, by kind and listing status: the series of the per-series pulls.
+        MarketList(
+            FUND_SYMBOLS, "/api/symbols", page_size=LIST_PAGE_SIZE,
+            variants={entity: dict(zip(("type", "status"), entity.split("_"))) for _, entity in FUND_LISTS},
+        ),
+        # The tickers with daily website holdings.
+        MarketList(FUND_DAILY_SUPPORTED, "/api/fund/holdings/daily/supported-funds"),
+        # N-PORT summary and monthly flows, per quarter (panels).
+        PerFundSeries("fund_profile", "/api/fund/profile"),
+        PerFundSeries("fund_flows", "/api/fund/flows"),
+        # N-1A prospectus fee tables (panel) and N-CSR performance per share class (raw only).
+        PerFundSeries("fund_fees", "/api/fund/fees", page_size=FUND_PAGE_SIZE),
+        PerFundSeries("fund_performance", "/api/fund/performance", page_size=FUND_PAGE_SIZE),
+        # N-PORT holdings, each quarter once (raw only).
+        PerFundQuarter("fund_holdings", "/api/fund/holdings", page_size=HOLDINGS_PAGE_SIZE),
+        # Daily website holdings, a snapshot each refresh (raw only).
+        PerFundSeries("fund_holdings_daily", "/api/fund/holdings/daily", page_size=HOLDINGS_PAGE_SIZE, daily=True),
+        # N-CEN: fund health and fee analysis (panel), service providers (raw only).
+        PerFundSeries("fund_health", "/api/fund/fund-health"),
+        PerFundSeries("fund_fee_analysis", "/api/fund/fee-analysis"),
+        PerFundSeries("fund_service_providers", "/api/fund/service-providers", {"limit": PROVIDER_YEARS}),
+        # The funds of each adviser (raw only): a lookup.
+        PerAdviser("fund_by_adviser", "/api/fund/by-adviser", page_size=ADVISER_PAGE_SIZE),
+    ]
+
+
 def _statements() -> list[Endpoint]:
     paths = {
         "income_statement": "/api/financials/income-statement",
@@ -214,4 +460,6 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     MarketList(COMPANY_DELISTED, "/api/company/delisted", page_size=LIST_PAGE_SIZE),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
+    # Fund series: lists, N-PORT, N-1A, N-CSR, N-CEN and daily holdings.
+    *_funds(),
 )}

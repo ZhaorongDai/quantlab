@@ -145,7 +145,10 @@ def test_a_killed_refresh_leaves_no_partial_pull_and_the_next_one_publishes_it_w
 
 def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tmp_path, clock):
     vendor = FakeVendor(clock, per_minute=4)
-    result = _refresh(tmp_path, vendor, clock)
+    lists_and_statements = ["symbols", "company_delisted"] + [
+        f"{name}_{period}" for period in ("annual", "quarter", "ttm") for name in STATEMENTS
+    ]
+    result = _refresh(tmp_path, vendor, clock, endpoints=lists_and_statements)
 
     assert not result.failed, result.summary()
     assert len(vendor.calls) == 3 + 9 * 3  # three list pages, nine statements of three companies

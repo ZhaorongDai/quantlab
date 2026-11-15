@@ -58,6 +58,7 @@ def refresh_raw_tier(
     end: date | None = None,
     endpoints: Iterable[str | Endpoint] | None = None,
     ciks: Iterable[int] | None = None,
+    fund_series: Iterable[str] | None = None,
     client: StockFitClient | None = None,
 ) -> RawTierRefreshResult:
     """Pull StockFit's endpoints into the raw tier under ``<download_dir>/stockfit/``.
@@ -75,6 +76,9 @@ def refresh_raw_tier(
     ciks : iterable of int or None, default None
         The companies a per-company endpoint is pulled for; every company of
         the raw tier's company lists when omitted.
+    fund_series : iterable of str or None, default None
+        The fund series (``<cik>-<series id>``) a per-series endpoint is
+        pulled for; every series of the raw tier's fund lists when omitted.
     client : StockFitClient or None, default None
         The client to pull through; one reading ``STOCKFIT_API_KEY`` when
         omitted.
@@ -108,7 +112,11 @@ def refresh_raw_tier(
     ]
     client = client if client is not None else StockFitClient()
     vendor_root = Path(download_dir) / VENDOR_DIR
-    context = PullContext(vendor_root, None if ciks is None else tuple(int(cik) for cik in ciks))
+    context = PullContext(
+        vendor_root,
+        None if ciks is None else tuple(int(cik) for cik in ciks),
+        None if fund_series is None else tuple(str(series) for series in fund_series),
+    )
     parts = []
     for endpoint in selected:
         started = time.monotonic()
