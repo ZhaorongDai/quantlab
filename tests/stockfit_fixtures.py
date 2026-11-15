@@ -8,7 +8,8 @@ called as ``vendor(url, params=..., headers=...)`` and returns an
   is answered with the recorded body whose path and identifying parameters
   (every parameter but ``page``, ``pageSize`` and ``limit``) match, and with
   404 when nothing was recorded for it;
-- a market-wide list (``/api/symbols``, ``/api/company/delisted``) is served
+- a market-wide list (``/api/symbols``, ``/api/company/delisted``, the
+  Congress ``trades/recent`` feeds) is served
   from ``vendor.lists[path]``, filtered on the query parameters that are
   fields of its rows (``status``, ``type``) and paged by ``page`` and
   ``pageSize`` like the vendor's paged objects;
@@ -68,6 +69,21 @@ def company_row(cik: int, name: str, status: str = "operating", kind: str = "sto
     }
 
 
+def filing_row(form: str, cik: int, filed: str, accepted: str | None = None) -> dict:
+    """Return one row of ``/api/filings/latest`` in the vendor's shape; the filer's CIK is in its URL."""
+    row = {  # SYNTHETIC values, VERBATIM field names
+        "type": form,
+        "accessionNumber": f"{cik:010d}-26-000001",
+        "url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{cik:010d}26000001/primary_doc.htm",
+        "dateFiled": filed,
+        "xbrl": form in {"10-K", "10-Q", "20-F"},
+        "amendment": False,
+    }
+    if accepted is not None:
+        row["acceptedAt"] = accepted
+    return row
+
+
 def _identity(params) -> frozenset:
     return frozenset((str(k), str(v)) for k, v in params.items() if k not in PAGING)
 
@@ -116,10 +132,14 @@ class FakeVendor:
         self.lists: dict[str, list[dict]] = {
             "/api/symbols": rows,
             "/api/company/delisted": [dict(row, delistedAt="2022-11-08") for row in rows if row["status"] == "delisted"],
+            "/api/congress/house/trades/recent": fixture("congress_house_trades_recent")["data"],
+            "/api/congress/senate/trades/recent": fixture("congress_senate_trades_recent")["data"],
+            "/api/filings/latest": [],
         }
         self.per_minute = per_minute
         self.per_day = per_day
         self.used_today = 0
+        self._day = clock.now().date()
         self.replies = list(replies or [])
         self.calls: list[tuple[str, dict, dict]] = []
         self.statuses: list[int] = []
@@ -155,6 +175,8 @@ class FakeVendor:
         if headers.get("Authorization") != f"Bearer {KEY}":
             return HttpResponse(401, b'{"error":"Unauthorized"}')
         now = self.clock.now()
+        if now.date() != self._day:  # the daily cap resets at 00:00 UTC
+            self._day, self.used_today = now.date(), 0
         recent = [t for t in self._times if now - t < timedelta(seconds=60)]
         if len(recent) >= self.per_minute or self.used_today >= self.per_day:
             return HttpResponse(429, b'{"error":"Too Many Requests"}', self._limits())

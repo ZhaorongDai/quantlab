@@ -67,20 +67,36 @@ result = refresh_raw_tier(DataSourceRegistry.get("stockfit"), "/data/downloads")
 print(result.summary())
 ```
 
-It pulls the company lists (operating and delisted companies) and then, for every company, the
-income statement, balance sheet and cash-flow statement, annual, quarterly and TTM, and the 17
-footnote tables, annual and quarterly, with as many periods as StockFit serves. Pass `endpoints=` to
-{py:func}`quantlab.acquisition.stockfit.refresh.refresh_raw_tier` to pull some endpoints only, and
-`ciks=` to pull some companies only.
+The same call does the first backfill and every later update; run it once a day. Each run:
+
+1. pulls the market-wide lists: the company lists (operating and delisted companies) and the
+   feed of the last 30 days' filings (`/api/filings/latest`, one entity per form type: 10-K,
+   10-Q, 20-F, Form 4, 13F-HR, N-PORT, 13D, 13G, DEF 14A), and the House and Senate trade feeds,
+   each from its last pull's day;
+2. plans the per-entity pulls due, in this order, within the requests left today:
+   - the entities a filing made since their last pull touches: a new 10-K, 10-Q or 20-F re-pulls
+     that company's statements and footnotes;
+   - the entities never pulled, in the table's order, which is the backfill order (the
+     statements: income statement, balance sheet and cash-flow statement, annual, quarterly and
+     TTM; then the 17 footnote tables, annual and quarterly; each with as many periods as
+     StockFit serves);
+   - the periodic re-pulls: every company's statements once a week, which catches a filing the
+     feed missed.
+
+The pulls that do not fit in the day's requests are deferred, and the next run plans them again
+from what is on disk, so a backfill that needs weeks of requests resumes where it stopped. Pass
+`endpoints=` to {py:func}`quantlab.acquisition.stockfit.refresh.refresh_raw_tier` to refresh some
+endpoints only, and `ciks=` to pull some companies only.
 
 StockFit limits requests per minute and per day, and the limits depend on the key. The client
 reads them from the `X-RateLimit-*` headers of every response: it waits for the minute window to
-have room, retries an HTTP 429 after the window rolls, and stops sending once the day's requests
-are spent (`day_reserve=` keeps some unspent), so a refresh stops cleanly instead of failing on the
-cap. A 404 means StockFit holds nothing for that entity; nothing is published.
+have room, waits out an HTTP 429 and sends again (a throttle never fails a run), and stops sending
+once the day's requests are spent (`day_reserve=` keeps some unspent). Running out of the day's
+requests is not a failure: each endpoint's part of the result says how many pulls it deferred to
+the next run. A 404 means StockFit holds nothing for that entity; nothing is published.
 
-A part that fails (an endpoint the plan does not include, the daily cap, an entity whose request
-kept failing) is listed in `result.failed` and the other endpoints still run.
+A part that fails (an endpoint the plan does not include, an entity whose request kept failing) is
+listed in `result.failed` and the other endpoints still run.
 
 ## Footnote panels
 
@@ -152,9 +168,59 @@ instance of the class for its *pull shape*:
 - {py:class}`~quantlab.acquisition.stockfit.endpoints.MarketList`: a market-wide paged list, one
   entity per named variant of its query;
 - {py:class}`~quantlab.acquisition.stockfit.endpoints.PerCompany`: one request per company,
-  selected by `cik`.
+  selected by `cik`;
+- {py:class}`~quantlab.acquisition.stockfit.endpoints.LatestFilings`: the recent-filings feed, one
+  entity per form type;
+- {py:class}`~quantlab.acquisition.stockfit.endpoints.SinceFeed`: a market-wide feed asked for
+  everything filed since a day: the whole archive on the first pull, then from the last pull's day
+  less `overlap_days` (30), so each pull holds only its window. It is a market-wide list, pulled on
+  every run.
 
 An endpoint of an existing shape is one row: a name (its directory), the path and the fixed query
-parameters. A new shape is a subclass of
+parameters. Its place in the table is its place in the backfill. A market-wide list is pulled on
+every run; any other endpoint is backfilled once per entity and then re-pulled when a filing of one
+of its `triggers` form types is made for the entity, and, with `repull_days`, once its last pull is
+that many days old. A new shape is a subclass of
 {py:class}`~quantlab.acquisition.stockfit.endpoints.Endpoint` that says which entities it is
 pulled for and what query selects one.
+
+## Congress trades
+
+{py:class}`~quantlab.dataset.stockfit.congress.StockFitCongressTradesDataset` is a daily panel, on
+the CIK axis and NYSE's trading days, of the stock trades members of Congress disclose under the
+STOCK Act. It reads the feeds `congress_house_trades` (House Clerk, since 2014) and
+`congress_senate_trades` (Senate eFD, since 2012), pulled with `since=` from the archive start and
+then from the last pull's day.
+
+| Variable | Meaning |
+|---|---|
+| `purchase_min`, `purchase_max` | Sums of the purchases' disclosed amount bands, lower and upper bounds (USD) |
+| `sale_min`, `sale_max` | The same for sales and partial sales |
+| `purchases`, `sales` | Number of transactions |
+| `members_buying`, `members_selling` | Distinct members with a purchase or a sale |
+
+- **Available date**: the report's filing date, on that trading day or the next one (reports carry
+  no acceptance time). The transaction date, often weeks earlier, never places a trade.
+- **Which trades count**: only those whose `linkConfidence` is `high` and whose `resolvedTicker`
+  names exactly one company on the transaction date. Tickers are reused, so a ticker is resolved
+  through the current and prior tickers of StockFit's company lists: a prior ticker's holder held it
+  at least until its `lastSeen` and maybe up to 182 days after (StockFit's `lastSeen` is a lower
+  bound), and a trade in that handover window, when another company holds the ticker later, is not
+  placed. Unresolved, low-confidence and paper reports stay in the raw tier only.
+- An open amount band (`Over $50,000,000`) adds its lower bound to both bounds. A trade an amendment
+  repeats exactly is counted on its first report only. Every asset type StockFit resolved to a
+  listing counts, options among them. A day without a counted trade is 0.
+- **Look-ahead**: the company lists are read as of their newest pull, so the ticker history is
+  today's view of it.
+
+```python
+from quantlab.dataset.config import StockFitCongressTradesConfig
+from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
+
+config = StockFitCongressTradesConfig(
+    zarr_file_path="/data/stores/stockfit_congress_trades_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+)
+StockFitCongressTradesDataset(config).update()
+panel = StockFitCongressTradesDataset(config).panel("2024-01-02", "2024-03-28")
+```

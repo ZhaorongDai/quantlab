@@ -13,7 +13,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.stockfit_fixtures import GOOGL, KEY, FakeClock, FakeVendor, fixture
+from datetime import timedelta
+
+from tests.stockfit_fixtures import GOOGL, KEY, FakeClock, FakeVendor, filing_row, fixture
 
 BA, O = 12927, 726728
 COMPANIES = (GOOGL, BA, O)
@@ -34,11 +36,18 @@ def _refresh(tmp_path, vendor, clock, ciks=COMPANIES):
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
     from quantlab.dataset.stockfit.footnotes import FOOTNOTES, footnote_endpoint
 
-    endpoints = [footnote_endpoint(name, period) for name in FOOTNOTES for period in ("annual", "quarter")]
+    footnotes = [footnote_endpoint(name, period) for name in FOOTNOTES for period in ("annual", "quarter")]
+    endpoints = ["filings_latest", *footnotes]  # the feed whose new reports re-pull the footnotes
     client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
     result = refresh_raw_tier(tmp_path, client=client, endpoints=endpoints, ciks=ciks)
     assert not result.failed, result.summary()
     return result
+
+
+def _file_report(vendor, clock, cik=GOOGL, form="10-Q"):
+    """Make the recent-filings feed serve a report the company filed an hour ago: its footnotes are re-pulled."""
+    filed = clock.now() - timedelta(hours=1)
+    vendor.lists["/api/filings/latest"] = [filing_row(form, cik, filed.date().isoformat(), filed.isoformat())]  # SYNTHETIC
 
 
 def _dataset(tmp_path, footnote, period="annual", start="2014-01-01", **kwargs):
@@ -165,6 +174,7 @@ def test_a_change_a_re_pull_sees_is_shown_from_the_pull_on_and_not_flagged(env, 
     restated[0]["remainingPerformanceObligation"] = 250_000_000_000  # SYNTHETIC silent restatement
     vendor.bodies[BACKLOG] = restated
     clock.advance(days=2)  # Wednesday 2026-11-18, 09:00 in New York
+    _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
     panel = _panel(tmp_path, "backlog", start="2024-06-01")
 
@@ -182,8 +192,10 @@ def test_a_change_pulled_after_the_close_is_shown_from_the_next_trading_day(env,
     restated[0]["remainingPerformanceObligation"] = 250_000_000_000  # SYNTHETIC
     vendor.bodies[BACKLOG] = restated
     clock.advance(days=4, hours=8)  # Friday 2026-11-20, 17:00 in New York
+    _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
     clock.advance(days=3)  # the raw tier is complete through Monday
+    _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
     panel = _panel(tmp_path, "backlog", start="2024-06-01")
 
@@ -198,6 +210,7 @@ def test_a_period_filed_after_the_first_pull_is_shown_from_its_filing_date_unfla
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
     vendor.bodies[BACKLOG] = fixture("footnote_backlog_googl")
     clock.advance(days=56)  # 2026-03-02
+    _file_report(vendor, clock, form="10-K")
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
     panel = _panel(tmp_path, "backlog", start="2024-06-01")
 
@@ -214,6 +227,7 @@ def test_a_restated_older_period_never_replaces_the_newer_one_shown(env, tmp_pat
     restated[1]["remainingPerformanceObligation"] = 1.0  # SYNTHETIC restatement of FY2024
     vendor.bodies[BACKLOG] = restated
     clock.advance(days=2)
+    _file_report(vendor, clock)
     _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
     panel = _panel(tmp_path, "backlog", start="2024-06-01")
 
