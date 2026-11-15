@@ -80,7 +80,11 @@ from quantlab.dataset._support.point_in_time import (
 )
 from quantlab.dataset.config import DatasetConfig, StockFitStatementsConfig
 from quantlab.dataset.stockfit import raw
-from quantlab.dataset.stockfit.available import nyse_calendar, parse_accepted, place_released
+from quantlab.dataset.stockfit.available import (
+    nyse_calendar,
+    parse_accepted,
+    place_released,
+)
 from quantlab.utils.timer import Timer
 
 #: The income statement's facts, in the vendor's order.

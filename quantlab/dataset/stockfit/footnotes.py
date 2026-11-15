@@ -77,10 +77,15 @@ from typing import ClassVar
 
 import polars as pl
 
-from quantlab.dataset._support.point_in_time import ReleasePanelDataset, ReleaseSpec, TradingCalendar
+from quantlab.dataset._support.point_in_time import (
+    ReleasePanelDataset,
+    ReleaseSpec,
+    TradingCalendar,
+)
 from quantlab.dataset.config import StockFitFootnoteConfig
 from quantlab.dataset.stockfit import raw
 from quantlab.dataset.stockfit.available import nyse_calendar, pull_day
+from quantlab.dataset.stockfit.raw import as_number
 from quantlab.dataset.stockfit.vintages import ServedRow, observed_versions
 
 #: The period types a footnote is pulled for, the ``period`` query parameter.
@@ -205,12 +210,6 @@ def _walk(node, steps) -> Iterator[tuple[dict, object]]:
             yield point, value
 
 
-def _number(value) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return math.nan
-    return float(value)
-
-
 def served_rows(body, spec: FootnoteSpec) -> dict[str, tuple[ServedRow, int | None]]:
     """Return a footnote body's periods: (row, fiscal year) by fiscal period end.
 
@@ -244,7 +243,7 @@ def served_rows(body, spec: FootnoteSpec) -> dict[str, tuple[ServedRow, int | No
             note(point)
     for name, path in spec.fields.items():
         for point, value in _walk(body, _steps(path)):
-            number = _number(value)
+            number = as_number(value)
             if math.isnan(number):
                 continue
             period = note(point)

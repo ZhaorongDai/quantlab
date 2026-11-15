@@ -53,8 +53,8 @@ from quantlab.dataset.stockfit.available import parse_accepted
 from quantlab.dataset.stockfit.period_panel import (
     PeriodRow,
     VersionedPeriodDataset,
-    as_float,
 )
+from quantlab.dataset.stockfit.raw import as_number
 from quantlab.dataset.stockfit.statements import STATEMENTS
 
 #: The growth rates, in the vendor's order (decimals: 0.15 is 15%).
@@ -99,14 +99,14 @@ def _periods(fields: tuple[str, ...], block: str | None = None) -> Callable[[obj
             if not isinstance(entry, Mapping) or not entry.get("period"):
                 continue
             source = (entry.get(block) or {}) if block else entry
-            rows[str(entry["period"])[:10]] = {name: as_float(source.get(name)) for name in fields}
+            rows[str(entry["period"])[:10]] = {name: as_number(source.get(name)) for name in fields}
         return rows
 
     return read
 
 
 def _sum(values: list) -> float:
-    found = [as_float(value) for value in values]
+    found = [as_number(value) for value in values]
     found = [value for value in found if not math.isnan(value)]
     return float(sum(found)) if found else float("nan")
 

@@ -49,8 +49,8 @@ from quantlab.dataset.stockfit.available import parse_accepted
 from quantlab.dataset.stockfit.period_panel import (
     PeriodRow,
     VersionedPeriodDataset,
-    as_float,
 )
+from quantlab.dataset.stockfit.raw import as_number
 
 #: The prefix of the concepts a panel may hold.
 US_GAAP = "us-gaap:"
@@ -205,6 +205,6 @@ class StockFitAsReportedDataset(VersionedPeriodDataset):
             rows[entry["period"]] = PeriodRow(
                 filed=date.fromisoformat(entry["dateFiled"][:10]),
                 accepted_at=parse_accepted(entry.get("acceptedAt")),
-                values={variable_name(concept): as_float(facts.get(concept)) for concept in self.config.concepts},
+                values={variable_name(concept): as_number(facts.get(concept)) for concept in self.config.concepts},
             )
         return rows

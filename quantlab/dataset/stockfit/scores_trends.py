@@ -40,8 +40,8 @@ from quantlab.dataset.stockfit.available import pull_day
 from quantlab.dataset.stockfit.period_panel import (
     PeriodRow,
     VersionedPeriodDataset,
-    as_float,
 )
+from quantlab.dataset.stockfit.raw import as_number
 
 #: The Altman zones, coded.
 ALTMAN_ZONES: dict[str, float] = {"distress": 0.0, "grey": 1.0, "safe": 2.0}
@@ -79,11 +79,11 @@ def _dig(body: Mapping, path: tuple[str, ...]):
 def _scores(body) -> tuple[str | None, dict[str, float]]:
     details = body.get("piotroskiDetails") or {}
     values = {
-        "piotroskiFScore": as_float(body.get("piotroskiFScore")),
-        "altmanZScore": as_float(body.get("altmanZScore")),
+        "piotroskiFScore": as_number(body.get("piotroskiFScore")),
+        "altmanZScore": as_number(body.get("altmanZScore")),
         "altmanZone": ALTMAN_ZONES.get(body.get("altmanZone"), float("nan")),
     }
-    values.update({name: as_float(details.get(name)) for name in PIOTROSKI_CRITERIA})
+    values.update({name: as_number(details.get(name)) for name in PIOTROSKI_CRITERIA})
     return body.get("period"), values
 
 
@@ -91,7 +91,7 @@ def _trends(body) -> tuple[str | None, dict[str, float]]:
     values = {}
     for path, name in zip(_TREND_PATHS, TREND_FIELDS):
         value = _dig(body, path)
-        values[name] = DIRECTIONS.get(value, float("nan")) if path[-1] == "direction" else as_float(value)
+        values[name] = DIRECTIONS.get(value, float("nan")) if path[-1] == "direction" else as_number(value)
     return body.get("latestPeriod"), values
 
 

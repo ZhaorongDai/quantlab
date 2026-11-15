@@ -61,11 +61,20 @@ from datetime import date, datetime, timedelta
 
 import polars as pl
 
-from quantlab.dataset._support.point_in_time import ReleasePanelDataset, ReleaseSpec, TradingCalendar
+from quantlab.dataset._support.point_in_time import (
+    ReleasePanelDataset,
+    ReleaseSpec,
+    TradingCalendar,
+)
 from quantlab.dataset.config import DatasetConfig, StockFitExecutivesConfig
 from quantlab.dataset.stockfit.available import nyse_calendar, pull_day
-from quantlab.dataset.stockfit.period_panel import as_float as as_number
-from quantlab.dataset.stockfit.raw import entities, pulls, read_pull, read_pull_as_of
+from quantlab.dataset.stockfit.raw import (
+    as_number,
+    entities,
+    pulls,
+    read_pull,
+    read_pull_as_of,
+)
 
 #: The raw tier's endpoints of the per-company proxy data.
 EXECUTIVES_COMPENSATION = "executives_compensation"
@@ -142,7 +151,7 @@ def _governance(vendor_root, cik: str) -> dict[int, tuple[datetime, dict]]:
         body = read_pull(vendor_root, EXECUTIVES_GOVERNANCE, cik, pulled_at)
         if years and isinstance(body, dict):
             flags.setdefault(max(years), (pulled_at, {
-                name: None if body.get(field) is None else float(bool(body[field]))
+                name: None if body.get(field) is None else as_number(bool(body[field]))
                 for name, field in GOVERNANCE.items()
             }))
     return flags

@@ -380,6 +380,27 @@ def company_ciks(vendor_root: str | Path) -> list[int]:
     return sorted(ciks)
 
 
+def as_number(value) -> float:
+    """Return a served value as a panel's float: the one coercion every StockFit panel uses.
+
+    A JSON number is its float; a boolean is 1.0 or 0.0 (a flag is a
+    number in a panel); anything else (a null, text, a nested object) is NaN,
+    never ``None``, so a missing value is NaN in every panel.
+
+    Examples
+    --------
+    >>> as_number(3), as_number(2.5), as_number(True), as_number(False)
+    (3.0, 2.5, 1.0, 0.0)
+    >>> as_number(None), as_number("12.5"), as_number({})
+    (nan, nan, nan)
+    """
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, int | float):
+        return float(value)
+    return float("nan")
+
+
 # -- fund series -----------------------------------------------------------------
 
 #: The endpoint of the fund lists (``/api/symbols`` by fund kind), one entity per kind and listing status.

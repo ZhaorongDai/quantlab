@@ -94,6 +94,7 @@ from quantlab.dataset.stockfit.raw import (
     RECENT_OFFERINGS,
     SYMBOLS,
     WHOLE_LIST,
+    as_number,
     entities,
     pulls,
     read_pull,
@@ -131,10 +132,6 @@ def name_code(name: str) -> float:
 def _day(value) -> date | None:
     """Return a ``YYYY-MM-DD`` (or longer ISO) string's day; ``None`` for nothing."""
     return date.fromisoformat(str(value)[:10]) if value else None
-
-
-def _number(value) -> float | None:
-    return None if value is None else float(value)
 
 
 def _frame(rows: list[dict], schema: Mapping[str, pl.DataType]) -> pl.DataFrame:
@@ -535,8 +532,8 @@ class StockFitEarningsConsensusDataset(StockFitTickerSnapshotDataset):
         return {
             "earnings_date": _day(record.get("earningsDate")),
             "filing_date": _day(record.get("filingDate")),
-            "eps_estimate": _number(record.get("epsEstimate")),
-            "analyst_count": _number(record.get("numEstimates")),
+            "eps_estimate": as_number(record.get("epsEstimate")),
+            "analyst_count": as_number(record.get("numEstimates")),
             "confirmed": 1.0 if record.get("reportTime") else 0.0,
         }
 
@@ -597,11 +594,11 @@ class StockFitIpoCalendarDataset(StockFitTickerSnapshotDataset):
         """Return the stage, the terms and the dates."""
         return {
             "stage": float(IPO_STAGES.get(record.get("status") or stage, IPO_STAGES[stage])),
-            "price_range_low": _number(record.get("priceRangeLow")),
-            "price_range_high": _number(record.get("priceRangeHigh")),
-            "price": _number(record.get("price")),
-            "shares_offered": _number(record.get("sharesOffered")),
-            "dollar_value": _number(record.get("dollarValue")),
+            "price_range_low": as_number(record.get("priceRangeLow")),
+            "price_range_high": as_number(record.get("priceRangeHigh")),
+            "price": as_number(record.get("price")),
+            "shares_offered": as_number(record.get("sharesOffered")),
+            "dollar_value": as_number(record.get("dollarValue")),
             "filed_date": _day(record.get("filedDate")),
             "expected_price_date": _day(record.get("expectedPriceDate")),
             "priced_date": _day(record.get("pricedDate")),
@@ -658,10 +655,10 @@ class StockFitOfferingsDataset(StockFitSnapshotPanelDataset):
                 "symbol": int(record["cik"]),
                 "filed_date": _day(record.get("filedDate")),
                 "priced": 1.0 if record.get("isPriced") else 0.0,
-                "shares_offered": _number(record.get("sharesOffered")),
-                "price_range_low": _number(record.get("priceRangeLow")),
-                "price_range_high": _number(record.get("priceRangeHigh")),
-                "proposed_max_offering": _number(record.get("proposedMaxOffering")),
+                "shares_offered": as_number(record.get("sharesOffered")),
+                "price_range_low": as_number(record.get("priceRangeLow")),
+                "price_range_high": as_number(record.get("priceRangeHigh")),
+                "proposed_max_offering": as_number(record.get("proposedMaxOffering")),
             }
             kept = rows.get(row["symbol"])
             if kept is None or (row["filed_date"] or date.min) > (kept["filed_date"] or date.min):

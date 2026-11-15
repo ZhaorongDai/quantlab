@@ -85,21 +85,6 @@ class PeriodRow:
     values: Mapping[str, float]
 
 
-def as_float(value) -> float:
-    """Return a served value as a float: NaN for a null or a non-number, 1/0 for a boolean.
-
-    Examples
-    --------
-    >>> as_float(3), as_float(None), as_float(True), as_float("x")
-    (3.0, nan, 1.0, nan)
-    """
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, int | float):
-        return float(value)
-    return float("nan")
-
-
 class VersionedPeriodDataset(ReleasePanelDataset):
     """Daily point-in-time panel of one StockFit endpoint served without a restatement trail, keyed by CIK.
 
@@ -232,7 +217,7 @@ class VersionedPeriodDataset(ReleasePanelDataset):
                     if self.flags_restatements:
                         columns[FLAG].append(float(version.may_include_restatement))
                     for name in variables:
-                        columns[name].append(as_float(version.values.get(name)))
+                        columns[name].append(raw.as_number(version.values.get(name)))
         for name in ("available", *DATE_VARIABLES):
             columns[name] = np.asarray(columns[name], dtype="datetime64[ns]")
         schema = {

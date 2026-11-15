@@ -66,8 +66,9 @@ from quantlab.dataset._support.point_in_time import (
     TradingCalendar,
 )
 from quantlab.dataset.config import StockFitFundConfig
-from quantlab.dataset.stockfit.available import nyse_calendar
 from quantlab.dataset.stockfit import raw
+from quantlab.dataset.stockfit.available import nyse_calendar
+from quantlab.dataset.stockfit.raw import as_number
 
 __all__ = [
     "NCEN_LAG",
@@ -218,7 +219,7 @@ class StockFitFundPanel(ReleasePanelDataset):
             {
                 "symbol": series,
                 "date": str(row.get(self.DATE_FIELD) or "")[:10] or None,
-                **{name: _number(row.get(vendor_field)) for vendor_field, (name, _) in source.fields.items()},
+                **{name: as_number(row.get(vendor_field)) for vendor_field, (name, _) in source.fields.items()},
             }
             for series in self._series(source.endpoint)
             for row in self._rows(source, series)
@@ -254,15 +255,6 @@ class StockFitFundPanel(ReleasePanelDataset):
             .select("symbol", "available", *self._variables())
             .sort("available", "symbol")
         )
-
-
-def _number(value) -> float | None:
-    """A vendor value as a float: a boolean as 1.0 or 0.0, a missing or non-numeric one as None."""
-    if isinstance(value, bool):
-        return 1.0 if value else 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
 
 
 class StockFitFundProfileDataset(StockFitFundPanel):
