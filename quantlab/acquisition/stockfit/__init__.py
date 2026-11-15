@@ -19,7 +19,7 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts']
+['reference', 'statements', 'footnotes', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
@@ -31,6 +31,7 @@ from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
 from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset, StockFitDeclaredEventsDataset
 from quantlab.dataset.stockfit.executives import StockFitExecutivesDataset
 from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
+from quantlab.dataset.stockfit.footnotes import StockFitFootnoteDataset
 from quantlab.dataset.stockfit.funds import (
     StockFitFundFeesDataset,
     StockFitFundFlowsDataset,
@@ -66,6 +67,11 @@ STOCKFIT_SOURCE = register_source(
             Capability(
                 market="us_equity", frequency="1d", data_type="statements",
                 dataset_cls=StockFitStatementsDataset, entitlement=_ENTITLEMENT,
+            ),
+            # The 17 footnote tables per CIK, annual and quarterly: one panel per footnote and period type.
+            Capability(
+                market="us_equity", frequency="1d", data_type="footnotes", entitlement=_ENTITLEMENT,
+                dataset_cls=StockFitFootnoteDataset,
             ),
             # Fund series (<cik>-<series id>): N-PORT summary and monthly flows, N-1A fees, N-CEN fields.
             Capability(market="us_equity", frequency="1d", data_type="fund_profile",

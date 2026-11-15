@@ -70,6 +70,7 @@ from quantlab.dataset.stockfit.executives import (
     EXECUTIVES_PERFORMANCE_MEASURES,
 )
 from quantlab.dataset.stockfit.filings import FILINGS
+from quantlab.dataset.stockfit.footnotes import FOOTNOTES, PERIODS, footnote_endpoint
 from quantlab.dataset.stockfit.insiders import INSIDER_TRANSACTIONS
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
@@ -722,6 +723,17 @@ def _statements() -> list[Endpoint]:
     ]
 
 
+def _footnotes() -> list[Endpoint]:
+    return [
+        PerCompany(
+            footnote_endpoint(name, period), spec.path, {"period": period, "limit": STATEMENT_LIMIT},
+            triggers=REPORT_FORMS,  # re-pulled on a new report
+        )
+        for period in PERIODS
+        for name, spec in FOOTNOTES.items()
+    ]
+
+
 #: Every endpoint the refresh pulls, by name, in pull order: the company
 #: lists first, since the per-company endpoints take their CIKs from them.
 ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
@@ -739,6 +751,8 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     ),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
+    # The 17 footnote tables, annual and quarterly, as many periods as served; re-pulled on a new report.
+    *_footnotes(),
     # Corporate events: each company's profile (its successions), its XBRL
     # split history, and the declared splits and dividends of the next
     # FORWARD_DAYS days, a forward snapshot kept on every refresh.

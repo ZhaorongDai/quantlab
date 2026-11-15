@@ -1707,6 +1707,43 @@ class StockFitStatementsConfig(DatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class StockFitFootnoteConfig(DatasetConfig):
+    """Config of a point-in-time panel of one StockFit footnote table on the CIK axis.
+
+    One store holds one footnote (a key of
+    ``quantlab.dataset.stockfit.footnotes.FOOTNOTES``) for one period type,
+    read from the StockFit raw tier at ``raw_data_dir_path``
+    (``<download-dir>/stockfit``) and placed on NYSE's trading calendar.
+
+    Examples
+    --------
+    >>> cfg = StockFitFootnoteConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_leases_quarter.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ...     footnote="leases",
+    ... )
+    >>> cfg.vendor, cfg.period, cfg.stale_after_days
+    ('stockfit', 'quarter', 400)
+    """
+
+    #: Always US equity for this vendor.
+    market: Market = "us_equity"
+    #: Always daily for this vendor.
+    frequency: Frequency = "1d"
+    #: Always StockFit for this dataset.
+    vendor: Vendor | None = "stockfit"
+    #: The footnote table the panel holds, e.g. ``"leases"``.
+    footnote: str
+    #: The period type it holds: ``"quarter"`` (each fiscal quarter) or
+    #: ``"annual"`` (each fiscal year). Flows of the two never mix.
+    period: str = "quarter"
+    #: Days after its release a period stops being shown when no newer one
+    #: has replaced it: a little over a year, so a company that stops
+    #: filing shows nothing. ``None`` shows it until it is replaced.
+    stale_after_days: int | None = 400
+
+
+@dataclass(kw_only=True, frozen=True)
 class StockFitCongressTradesConfig(DatasetConfig):
     """Config of the StockFit Congress trade panel on the CIK axis.
 

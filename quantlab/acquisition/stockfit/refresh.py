@@ -10,7 +10,7 @@ One run, in two steps:
 2. The planner (``quantlab.acquisition.stockfit.planner``) orders the
    endpoint x entity pulls due now within the requests left today: first the
    entities a filing made since their last pull touches (a 10-K re-pulls the
-   filer's statements), then the entities never pulled, in table order (the
+   filer's statements and footnotes), then the entities never pulled, in table order (the
    backfill order), then the periodic re-pulls (each company's statements
    once a week). The pulls of a round can add entities (a series' N-PORT
    quarters, the advisers of its service providers), so the run plans again

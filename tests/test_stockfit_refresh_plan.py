@@ -64,8 +64,8 @@ def test_a_capped_backfill_spans_several_runs_and_ends_with_the_raw_tier_of_one_
     assert not _refresh(uncapped, FakeVendor(own), own).failed
 
     capped = tmp_path / "capped"
-    # 29 for the company and fund lists, the feeds and the forward lists; 9 for the backfill and the snapshots
-    vendor = FakeVendor(clock, per_day=38)
+    # 29 for the company and fund lists, the feeds and the forward lists; 28 for the backfill and the snapshots
+    vendor = FakeVendor(clock, per_day=57)
     runs = []
     while True:
         result = _refresh(capped, vendor, clock)
