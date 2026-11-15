@@ -166,17 +166,19 @@ FILINGS_LATEST = "filings_latest"
 FEED_PAGE_SIZE = 100
 FEED_MAX_PAGES = 100
 
-#: The form types whose new filings drive a re-pull, by the feed's entity name.
+#: The forms of a company's financial reports, amendments included: they drive the statements.
+REPORT_FORMS = frozenset({"10-K", "10-Q", "20-F", "40-F", "10-K/A", "10-Q/A"})
+
+#: The form types whose new filings drive a re-pull, by the feed's entity name (spaces and
+#: slashes made dashes: ``10-K/A`` is ``10-K-A``).
 FEED_FORMS: dict[str, str] = {
-    form.replace(" ", "-"): form
-    for form in ("10-K", "10-Q", "20-F", "4", "13F-HR", "NPORT-P", "13D", "13G", "DEF 14A")
+    form.replace(" ", "-").replace("/", "-"): form
+    for form in (*sorted(REPORT_FORMS), "4", "13F-HR", "NPORT-P", "13D", "13G", "DEF 14A")
 }
 
-#: The forms of a company's financial reports: they drive the statements.
-REPORT_FORMS = frozenset({"10-K", "10-Q", "20-F"})
-
-#: The forms that disclose a split: the reports that tag it in XBRL, and an 8-K (when the feed follows it).
-SPLIT_FORMS = REPORT_FORMS | {"8-K"}
+#: The forms that disclose a split: the reports that tag it in XBRL. The feed does not follow
+#: 8-Ks, so a split announced in one waits for the weekly re-pull.
+SPLIT_FORMS = REPORT_FORMS
 
 #: Matches the filer's CIK in a filing's EDGAR URL (``.../edgar/data/<cik>/...``).
 _FILER_CIK = re.compile(r"/edgar/data/(\d+)/")
@@ -1012,7 +1014,7 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     # split history, and the declared splits and dividends of the next
     # FORWARD_DAYS days, a forward snapshot kept on every refresh.
     # The profile follows any filing (an 8-K12B succession among them); the split history follows
-    # the reports and 8-Ks that tag a split. Both are re-pulled weekly too.
+    # the reports that tag a split. Both are re-pulled weekly too (the feed does not follow 8-Ks).
     PerCompany(COMPANY_DETAILS, "/api/company/details", triggers=frozenset(FEED_FORMS.values()), repull_days=7),
     PerCompany(STOCK_SPLITS, "/api/company/stock-splits", triggers=SPLIT_FORMS, repull_days=7),
     MarketList(UPCOMING_STOCK_SPLITS, "/api/company/upcoming-stock-splits", {"days": FORWARD_DAYS},

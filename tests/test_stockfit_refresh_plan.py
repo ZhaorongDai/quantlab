@@ -151,3 +151,16 @@ def test_running_out_of_the_days_requests_defers_the_rest_without_failing(env, t
     assert "deferred" in result.summary()
     assert 429 not in vendor.statuses and len(vendor.calls) <= 16
     assert raw.company_ciks(tmp_path / "stockfit") == [TSM, PLUG, TWTR]
+
+
+@pytest.mark.parametrize("form", ["10-K/A", "10-Q/A", "40-F"])
+def test_an_amendment_or_a_40f_re_pulls_the_filers_statements(env, tmp_path, clock, form):
+    vendor = FakeVendor(clock)
+    _refresh(tmp_path, vendor, clock)
+    clock.advance(days=1)
+    accepted = (clock.now() - timedelta(hours=2)).isoformat()
+    vendor.lists["/api/filings/latest"] = [filing_row(form, PLUG, clock.now().date().isoformat(), accepted)]
+    vendor.calls.clear()
+    assert not _refresh(tmp_path, vendor, clock).failed
+
+    assert {params["cik"] for params in _statement_calls(vendor)} == {str(PLUG)}
