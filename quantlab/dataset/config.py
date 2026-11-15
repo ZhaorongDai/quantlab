@@ -1593,3 +1593,27 @@ class StockFitStatementsConfig(DatasetConfig):
     #: when no newer quarter has replaced it, as for the Sharadar and
     #: Compustat panels. ``None`` shows it until it is replaced.
     stale_after_days: int | None = 365
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitCongressTradesConfig(DatasetConfig):
+    """Config of the StockFit Congress trade panel on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier (``<download-dir>/stockfit``),
+    holding the House and Senate trade feeds and the company lists whose
+    current and prior tickers resolve a trade to its company. The panel
+    needs no other vendor.
+
+    Examples
+    --------
+    >>> cfg = StockFitCongressTradesConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_congress_trades_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.vendor, cfg.market, cfg.frequency
+    ('stockfit', 'us_equity', '1d')
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "1d"
+    vendor: Vendor | None = "stockfit"

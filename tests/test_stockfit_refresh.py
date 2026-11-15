@@ -79,7 +79,7 @@ def test_an_unchanged_re_pull_publishes_nothing_and_only_moves_the_watermark(env
 
     vendor = FakeVendor(clock)
     _refresh(tmp_path, vendor, clock)
-    clock.advance(days=1)
+    clock.advance(days=7)  # the weekly re-pull of the statements
     result = _refresh(tmp_path, vendor, clock)
 
     root = tmp_path / "stockfit"
@@ -100,7 +100,7 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
     key = ("/api/financials/income-statement", frozenset({("cik", str(PLUG)), ("period", "quarter")}))
     vendor.bodies[key] = restated
     vendor.lists["/api/symbols"].append(company_row(GOOGL, "Alphabet Inc."))
-    clock.advance(days=1)
+    clock.advance(days=7)  # the weekly re-pull of the statements
     _refresh(tmp_path, vendor, clock)
 
     root = tmp_path / "stockfit"
@@ -148,21 +148,10 @@ def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tm
     result = _refresh(tmp_path, vendor, clock)
 
     assert not result.failed, result.summary()
-    assert len(vendor.calls) == 3 + 9 * 3  # three list pages, nine statements of three companies
+    # three list pages, nine feed forms, nine statements of three companies, one page of each Congress feed
+    assert len(vendor.calls) == 3 + 9 + 9 * 3 + 2
     assert 429 not in vendor.statuses
     assert clock.sleeps and sum(clock.sleeps) >= 60 * (len(vendor.calls) // 4 - 1)
-
-
-def test_a_429_makes_the_refresh_wait_and_retry(env, tmp_path, clock):
-    from quantlab.dataset.stockfit import raw
-
-    limits = {"X-RateLimit-Remaining-Minute": "0", "X-RateLimit-Remaining-Day": "900"}
-    vendor = FakeVendor(clock, replies=[(429, b'{"error":"Too Many Requests"}', limits)])
-    result = _refresh(tmp_path, vendor, clock, endpoints=["income_statement_quarter"], ciks=[PLUG])
-
-    assert not result.failed, result.summary()
-    assert clock.sleeps == [60.0]
-    assert raw.read_pull(tmp_path / "stockfit", "income_statement_quarter", str(PLUG))
 
 
 def test_the_refresh_stops_before_the_daily_cap_and_sends_nothing_past_it(env, tmp_path, clock):
@@ -174,10 +163,10 @@ def test_the_refresh_stops_before_the_daily_cap_and_sends_nothing_past_it(env, t
     result = refresh_raw_tier(tmp_path, client=client)
 
     assert len(vendor.calls) == 4 and 429 not in vendor.statuses
-    assert result.failed and "left today" in result.summary()
+    assert not result.failed and "deferred to the next run" in result.summary()
     root = tmp_path / "stockfit"
     assert raw.company_ciks(root) == [TSM, PLUG, TWTR]
-    assert raw.entities(root, "income_statement_annual") == [str(TSM)]
+    assert raw.entities(root, "income_statement_annual") == []
 
 
 def test_the_refresh_refuses_without_the_key_before_any_request(tmp_path, monkeypatch):

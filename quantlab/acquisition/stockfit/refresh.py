@@ -1,15 +1,30 @@
-"""Keep StockFit's raw tier current: every endpoint of ``ENDPOINTS``, entity by entity.
+"""Keep StockFit's raw tier current: a backfill that resumes across days, then only what new filings touched.
 
-Each endpoint (``quantlab.acquisition.stockfit.endpoints.ENDPOINTS``) is
-pulled for each of its entities, in table order: the company lists first,
-then each company's statements. A pull lands under
-``<download-dir>/stockfit/<endpoint>/<entity>/<stamp>/`` by one rename, or is
-dropped when it equals the entity's newest pull; the entity's watermark moves
-either way (``quantlab.dataset.stockfit.raw``).
+One run, in two steps:
 
-Failures follow ``quantlab.acquisition.refresh``. An endpoint StockFit
-refuses (``StockFitEntitlementError``), or a day whose requests are spent
-(``StockFitDailyCapReached``), stops that endpoint and fails its part; an
+1. Every market-wide list of ``quantlab.acquisition.stockfit.endpoints.ENDPOINTS``
+   is pulled (a snapshot each run): the company lists, whose CIKs the
+   per-company endpoints take, the recent-filings feed
+   (``/api/filings/latest``, per form type), and the Congress trade feeds
+   (each from its since-watermark).
+2. The planner (``quantlab.acquisition.stockfit.planner``) orders the
+   endpoint x entity pulls due now within the requests left today: first the
+   entities a filing made since their last pull touches (a 10-K re-pulls the
+   filer's statements), then the entities never pulled, in table order (the
+   backfill order), then the periodic re-pulls (each company's statements
+   once a week). The rest waits for the next run, which plans it again from
+   the raw tier: so a backfill longer than a day's requests resumes where it
+   stopped.
+
+A pull lands under ``<download-dir>/stockfit/<endpoint>/<entity>/<stamp>/``
+by one rename, or is dropped when it equals the entity's newest pull; the
+entity's watermark moves either way (``quantlab.dataset.stockfit.raw``).
+
+Running out of the day's requests is not a failure: the run stops sending
+(``StockFitDailyCapReached``) and each endpoint's part says how many pulls it
+deferred. An HTTP 429 within the day is waited out and retried by the client.
+Failures follow ``quantlab.acquisition.refresh``: an endpoint StockFit refuses
+(``StockFitEntitlementError``) fails its part and the others still run; an
 entity whose request kept failing (``StockFitTransportError``) or came back
 unreadable (``StockFitResponseError``) is skipped, and its endpoint's part
 fails once every other entity is pulled. Any other error, a bug of ours among
@@ -23,7 +38,7 @@ Needs ``STOCKFIT_API_KEY`` and the network::
     from quantlab.acquisition.base import DataSourceRegistry
 
     result = refresh_raw_tier(DataSourceRegistry.get("stockfit"), "/data/quantlab/downloads")
-    result.failed  # the endpoints not refreshed
+    result.summary()  # per endpoint: published, unchanged, deferred to the next run
 """
 
 from __future__ import annotations
@@ -31,7 +46,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 from collections.abc import Iterable
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from quantlab.acquisition.refresh import RawTierRefreshResult, RefreshedPart
@@ -42,14 +57,46 @@ from quantlab.acquisition.stockfit.client import (
     StockFitResponseError,
     StockFitTransportError,
 )
-from quantlab.acquisition.stockfit.endpoints import ENDPOINTS, Endpoint, PullContext
-from quantlab.dataset.stockfit.raw import VENDOR_DIR
-
-#: The errors that stop one endpoint; the endpoints after it still run.
-ENDPOINT_FAILURES = (StockFitEntitlementError, StockFitDailyCapReached)
+from quantlab.acquisition.stockfit.endpoints import (
+    ENDPOINTS,
+    FEED_FORMS,
+    FILINGS_LATEST,
+    Endpoint,
+    MarketList,
+    PullContext,
+    filer_cik,
+)
+from quantlab.acquisition.stockfit.planner import EndpointState, EntityState, Job, plan
+from quantlab.dataset.stockfit.raw import VENDOR_DIR, last_pulled, pulls, read_pull
 
 #: The errors that skip one entity; its endpoint's other entities still run.
 ENTITY_FAILURES = (StockFitTransportError, StockFitResponseError)
+
+#: How far back the recent-filings feed reaches, in days.
+FEED_DAYS = 30
+
+
+class _Tally:
+    """What one endpoint's pulls did in a run."""
+
+    def __init__(self) -> None:
+        self.outcomes: Counter[str] = Counter()
+        self.skipped: list[str] = []
+        self.refused: str | None = None
+        self.deferred = 0
+        self.started = time.monotonic()
+
+    def part(self, name: str) -> RefreshedPart:
+        done = ", ".join(f"{count:,} {outcome}" for outcome, count in sorted(self.outcomes.items()))
+        if self.deferred:
+            done = f"{done}, " if done else ""
+            done += f"{self.deferred:,} deferred to the next run"
+        done = done or "nothing due"
+        if self.refused is not None:
+            return RefreshedPart.failure(name, f"{self.refused} ({done})")
+        if self.skipped:
+            return RefreshedPart.failure(name, f"{len(self.skipped):,} entit(ies) failed, first {self.skipped[0]} ({done})")
+        return RefreshedPart(name, f"{done}; {time.monotonic() - self.started:.0f}s")
 
 
 def refresh_raw_tier(
@@ -60,7 +107,7 @@ def refresh_raw_tier(
     ciks: Iterable[int] | None = None,
     client: StockFitClient | None = None,
 ) -> RawTierRefreshResult:
-    """Pull StockFit's endpoints into the raw tier under ``<download_dir>/stockfit/``.
+    """Bring StockFit's raw tier under ``<download_dir>/stockfit/`` current, within today's requests.
 
     Parameters
     ----------
@@ -70,20 +117,23 @@ def refresh_raw_tier(
         Taken for the refresh protocol; none of these endpoints is asked by
         date, so it bounds nothing.
     endpoints : iterable of str or Endpoint, or None, default None
-        The endpoints to pull, by name in ``ENDPOINTS`` or as rows; every one
-        of ``ENDPOINTS``, in its order, when omitted.
+        The endpoints to refresh, by name in ``ENDPOINTS`` or as rows; every
+        one of ``ENDPOINTS``, in its order, when omitted. The filings that
+        drive re-pulls are read from the feed's pulls on disk, so a refresh
+        of some endpoints still re-pulls what new filings touched.
     ciks : iterable of int or None, default None
         The companies a per-company endpoint is pulled for; every company of
         the raw tier's company lists when omitted.
     client : StockFitClient or None, default None
         The client to pull through; one reading ``STOCKFIT_API_KEY`` when
-        omitted.
+        omitted. Its ``day_reserve`` is left unspent.
 
     Returns
     -------
     RawTierRefreshResult
         One part per endpoint: how many entities published a new pull, were
-        unchanged or held nothing, or why the endpoint failed.
+        unchanged, held nothing, or were deferred to the next run, or why the
+        endpoint failed.
 
     Raises
     ------
@@ -93,12 +143,12 @@ def refresh_raw_tier(
         If ``client`` is omitted and ``STOCKFIT_API_KEY`` is unset; nothing
         is requested.
     Exception
-        Any error not in ``ENDPOINT_FAILURES`` or ``ENTITY_FAILURES`` (a bug
-        of ours), from the entity it happened on.
+        Any error not in ``ENTITY_FAILURES`` and not a refusal or the daily
+        cap (a bug of ours), from the entity it happened on.
 
     Examples
     --------
-    Needs the key and the network; two companies' statements::
+    Needs the key and the network; two companies' quarterly income statements::
 
         refresh_raw_tier("/data/quantlab/downloads", endpoints=("income_statement_quarter",), ciks=(320193, 789019))
     """
@@ -109,30 +159,90 @@ def refresh_raw_tier(
     client = client if client is not None else StockFitClient()
     vendor_root = Path(download_dir) / VENDOR_DIR
     context = PullContext(vendor_root, None if ciks is None else tuple(int(cik) for cik in ciks))
-    parts = []
-    for endpoint in selected:
-        started = time.monotonic()
-        outcomes: Counter[str] = Counter()
-        skipped: list[str] = []
-        stopped = None
-        for entity in endpoint.entities(context):
-            try:
-                outcomes[endpoint.pull(client, vendor_root, entity).value] += 1
-            except ENDPOINT_FAILURES as error:
-                stopped = str(error)
-                break
-            except ENTITY_FAILURES as error:
-                skipped.append(f"{entity}: {error}")
-        done = ", ".join(f"{count:,} {outcome}" for outcome, count in sorted(outcomes.items())) or "nothing pulled"
-        if stopped is not None:
-            parts.append(RefreshedPart.failure(endpoint.name, f"{stopped} ({done} before it)"))
-        elif skipped:
-            parts.append(RefreshedPart.failure(
-                endpoint.name, f"{len(skipped):,} entit(ies) failed, first {skipped[0]} ({done})"
-            ))
-        else:
-            parts.append(RefreshedPart(endpoint.name, f"{done}; {time.monotonic() - started:.0f}s"))
-    return RawTierRefreshResult("stockfit", tuple(parts))
+    tallies = {endpoint.name: _Tally() for endpoint in selected}
+    by_name = {endpoint.name: endpoint for endpoint in selected}
+
+    lists = [endpoint for endpoint in selected if isinstance(endpoint, MarketList)]
+    jobs = [Job(endpoint.name, entity, "snapshot") for endpoint in lists for entity in endpoint.entities(context)]
+    capped = _run(jobs, by_name, tallies, client, vendor_root)
+    if not capped:
+        others = [endpoint for endpoint in selected if not isinstance(endpoint, MarketList)]
+        remaining = client.remaining_day
+        budget = None if remaining is None else max(remaining - client.day_reserve, 0)
+        planned = plan(_states(others, context, client.now()), now=client.now(), budget=budget)
+        for name, count in planned.deferred.items():
+            tallies[name].deferred += count
+        _run(list(planned.jobs), by_name, tallies, client, vendor_root)
+    return RawTierRefreshResult("stockfit", tuple(tally.part(name) for name, tally in tallies.items()))
+
+
+def _run(jobs: list[Job], endpoints: dict[str, Endpoint], tallies: dict[str, _Tally], client, vendor_root) -> bool:
+    """Pull the jobs in order; return whether the day's requests ran out (the rest deferred)."""
+    for index, job in enumerate(jobs):
+        tally = tallies[job.endpoint]
+        if tally.refused is not None:
+            continue
+        try:
+            tally.outcomes[endpoints[job.endpoint].pull(client, vendor_root, job.entity).value] += 1
+        except StockFitDailyCapReached:
+            for later in jobs[index:]:
+                tallies[later.endpoint].deferred += 1
+            return True
+        except StockFitEntitlementError as error:
+            tally.refused = str(error)
+        except ENTITY_FAILURES as error:
+            tally.skipped.append(f"{job.entity}: {error}")
+    return False
+
+
+def _filed(vendor_root: Path, now: datetime) -> dict[str, dict[int, datetime]]:
+    """Return, per form type, each filer's newest filing time in the feed's pulls of the last 30 days.
+
+    A filing with an acceptance time is dated by it; one with only a filing
+    date by the end of that day (UTC), so a pull made on the next day covers it.
+    """
+    since = now - timedelta(days=FEED_DAYS + 1)
+    filed: dict[str, dict[int, datetime]] = {}
+    for entity, form in FEED_FORMS.items():
+        times = pulls(vendor_root, FILINGS_LATEST, entity)
+        # An unchanged feed pull is dropped, so the rows of a recent day may sit in an older pull.
+        recent = [stamp for stamp in times if stamp >= now - timedelta(days=2 * FEED_DAYS)] or times[-1:]
+        for stamp in recent:
+            for row in read_pull(vendor_root, FILINGS_LATEST, entity, stamp):
+                cik = filer_cik(row)
+                at = _filing_time(row)
+                if cik is None or at is None or at < since:
+                    continue
+                newest = filed.setdefault(form, {})
+                newest[cik] = max(newest.get(cik, at), at)
+    return filed
+
+
+def _filing_time(row: dict) -> datetime | None:
+    if row.get("acceptedAt"):
+        return datetime.fromisoformat(str(row["acceptedAt"])).astimezone(UTC)
+    if row.get("dateFiled"):
+        return datetime.combine(date.fromisoformat(row["dateFiled"]) + timedelta(days=1), datetime.min.time(), UTC)
+    return None
+
+
+def _states(endpoints: list[Endpoint], context: PullContext, now: datetime) -> list[EndpointState]:
+    """Read what the planner needs from the raw tier: each entity's last pull and newest driving filing."""
+    filed = _filed(context.vendor_root, now)
+    states = []
+    for endpoint in endpoints:
+        touched: dict[str, datetime] = {}
+        for form in endpoint.triggers:
+            newest = filed.get(form, {})
+            for cik, names in endpoint.filer_entities(newest, context).items():
+                for name in names:
+                    touched[name] = max(touched.get(name, newest[cik]), newest[cik])
+        entities = tuple(
+            EntityState(entity, last_pulled(context.vendor_root, endpoint.name, entity), touched.get(entity))
+            for entity in endpoint.entities(context)
+        )
+        states.append(EndpointState(endpoint.name, entities, endpoint.repull_days))
+    return states
 
 
 def _named(name: str) -> Endpoint:
