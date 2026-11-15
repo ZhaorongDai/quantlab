@@ -14,7 +14,17 @@ Shapes:
 - ``PerCompany``: one request per company, selected by ``cik``; the
   companies are those of the newest company lists in the raw tier
   (``quantlab.dataset.stockfit.raw.company_ciks``), or the CIKs a refresh is
-  given.
+  given;
+- ``LatestFilings``: the market-wide feed of recent filings
+  (``/api/filings/latest``), one entity per form type, read newest first
+  back to the entity's last pull. The refresh takes from it the filers whose
+  new filings drive a re-pull.
+
+A row also says how the refresh keeps it current. A market-wide list is
+pulled on every run (a snapshot). Any other endpoint is backfilled once per
+entity, then re-pulled when a filing of one of its ``triggers`` form types
+is made for the entity, and, with ``repull_days``, once its last pull is
+that many days old (the weekly re-pull of the statements).
 
 A pull is written through ``quantlab.acquisition.stockfit.raw_tier``: staged,
 then published by one rename, or dropped when equal to the entity's newest
@@ -25,15 +35,17 @@ Examples
 --------
 >>> ENDPOINTS["income_statement_quarter"].query("1093691")
 {'period': 'quarter', 'limit': 80, 'cik': 1093691}
->>> list(ENDPOINTS)[:3]
-['symbols', 'company_delisted', 'income_statement_annual']
+>>> list(ENDPOINTS)[:4]
+['symbols', 'company_delisted', 'filings_latest', 'income_statement_annual']
 """
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from enum import Enum
 from pathlib import Path
 
@@ -44,6 +56,7 @@ from quantlab.dataset.stockfit.raw import (
     SYMBOLS,
     WHOLE_LIST,
     company_ciks,
+    last_pulled,
 )
 
 #: The most periods one statement request returns.
@@ -51,6 +64,25 @@ STATEMENT_LIMIT = 80
 
 #: The largest page ``/api/symbols`` and ``/api/company/delisted`` serve.
 LIST_PAGE_SIZE = 1000
+
+#: The endpoint of the recent-filings feed (``/api/filings/latest``).
+FILINGS_LATEST = "filings_latest"
+
+#: The largest page, and the most pages, ``/api/filings/latest`` serves.
+FEED_PAGE_SIZE = 100
+FEED_MAX_PAGES = 100
+
+#: The form types whose new filings drive a re-pull, by the feed's entity name.
+FEED_FORMS: dict[str, str] = {
+    form.replace(" ", "-"): form
+    for form in ("10-K", "10-Q", "20-F", "4", "13F-HR", "NPORT-P", "13D", "13G", "DEF 14A")
+}
+
+#: The forms of a company's financial reports: they drive the statements.
+REPORT_FORMS = frozenset({"10-K", "10-Q", "20-F"})
+
+#: Matches the filer's CIK in a filing's EDGAR URL (``.../edgar/data/<cik>/...``).
+_FILER_CIK = re.compile(r"/edgar/data/(\d+)/")
 
 
 class Outcome(Enum):
@@ -93,12 +125,20 @@ class Endpoint(ABC):
     page_size : int or None, default None
         For a paged object, the ``pageSize`` asked for; every page is
         followed. ``None`` for a one-page response.
+    triggers : frozenset of str, default frozenset()
+        The form types (as ``/api/filings/latest`` names them) whose new
+        filing re-pulls the filer's entities (``filer_entities``).
+    repull_days : int or None, default None
+        Re-pull an entity once its last pull is this many UTC days old;
+        ``None`` re-pulls it only on a new filing of ``triggers``.
     """
 
     name: str
     path: str
     params: Mapping[str, object] = field(default_factory=dict)
     page_size: int | None = None
+    triggers: frozenset[str] = frozenset()
+    repull_days: int | None = None
 
     @abstractmethod
     def entities(self, context: PullContext) -> list[str]:
@@ -107,6 +147,26 @@ class Endpoint(ABC):
     @abstractmethod
     def query(self, entity: str) -> dict:
         """Return the query of one entity's pull, without paging."""
+
+    def filer_entities(self, ciks: Iterable[int], context: PullContext) -> dict[int, list[str]]:
+        """Return, per filer CIK, the entities its filing of ``triggers`` touches; none by default.
+
+        Examples
+        --------
+        >>> ENDPOINTS["symbols"].filer_entities([1093691], PullContext(Path("/d/stockfit")))
+        {}
+        """
+        return {}
+
+    def last_page(self, body: dict, vendor_root: Path, entity: str) -> bool:
+        """Return whether a paged pull stops after ``body``, before the vendor's last page; never by default.
+
+        Examples
+        --------
+        >>> ENDPOINTS["symbols"].last_page({"page": 1, "data": []}, Path("/d/stockfit"), "operating")
+        False
+        """
+        return False
 
     def pull(self, client: StockFitClient, vendor_root: Path, entity: str) -> Outcome:
         """Pull one entity: stage every page, then publish or drop it; the watermark moves.
@@ -138,6 +198,8 @@ class Endpoint(ABC):
                     raise StockFitResponseError(f"{self.path} page {page} is not a paged object with data.")
                 staged.add_page(body)
                 pages = int(body["totalPages"])
+                if self.last_page(body, vendor_root, entity):
+                    break
                 page += 1
         return Outcome.PUBLISHED if staged.commit().published else Outcome.UNCHANGED
 
@@ -188,6 +250,59 @@ class PerCompany(Endpoint):
         """Return the fixed parameters and ``cik``."""
         return {**self.params, "cik": int(entity)}
 
+    def filer_entities(self, ciks: Iterable[int], context: PullContext) -> dict[int, list[str]]:
+        """Return each filer's own company entity, for the companies this refresh pulls.
+
+        Examples
+        --------
+        >>> ENDPOINTS["balance_sheet_ttm"].filer_entities([1093691], PullContext(Path("/d/stockfit")))
+        {1093691: ['1093691']}
+        """
+        wanted = None if context.ciks is None else set(context.ciks)
+        return {cik: [str(cik)] for cik in ciks if wanted is None or cik in wanted}
+
+
+@dataclass(frozen=True)
+class LatestFilings(MarketList):
+    """The recent-filings feed, one entity per form type, read back to the entity's last pull.
+
+    The vendor serves the last 30 days, newest first, at most
+    ``FEED_MAX_PAGES`` pages. A pull stops after the first page that reaches
+    a day before the entity's last pull, so the rows filed since are all in
+    it, or at the vendor's last page. Its rows carry no CIK; ``filer_cik``
+    reads the filer's from the EDGAR URL.
+
+    Examples
+    --------
+    >>> ENDPOINTS[FILINGS_LATEST].query("DEF-14A")
+    {'type': 'DEF 14A'}
+    """
+
+    def last_page(self, body: dict, vendor_root: Path, entity: str) -> bool:
+        """Return whether the page reaches a day before the entity's last pull, or is the most served."""
+        if int(body.get("page", 0)) >= FEED_MAX_PAGES:
+            return True
+        previous = last_pulled(vendor_root, self.name, entity)
+        filed = [row["dateFiled"] for row in body["data"] if row.get("dateFiled")]
+        return previous is not None and bool(filed) and date.fromisoformat(min(filed)) < previous.date() - timedelta(days=1)
+
+
+def filer_cik(row: Mapping) -> int | None:
+    """Return the filer's CIK of a row of ``/api/filings/latest``, read from its EDGAR URL.
+
+    The URL's ``edgar/data/<cik>/`` is the filer's: the reporting company of
+    a 10-K, the manager of a 13F, the issuer of a 13G.
+
+    Examples
+    --------
+    >>> filer_cik({"url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000084/x.htm"})
+    1652044
+    >>> filer_cik({}) is None
+    True
+    """
+    found = _FILER_CIK.search(str(row.get("url") or ""))
+    return int(found.group(1)) if found else None
+
 
 def _statements() -> list[Endpoint]:
     paths = {
@@ -196,7 +311,10 @@ def _statements() -> list[Endpoint]:
         "cash_flow_statement": "/api/financials/cash-flow-statement",
     }
     return [
-        PerCompany(f"{name}_{period}", path, {"period": period, "limit": STATEMENT_LIMIT})
+        PerCompany(
+            f"{name}_{period}", path, {"period": period, "limit": STATEMENT_LIMIT},
+            triggers=REPORT_FORMS, repull_days=7,  # re-pulled on a new report, and weekly
+        )
         for period in ("annual", "quarter", "ttm")
         for name, path in paths.items()
     ]
@@ -212,6 +330,11 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     ),
     # The delisted companies with their delisting day.
     MarketList(COMPANY_DELISTED, "/api/company/delisted", page_size=LIST_PAGE_SIZE),
+    # The filings of the last 30 days per form type: whose new filing re-pulls what.
+    LatestFilings(
+        FILINGS_LATEST, "/api/filings/latest", page_size=FEED_PAGE_SIZE,
+        variants={entity: {"type": form} for entity, form in FEED_FORMS.items()},
+    ),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
 )}
