@@ -19,13 +19,14 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements']
+['reference', 'statements', 'filings']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
+from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
 
 #: The plan the endpoints need.
 _ENTITLEMENT = "StockFit Professional (api.stockfit.io)"
@@ -42,6 +43,15 @@ STOCKFIT_SOURCE = register_source(
             Capability(market="us_equity", frequency="1d", data_type="reference", entitlement=_ENTITLEMENT),
             # The income, balance-sheet and cash-flow statements per CIK, annual, quarterly and TTM: raw only.
             Capability(market="us_equity", frequency="1d", data_type="statements", entitlement=_ENTITLEMENT),
+            # Each company's SEC filing list, and the filing panel by CIK: form counts, 8-K events, amendments.
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="filings",
+                dataset_cls=StockFitFilingsDataset,
+                earliest_available="1994-03-08",
+                entitlement=_ENTITLEMENT,
+            ),
         ),
         # A literal, checked against the client's constant by a test.
         required_env=("STOCKFIT_API_KEY",),

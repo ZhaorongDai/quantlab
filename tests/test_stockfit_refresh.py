@@ -148,7 +148,7 @@ def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tm
     result = _refresh(tmp_path, vendor, clock)
 
     assert not result.failed, result.summary()
-    assert len(vendor.calls) == 3 + 9 * 3  # three list pages, nine statements of three companies
+    assert len(vendor.calls) == 3 + 9 * 3 + 3  # three list pages, nine statements and the filing list of three companies
     assert 429 not in vendor.statuses
     assert clock.sleeps and sum(clock.sleeps) >= 60 * (len(vendor.calls) // 4 - 1)
 

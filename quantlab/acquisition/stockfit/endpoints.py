@@ -39,6 +39,7 @@ from pathlib import Path
 
 from quantlab.acquisition.stockfit.client import StockFitClient, StockFitResponseError
 from quantlab.acquisition.stockfit.raw_tier import StagedPull, write_entity_watermark
+from quantlab.dataset.stockfit.filings import FILINGS
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
     SYMBOLS,
@@ -51,6 +52,9 @@ STATEMENT_LIMIT = 80
 
 #: The largest page ``/api/symbols`` and ``/api/company/delisted`` serve.
 LIST_PAGE_SIZE = 1000
+
+#: The largest page ``/api/filings`` serves.
+FILINGS_PAGE_SIZE = 100
 
 
 class Outcome(Enum):
@@ -134,6 +138,9 @@ class Endpoint(ABC):
             page, pages = 1, 1
             while page <= pages:
                 body = client.get_json(self.path, {**query, "page": page, "pageSize": self.page_size})
+                if body is None and page == 1:  # the vendor holds nothing for the entity
+                    write_entity_watermark(vendor_root, self.name, entity, pulled_at)
+                    return Outcome.MISSING
                 if not isinstance(body, dict) or not isinstance(body.get("data"), list) or "totalPages" not in body:
                     raise StockFitResponseError(f"{self.path} page {page} is not a paged object with data.")
                 staged.add_page(body)
@@ -214,4 +221,6 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     MarketList(COMPANY_DELISTED, "/api/company/delisted", page_size=LIST_PAGE_SIZE),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
+    # Each company's SEC filing list, every form, newest first: the filing panel and accession lookups.
+    PerCompany(FILINGS, "/api/filings", page_size=FILINGS_PAGE_SIZE),
 )}
