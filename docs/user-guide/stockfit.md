@@ -212,3 +212,70 @@ panel["event_earnings"].sel(symbol=1652044)  # Alphabet's CIK
 StockFit's filing lists have gaps (a company's early 10-Ks can be missing, and a delisted company
 may list only a few filings), so a zero means StockFit lists no filing that day, not that none was
 made.
+
+## Insider transactions
+
+The refresh pulls each company's insider transactions (`/api/insider-transactions`, every page)
+into `insider_transactions/<cik>/`, and re-pulls a company when it gets a new Form 4.
+{py:class}`~quantlab.dataset.stockfit.insiders.StockFitInsidersDataset` has the variables of the
+Sharadar insider panel, with the same names and signs, on the CIK axis: `net_shares` and
+`net_value` (open-market purchases minus sales), `net_shares_<code>` and `net_value_<code>` per
+transaction code (`P`, `S`, `A`, `M`, `F`, `G`, `D`, `other`), `net_shares_derivative`,
+`insiders_buying` and `insiders_selling`. Each line is placed on its filing's available date
+(never the transaction date), and a line a later filing repeats exactly is counted once.
+
+StockFit cleans the rows before serving them, so the two vendors differ where its rules bite:
+
+- only officers' and directors' transactions are served (a 10% holder who is neither is left out);
+- a trade several co-owners report appears once, under the most senior filer;
+- a line priced at $100,000 or more per share is dropped as a data-entry error;
+- a Form 5 line is dropped when a Form 4 reports the same trade.
+
+## 13D/13G stakes
+
+Each company's Schedule 13D and 13G filings (`/api/ownership/beneficial-owners/history`) land in
+`beneficial_owners_history/<cik>/`, re-pulled on a new 13D or 13G. A row's `reportDate` is a UTC
+time of varying precision, sometimes hours after the SEC accepted the filing, so it is never used:
+{py:class}`~quantlab.dataset.stockfit.beneficial_owners.StockFitBeneficialOwnersDataset` looks
+each filing up by accession number in the company's filing list and places it by its acceptance
+time. A filing the list does not hold yet is left out until the list is refreshed. On its
+available day only:
+
+| Variable | Meaning |
+|---|---|
+| `filings_13d`, `filings_13g` | Filings of the day, amendments included, one per accession number |
+| `activist` | A filing of the day is flagged activist |
+| `percent_of_class`, `shares_owned` | The largest stake a filing of the day reports; NaN without a filing, 0 when a holder reports it sold out |
+
+StockFit serves the structured filings the SEC has required since December 2024, so the panel
+starts in 2025.
+
+## Executive pay and governance
+
+The pay-versus-performance table of a proxy statement (`/api/executives/compensation`), its
+company-selected measure (`/api/executives/performance-measures`) and the governance flags
+(`/api/executives/governance`) land in `executives_*/<cik>/`, re-pulled on a new DEF 14A. None
+carries a filing date: {py:class}`~quantlab.dataset.stockfit.executives.StockFitExecutivesDataset`
+shows fiscal year Y's values from 120 days after its end (the proxy deadline), the end taken from
+the company's annual income statement for Y (a year the statements do not date is left out). The
+variables are `ceo_total_comp`, `ceo_actually_paid_comp`, `avg_officer_total_comp`,
+`avg_officer_actually_paid_comp`, `company_tsr`, `peer_group_tsr`, `company_selected_measure` (its
+name and unit stay raw, so compare it only within a company) and four flags as 1.0/0.0
+(`insider_trading_policy`, `mnpi_considered_in_award_timing`, `award_timing_predetermined`,
+`mnpi_disclosure_timed_for_comp`). The flags have no fiscal year of their own: a pull of them
+belongs to the newest fiscal year of the compensation as of that pull, so they gain a history only
+from the first pull on. Values are as served today, restated figures included.
+
+```python
+from quantlab.dataset.config import StockFitExecutivesConfig
+from quantlab.dataset.stockfit.executives import StockFitExecutivesDataset
+
+config = StockFitExecutivesConfig(
+    zarr_file_path="/data/market/stockfit/stockfit_executives_1d/stockfit_executives_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    start_date="2022-01-01",
+)
+StockFitExecutivesDataset(config).update()
+panel = StockFitExecutivesDataset(config).panel("2025-01-02", "2025-12-31")
+panel["ceo_actually_paid_comp"].sel(symbol=1652044)  # Alphabet's CIK
+```
