@@ -169,11 +169,12 @@ FEED_MAX_PAGES = 100
 #: The forms of a company's financial reports, amendments included: they drive the statements.
 REPORT_FORMS = frozenset({"10-K", "10-Q", "20-F", "40-F", "10-K/A", "10-Q/A"})
 
-#: The form types whose new filings drive a re-pull, by the feed's entity name (spaces and
-#: slashes made dashes: ``10-K/A`` is ``10-K-A``).
+#: The form types whose new filings drive a re-pull, by the feed's entity name (spaces made
+#: dashes: ``DEF 14A`` is ``DEF-14A``). The feed takes only these base types and serves an
+#: amendment under its base type (``"amendment": true``), so a 10-K/A arrives with the 10-Ks;
+#: it serves no 40-F, whose filers wait for the weekly re-pull.
 FEED_FORMS: dict[str, str] = {
-    form.replace(" ", "-").replace("/", "-"): form
-    for form in (*sorted(REPORT_FORMS), "4", "13F-HR", "NPORT-P", "13D", "13G", "DEF 14A")
+    form.replace(" ", "-"): form for form in ("10-K", "10-Q", "20-F", "4", "13F-HR", "NPORT-P", "13D", "13G", "DEF 14A")
 }
 
 #: The forms that disclose a split: the reports that tag it in XBRL. The feed does not follow

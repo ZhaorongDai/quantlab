@@ -169,13 +169,15 @@ def test_the_endpoint_table_lists_the_market_lists_first_then_the_backfill_order
     assert [names.index(name) for name in backfill] == sorted(names.index(name) for name in backfill)
 
 
-@pytest.mark.parametrize("form", ["10-K/A", "10-Q/A", "40-F"])
-def test_an_amendment_or_a_40f_re_pulls_the_filers_statements(env, tmp_path, clock, form):
+@pytest.mark.parametrize("form", ["10-K", "10-Q"])
+def test_an_amendment_in_the_feed_re_pulls_the_filers_statements(env, tmp_path, clock, form):
     vendor = FakeVendor(clock)
     _refresh(tmp_path, vendor, clock)
     clock.advance(days=1)
     accepted = (clock.now() - timedelta(hours=2)).isoformat()
-    vendor.lists["/api/filings/latest"] = [filing_row(form, PLUG, clock.now().date().isoformat(), accepted)]
+    # the feed serves a 10-K/A under the 10-K type, marked as an amendment
+    amended = {**filing_row(form, PLUG, clock.now().date().isoformat(), accepted), "amendment": True}
+    vendor.lists["/api/filings/latest"] = [amended]
     vendor.calls.clear()
     assert not _refresh(tmp_path, vendor, clock).failed
 

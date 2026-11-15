@@ -77,12 +77,13 @@ The same call does the first backfill and every later update; run it once a day.
 
 1. pulls every market-wide list: the company lists (operating and delisted), the delisting days,
    the data dictionaries, the feed of the last 30 days' filings (`/api/filings/latest`, one entity
-   per form type: 10-K, 10-K/A, 10-Q, 10-Q/A, 20-F, 40-F, Form 4, 13F-HR, N-PORT, 13D, 13G and
-   DEF 14A), the declared split and dividend calendars, the earnings, IPO and offering calendars,
+   per form type: 10-K, 10-Q, 20-F, Form 4, 13F-HR, N-PORT, 13D, 13G and DEF 14A; the feed
+   serves an amendment under its base type and serves no 40-F, so a 40-F filer waits for the
+   weekly re-pull), the declared split and dividend calendars, the earnings, IPO and offering calendars,
    the House and Senate trade feeds (each from its last pull's day), and the fund lists;
 2. plans the per-entity pulls due, in this order, within the requests left today:
-   - the entities a filing made since their last pull touches: a new report (10-K, 10-Q, 20-F,
-     40-F or an amendment of a 10-K or 10-Q) re-pulls that company's statements, footnotes,
+   - the entities a filing made since their last pull touches: a new report (10-K, 10-Q, 20-F
+     or an amendment of one) re-pulls that company's statements, footnotes,
      as-reported facts, derived metrics, officers and XBRL split history; a new filing of any form
      the feed follows re-pulls its filing list and its profile; a Form 4 its insider transactions,
      a 13D or 13G its stakes, a DEF 14A its executive data, a 13F-HR the manager's 13F endpoints,

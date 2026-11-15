@@ -116,6 +116,11 @@ def company_row(cik: int, name: str, status: str = "operating", kind: str = "sto
     }
 
 
+#: The form types ``/api/filings/latest`` accepts (VERBATIM from its HTTP 400 on another type).
+FEED_TYPES = frozenset({"10-K", "10-Q", "20-F", "8-K", "DEF 14A", "DEFA14A", "13D", "13G", "3", "4", "5",
+                        "13F-HR", "NPORT-P", "N-CEN", "EFFECT", "25-NSE", "ARS"})
+
+
 def filing_row(form: str, cik: int, filed: str, accepted: str | None = None) -> dict:
     """Return one row of ``/api/filings/latest`` in the vendor's shape; the filer's CIK is in its URL."""
     row = {  # SYNTHETIC values, VERBATIM field names
@@ -247,6 +252,8 @@ class FakeVendor:
         self._times.append(now)
         self.used_today += 1
         path = urlsplit(url).path.removeprefix("/v1")
+        if path == "/api/filings/latest" and params.get("type") not in FEED_TYPES:
+            return HttpResponse(400, b'{"error":"Param \\"type\\" not one of the feed types"}', self._limits())
         if path in self.lists:
             body = self._page(self.lists[path], params)
         else:
