@@ -357,7 +357,7 @@ class PerCompany(Endpoint):
 
     Examples
     --------
-    >>> ENDPOINTS["balance_sheet_ttm"].entities(PullContext(Path("/d/stockfit"), ciks=(1093691,)))
+    >>> ENDPOINTS["balance_sheet_quarter"].entities(PullContext(Path("/d/stockfit"), ciks=(1093691,)))
     ['1093691']
     """
 
@@ -375,7 +375,7 @@ class PerCompany(Endpoint):
 
         Examples
         --------
-        >>> ENDPOINTS["balance_sheet_ttm"].filer_entities([1093691], PullContext(Path("/d/stockfit")))
+        >>> ENDPOINTS["balance_sheet_quarter"].filer_entities([1093691], PullContext(Path("/d/stockfit")))
         {1093691: ['1093691']}
         """
         wanted = None if context.ciks is None else set(context.ciks)
@@ -937,7 +937,9 @@ def _statements() -> list[Endpoint]:
             f"{name}_{period}", path, {"period": period, "limit": STATEMENT_LIMIT},
             triggers=REPORT_FORMS, repull_days=7,  # re-pulled on a new report, and weekly
         )
-        for period in ("annual", "quarter", "ttm")
+        # The vendor's TTM (period=ttm) is one period, the same for the three statements: not pulled,
+        # the statement panel computes TTM from the quarters.
+        for period in ("annual", "quarter")
         for name, path in paths.items()
     ]
 
@@ -1004,7 +1006,7 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
         FILINGS_LATEST, "/api/filings/latest", page_size=FEED_PAGE_SIZE,
         variants={entity: {"type": form} for entity, form in FEED_FORMS.items()},
     ),
-    # The three statements, annual, quarterly and TTM, as many periods as served.
+    # The three statements, annual and quarterly, as many periods as served.
     *_statements(),
     # The 17 footnote tables, annual and quarterly, as many periods as served; re-pulled on a new report.
     *_footnotes(),

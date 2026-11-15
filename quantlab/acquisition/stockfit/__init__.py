@@ -67,9 +67,10 @@ STOCKFIT_SOURCE = register_source(
         symbol_batch_cls=None,
         config_factory=None,
         capabilities=(
-            # The company lists, operating and delisted: raw only, keyed by CIK.
+            # The company lists, operating and delisted, keyed by CIK, and the data dictionaries
+            # (SFIC sectors and industries, exchange names): raw only.
             Capability(market="us_equity", frequency="1d", data_type="reference", entitlement=_ENTITLEMENT),
-            # The income, balance-sheet and cash-flow statements per CIK, annual, quarterly and TTM;
+            # The income, balance-sheet and cash-flow statements per CIK, annual and quarterly;
             # the quarterly pulls build the quarterly and TTM panels, as known on each day.
             Capability(
                 market="us_equity", frequency="1d", data_type="statements",

@@ -24,9 +24,9 @@ from tests.stockfit_fixtures import (
     all_but_13f,
     company_row,
     fixture,
+    list_requests,
+    statement_endpoints,
 )
-
-STATEMENTS = ("income_statement", "balance_sheet", "cash_flow_statement")
 
 
 @pytest.fixture
@@ -70,7 +70,9 @@ def test_a_refresh_lands_the_company_lists_and_each_companys_statements(env, tmp
     assert raw.company_ciks(root) == [TSM, PLUG, TWTR]
     assert [row["cik"] for row in raw.read_pull(root, "symbols", "delisted")] == [TWTR]
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG)) == fixture("income_statement_plug_quarter")
-    assert raw.read_pull(root, "balance_sheet_ttm", str(PLUG)) == fixture("balance_sheet_plug_ttm")
+    assert raw.read_pull(root, "balance_sheet_annual", str(PLUG)) == fixture("balance_sheet_plug_annual")
+    # the vendor's TTM is its latest period only, the same for the three statements: the panel computes TTM
+    assert not any(name.endswith("_ttm") for name in statement_endpoints())
     assert raw.read_pull(root, "cash_flow_statement_annual", str(TSM)) == fixture("cash_flow_statement_tsm_annual")
     assert len(raw.pulls(root, "income_statement_quarter", str(PLUG))) == 1
     assert raw.read_watermark(root, "income_statement_quarter", str(PLUG)) == clock.now().date()
@@ -148,13 +150,11 @@ def test_a_killed_refresh_leaves_no_partial_pull_and_the_next_one_publishes_it_w
 
 def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tmp_path, clock):
     vendor = FakeVendor(clock, per_minute=4)
-    lists_and_statements = ["symbols", "company_delisted"] + [
-        f"{name}_{period}" for period in ("annual", "quarter", "ttm") for name in STATEMENTS
-    ]
-    result = _refresh(tmp_path, vendor, clock, endpoints=lists_and_statements)
+    lists = ["symbols", "company_delisted"]
+    result = _refresh(tmp_path, vendor, clock, endpoints=lists + statement_endpoints())
 
     assert not result.failed, result.summary()
-    assert len(vendor.calls) == 3 + 9 * 3  # three list pages, nine statements of three companies
+    assert len(vendor.calls) == list_requests(lists) + len(statement_endpoints()) * 3  # three companies
     assert 429 not in vendor.statuses
     assert clock.sleeps and sum(clock.sleeps) >= 60 * (len(vendor.calls) // 4 - 1)
 

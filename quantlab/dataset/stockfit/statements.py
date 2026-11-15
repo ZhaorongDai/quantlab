@@ -34,8 +34,9 @@ filing of an older quarter never replaces a newer quarter. A TTM store
 they are four consecutive fiscal quarters: flows summed over the quarters
 that report them, weighted share counts averaged (rounded half up to whole
 shares), balance-sheet items and ``endCash`` from the latest quarter and
-``beginningCash`` from the earliest. Annual statements, and the vendor's own
-TTM response (its latest period only), stay in the raw tier.
+``beginningCash`` from the earliest. Annual statements stay in the raw tier;
+the vendor's own TTM response (its latest period only, the same for the
+three statements) is not pulled.
 
 Every fact is a float64 variable named as the vendor names it; the five the
 cash-flow statement shares with the income statement are prefixed

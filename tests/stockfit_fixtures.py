@@ -58,6 +58,35 @@ def all_but_13f() -> list[str]:
     return [name for name in ENDPOINTS if name not in THIRTEEN_F_ENDPOINTS]
 
 
+#: The API paths of the three normalized statements.
+STATEMENT_PATHS = (
+    "/api/financials/income-statement",
+    "/api/financials/balance-sheet",
+    "/api/financials/cash-flow-statement",
+)
+
+
+def statement_endpoints() -> list[str]:
+    """Return the endpoints of ``ENDPOINTS`` that pull a normalized statement, in table order."""
+    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
+
+    return [name for name, endpoint in ENDPOINTS.items() if endpoint.path in STATEMENT_PATHS]
+
+
+def list_requests(names) -> int:
+    """Return the requests a run makes for the market-wide lists among ``names``: one per variant.
+
+    ``FakeVendor`` serves every list and feed it holds in one page, so each
+    variant (entity) of a ``MarketList`` row costs one request.
+    """
+    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS, MarketList, PullContext
+
+    context = PullContext(Path("/nonexistent/stockfit"))
+    return sum(
+        len(ENDPOINTS[name].entities(context)) for name in names if isinstance(ENDPOINTS[name], MarketList)
+    )
+
+
 def fixture(name: str):
     """Return one recorded response body."""
     return json.loads((FIXTURES / f"{name}.json").read_text())

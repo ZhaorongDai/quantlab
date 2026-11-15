@@ -19,11 +19,12 @@ from tests.stockfit_fixtures import (
     TWTR,
     FakeClock,
     FakeVendor,
+    STATEMENT_PATHS,
     all_but_13f,
     filing_row,
+    list_requests,
+    statement_endpoints,
 )
-
-STATEMENT_PATHS = ("/api/financials/income-statement", "/api/financials/balance-sheet", "/api/financials/cash-flow-statement")
 
 
 @pytest.fixture
@@ -66,8 +67,8 @@ def test_a_capped_backfill_spans_several_runs_and_ends_with_the_raw_tier_of_one_
     assert not _refresh(uncapped, FakeVendor(own), own).failed
 
     capped = tmp_path / "capped"
-    # 29 for the company and fund lists, the feeds and the forward lists; 28 for the backfill and the snapshots
-    vendor = FakeVendor(clock, per_day=57)
+    # every market-wide list once a day (company and fund lists, feeds, forward lists), and 28 for the rest
+    vendor = FakeVendor(clock, per_day=list_requests(all_but_13f()) + 28)
     runs = []
     while True:
         result = _refresh(capped, vendor, clock)
@@ -110,7 +111,7 @@ def test_a_day_with_one_new_10k_re_pulls_only_that_companys_filing_driven_endpoi
 
     assert not result.failed, result.summary()
     assert {params["cik"] for params in _statement_calls(vendor)} == {str(PLUG)}
-    assert len(_statement_calls(vendor)) == 9  # three statements, annual, quarterly and TTM
+    assert len(_statement_calls(vendor)) == len(statement_endpoints())  # every statement endpoint, once
     # the filing list follows every form the feed carries: both filers' lists are re-pulled
     assert {params["cik"] for params in vendor.requested("/api/filings") if str(params["page"]) == "1"} == {str(PLUG), str(TSM)}
     # the profile follows any form too; the split history only the reports that tag a split
@@ -134,7 +135,7 @@ def test_the_weekly_re_pull_of_the_statements_happens_once_a_week(env, tmp_path,
         vendor.calls.clear()
         _refresh(tmp_path, vendor, clock)
         if _statement_calls(vendor):
-            assert len(_statement_calls(vendor)) == 9 * 3  # every statement of every company
+            assert len(_statement_calls(vendor)) == len(statement_endpoints()) * 3  # every company's statements
             pulled_on.append(day)
         clock.advance(days=1)
 

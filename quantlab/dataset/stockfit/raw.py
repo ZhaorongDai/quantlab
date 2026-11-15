@@ -131,8 +131,8 @@ def entity_dir(vendor_root: str | Path, endpoint: str, entity: str) -> Path:
 
     Examples
     --------
-    >>> entity_dir("/d/stockfit", "balance_sheet_ttm", "1093691")
-    PosixPath('/d/stockfit/balance_sheet_ttm/1093691')
+    >>> entity_dir("/d/stockfit", "balance_sheet_quarter", "1093691")
+    PosixPath('/d/stockfit/balance_sheet_quarter/1093691')
     """
     return endpoint_dir(vendor_root, endpoint) / _plain(entity, "entity")
 
