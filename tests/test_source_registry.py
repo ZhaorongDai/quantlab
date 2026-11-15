@@ -150,6 +150,7 @@ def test_the_no_credentials_fixture_empties_every_declared_name(
         "APCA_API_SECRET_KEY",
         "WRDS_USERNAME",
         "SHARADAR_API_KEY",
+        "STOCKFIT_API_KEY",
     )
 
     for name in no_credentials:
@@ -504,9 +505,9 @@ def test_direct_class_reference_is_the_class_object(isolated_registry) -> None:
     assert isolated_registry.get("tiingo").symbol_batch_cls is tiingo.TiingoAcquisition
     assert isolated_registry.get("alpaca").symbol_batch_cls is alpaca.AlpacaAcquisition
     for descriptor in isolated_registry.all():
-        # None only for a vendor its own scripts download (Sharadar, Massive).
+        # None only for a vendor its own scripts download (Sharadar, Massive, StockFit).
         if descriptor.symbol_batch_cls is None:
-            assert descriptor.vendor in ("sharadar", "massive")
+            assert descriptor.vendor in ("sharadar", "massive", "stockfit")
             continue
         assert isinstance(descriptor.symbol_batch_cls, type)
         assert not isinstance(descriptor.symbol_batch_cls, str)
@@ -639,7 +640,7 @@ def test_enumeration_order_is_sorted_by_vendor(isolated_registry, monkeypatch) -
     its sorted order; deleting the `sorted(...)` call turns this red.
     """
     assert [d.vendor for d in DataSourceRegistry_all()] == [
-        "alpaca", "fred", "massive", "sharadar", "tiingo", "wrds",
+        "alpaca", "fred", "massive", "sharadar", "stockfit", "tiingo", "wrds",
     ]
 
     reversed_registration = (
@@ -743,6 +744,7 @@ _CHILD_CREDENTIALS = (
     "APCA_API_SECRET_KEY",
     "WRDS_USERNAME",
     "SHARADAR_API_KEY",
+    "STOCKFIT_API_KEY",
 )
 
 
@@ -795,7 +797,7 @@ def test_enumeration_is_complete_from_a_cold_import() -> None:
     )
 
     assert child.returncode == 0, child.stderr
-    assert child.stdout.strip() == "['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']", child.stdout
+    assert child.stdout.strip() == "['alpaca', 'fred', 'massive', 'sharadar', 'stockfit', 'tiingo', 'wrds']", child.stdout
     assert "Traceback" not in child.stderr
 
 
@@ -1266,7 +1268,7 @@ def test_the_isolated_registry_fixture_restored_every_fake_vendor() -> None:
     from quantlab.acquisition.base import DataSourceRegistry
 
     assert [d.vendor for d in DataSourceRegistry.all()] == [
-        "alpaca", "fred", "massive", "sharadar", "tiingo", "wrds",
+        "alpaca", "fred", "massive", "sharadar", "stockfit", "tiingo", "wrds",
     ]
 
     registered = {d.vendor for d in DataSourceRegistry.SOURCES}

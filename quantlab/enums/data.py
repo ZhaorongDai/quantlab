@@ -139,8 +139,9 @@ class TiingoColumns:
 #: (``downloads/{market}/{frequency}/{subdir}/{vendor}/``) it is also a literal
 #: column in every raw shard; Sharadar's tables live under
 #: ``<download-dir>/sharadar/<table>/`` instead (``quantlab.dataset.sharadar.tables``).
-#: FRED (``fred``) serves macroeconomic series, such as the Treasury bill rate.
-Vendor = Literal["tiingo", "alpaca", "wrds", "sharadar", "fred", "massive"]
+#: FRED (``fred``) serves macroeconomic series, such as the Treasury bill rate;
+#: StockFit's pulls live under ``<download-dir>/stockfit/`` (``quantlab.dataset.stockfit.raw``).
+Vendor = Literal["tiingo", "alpaca", "wrds", "sharadar", "fred", "massive", "stockfit"]
 
 #: Hive partition keys of the raw tier, per frequency. One definition, imported
 #: by both the writer (the acquisition base class) and the reader (the stock

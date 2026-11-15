@@ -4,7 +4,7 @@ This page covers how quantlab gets vendor data onto your disk: the vendors it kn
 credentials, the two ways to download, where the files land, how an interrupted download
 resumes, and how to inspect what is already downloaded. Turning downloaded files into
 panels is covered in [Datasets](datasets.md). Each vendor with concepts of its own has a
-page: [Sharadar](sharadar.md), [Massive](massive.md) and [WRDS](wrds.md).
+page: [Sharadar](sharadar.md), [Massive](massive.md), [StockFit](stockfit.md) and [WRDS](wrds.md).
 
 The runnable companion is
 [`examples/inspect_data_sources.py`](https://github.com/ZhaorongDai/quantlab/blob/main/examples/inspect_data_sources.py).
@@ -33,6 +33,7 @@ converts it to a panel.
 |---|---|---|
 | `sharadar` | US stock and fund daily prices, fundamentals, valuations, events, insider and 13F holdings, S&P 500 membership, tickers | `SHARADAR_API_KEY` |
 | `massive` | Every US-equity SIP trade, minute and day aggregates, dividends, short interest and volume, news, 8-K disclosures, IPOs | `MASSIVE_API_KEY`, `MASSIVE_S3_ACCESS_KEY_ID` (`MASSIVE_S3_SECRET_ACCESS_KEY` optional) |
+| `stockfit` | SEC-filing data parsed from EDGAR: company lists and the income, balance-sheet and cash-flow statements per CIK (raw tier) | `STOCKFIT_API_KEY` |
 | `fred` | Interest-rate series such as DTB3, the 3-month Treasury bill rate | none |
 | `tiingo` | US equity daily bars | `TIINGO_API_KEY` |
 | `alpaca` | US equity daily and minute bars; tick quotes and trades | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` |
@@ -54,7 +55,7 @@ downloaded yourself from Binance's bulk-download site.
 ```python
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']
+['alpaca', 'fred', 'massive', 'sharadar', 'stockfit', 'tiingo', 'wrds']
 >>> wrds = DataSourceRegistry.get("wrds")
 >>> wrds.supports("us_equity", "tick", "nbbo")
 True
