@@ -24,8 +24,9 @@ entity are the changes the vendor made to it, each kept.
 
 The writer (``quantlab.acquisition.stockfit.raw_tier``) takes every path from
 here; the readers are ``pulls``, ``read_pull``, ``read_pull_as_of``,
-``entities``, ``read_watermark`` and ``company_ciks``, and for 13F
-``thirteen_f_managers`` and ``thirteen_f_periods``. This module only reads.
+``entities``, ``read_watermark``, ``last_pulled`` and ``company_ciks``, and
+for 13F ``thirteen_f_managers`` and ``thirteen_f_periods``. This module only
+reads.
 
 An endpoint asked per quarter (13F holders of a company, a manager's
 portfolio) has one entity per owner and quarter, named
@@ -69,6 +70,10 @@ SYMBOLS = "symbols"
 
 #: The endpoint of the delisted companies with their delisting day (``/api/company/delisted``).
 COMPANY_DELISTED = "company_delisted"
+
+#: The endpoints of the House and Senate members' trade reports (``/api/congress/*/trades/recent``).
+CONGRESS_HOUSE_TRADES = "congress_house_trades"
+CONGRESS_SENATE_TRADES = "congress_senate_trades"
 
 #: The entity of an endpoint that is one market-wide list.
 WHOLE_LIST = "all"
@@ -173,6 +178,24 @@ def read_watermark(vendor_root: str | Path, endpoint: str, entity: str) -> date 
     True
     """
     return _read_watermark(watermark_file(vendor_root, endpoint, entity))
+
+
+def last_pulled(vendor_root: str | Path, endpoint: str, entity: str) -> datetime | None:
+    """Return when an entity was last pulled (UTC), published or not; ``None`` if never.
+
+    The time of the pull, which the watermark file records beside its day;
+    the refresh compares it with the filings made since.
+
+    Examples
+    --------
+    >>> last_pulled("/nonexistent/stockfit", "symbols", "operating") is None
+    True
+    """
+    path = watermark_file(vendor_root, endpoint, entity)
+    if not path.exists():
+        return None
+    stamp = json.loads(path.read_text(encoding="utf-8"))["pulled_at"]
+    return datetime.strptime(stamp, STAMP_FORMAT).replace(tzinfo=UTC)
 
 
 def _pull_dirs(vendor_root: str | Path, endpoint: str, entity: str) -> dict[datetime, Path]:
@@ -374,6 +397,25 @@ def split_quarter_entity(entity: str) -> tuple[int, date]:
     return int(owner), date.fromisoformat(quarter)
 
 
+def manager_holdings(vendor_root: str | Path) -> dict[int, list[str]]:
+    """Return, per 13F manager, the holder entities (``<cik>_<quarter end>``) whose newest pull names it.
+
+    Examples
+    --------
+    >>> manager_holdings("/nonexistent/stockfit")
+    {}
+    """
+    held: dict[int, list[str]] = {}
+    for entity in entities(vendor_root, INSTITUTIONAL_HOLDERS):
+        managers = {
+            int(row["managerCik"]) for row in read_pull(vendor_root, INSTITUTIONAL_HOLDERS, entity)
+            if row.get("managerCik")
+        }
+        for manager in managers:
+            held.setdefault(manager, []).append(entity)
+    return held
+
+
 def thirteen_f_managers(vendor_root: str | Path) -> list[int]:
     """Return the CIK of every manager in the newest 13F holder rows of every company and quarter, sorted.
 
@@ -382,13 +424,7 @@ def thirteen_f_managers(vendor_root: str | Path) -> list[int]:
     >>> thirteen_f_managers("/nonexistent/stockfit")
     []
     """
-    managers: set[int] = set()
-    for entity in entities(vendor_root, INSTITUTIONAL_HOLDERS):
-        managers.update(
-            int(row["managerCik"]) for row in read_pull(vendor_root, INSTITUTIONAL_HOLDERS, entity)
-            if row.get("managerCik")
-        )
-    return sorted(managers)
+    return sorted(manager_holdings(vendor_root))
 
 
 def thirteen_f_periods(vendor_root: str | Path, manager: int | str) -> list[date]:

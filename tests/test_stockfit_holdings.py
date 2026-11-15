@@ -100,19 +100,25 @@ def _vendor(clock) -> FakeVendor:
     return FakeVendor(clock, companies=[company_row(ALPHA, "Alphabet Inc."), company_row(BETA, "Beta Corp")])
 
 
-def _refresh(tmp_path, vendor, clock, *, end=date(2024, 7, 1), first_quarter=date(2024, 3, 31), names=None):
+THIRTEEN_F = ("symbols", "institutional_holders", "manager_13f_filings", "manager_portfolio")
+
+
+def _refresh(tmp_path, vendor, clock, *, end=date(2024, 7, 1), first_quarter=date(2024, 3, 31), names=THIRTEEN_F, runs=3):
+    """Run the refresh ``runs`` times: holders land, then their managers' filings, then the portfolios."""
     from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
-    names = names or ("symbols", "institutional_holders", "manager_13f_filings", "manager_portfolio")
     rows = [
         replace(ENDPOINTS[name], first_quarter=first_quarter) if hasattr(ENDPOINTS[name], "first_quarter")
         else ENDPOINTS[name]
         for name in names
     ]
     client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
-    return refresh_raw_tier(tmp_path, client=client, endpoints=rows, end=end)
+    for _ in range(runs):
+        result = refresh_raw_tier(tmp_path, client=client, endpoints=rows, end=end)
+        assert not result.failed, result.summary()
+    return result
 
 
 # -- seam 1: the raw tier ------------------------------------------------------
@@ -128,11 +134,11 @@ def test_holders_are_pulled_per_company_and_quarter_and_managers_from_their_rows
     ])
     serve_filings(vendor, MANAGER_A, [filing("0000009001-24-000001", "2024-03-31", "2024-05-10", None)])
     serve_portfolio(vendor, MANAGER_A, "2024-03-31", [{"cusip": CLASS_A, "shares": 100.0}])
-    result = _refresh(tmp_path, vendor, clock)
+    _refresh(tmp_path, vendor, clock, end=date(2024, 8, 20))
 
     root = tmp_path / "stockfit"
-    assert not result.failed, result.summary()
-    # Only quarters ended by ``end``, newest first; one request per company and quarter.
+    # Only quarters whose filings are due 50 days before ``end``, newest first; each company and
+    # quarter pulled once (2024-09-30 is not due yet).
     assert [(int(p["cik"]), p["reportDate"]) for p in vendor.requested(HOLDERS)] == [
         (BETA, "2024-06-30"), (ALPHA, "2024-06-30"), (BETA, "2024-03-31"), (ALPHA, "2024-03-31"),
     ]
@@ -145,6 +151,28 @@ def test_holders_are_pulled_per_company_and_quarter_and_managers_from_their_rows
     # A manager's portfolios are pulled for the periods its 13F filings report.
     assert raw.entities(root, "manager_portfolio") == [f"{MANAGER_A}_2024-03-31"]
     assert raw.read_pull(root, "manager_portfolio", f"{MANAGER_A}_2024-03-31") == [{"cusip": CLASS_A, "shares": 100.0}]
+
+
+def test_a_managers_new_13f_filing_re_pulls_its_filings_and_the_holders_of_what_it_held(env, tmp_path, clock):
+    from tests.stockfit_fixtures import filing_row
+
+    vendor = _vendor(clock)
+    serve_holders(vendor, ALPHA, "2024-03-31", [holder(MANAGER_A, CLASS_A, "2024-03-31", A1, 100.0)])
+    serve_holders(vendor, BETA, "2024-03-31", [holder(MANAGER_B, DIGITS, "2024-03-31", B1, 5.0)])
+    serve_filings(vendor, MANAGER_A, [filing(A1, "2024-03-31", "2024-05-10", None)])
+    names = ("filings_latest", *THIRTEEN_F)
+    _refresh(tmp_path, vendor, clock, names=names)
+    before = len(vendor.calls)
+
+    clock.advance(days=1)
+    vendor.lists["/api/filings/latest"] = [filing_row("13F-HR", MANAGER_A, "2026-11-17", "2026-11-17T14:30:00Z")]
+    _refresh(tmp_path, vendor, clock, names=names, runs=1)
+
+    later = [(url.rsplit("/v1", 1)[1], params.get("cik")) for url, params, _ in vendor.calls[before:]]
+    assert ("/api/ownership/institutional-holders", str(ALPHA)) in later
+    assert ("/api/ownership/institutional-holders", str(BETA)) not in later
+    assert ("/api/filings", str(MANAGER_A)) in later
+    assert ("/api/filings", str(MANAGER_B)) not in later
 
 
 # -- seam 2: the panel ---------------------------------------------------------
@@ -263,10 +291,8 @@ def test_an_update_adds_a_new_security_with_its_history_as_a_rebuild_shows_it(en
     _refresh(tmp_path / "dl", vendor, clock)
     _dataset(tmp_path, tmp_path / "dl").update()
 
-    serve_holders(vendor, BETA, "2024-06-30", [holder(MANAGER_A, DIGITS, "2024-06-30", "a2", 5.0)])
-    serve_filings(vendor, MANAGER_A, [
-        filing(A1, "2024-03-31", "2024-05-10", None), filing("a2", "2024-06-30", "2024-08-01", None),
-    ])
+    serve_holders(vendor, BETA, "2024-06-30", [holder(MANAGER_B, DIGITS, "2024-06-30", "b2", 5.0)])
+    serve_filings(vendor, MANAGER_B, [filing("b2", "2024-06-30", "2024-08-01", None)])
     clock.advance(days=1)
     _refresh(tmp_path / "dl", vendor, clock, end=date(2024, 9, 1))
     _dataset(tmp_path, tmp_path / "dl").update()
