@@ -19,7 +19,7 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'as_reported', 'derived', 'snapshots', 'congress_trades']
+['reference', 'statements', 'as_reported', 'derived', 'scores_trends', 'footnotes', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts', 'holdings']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
@@ -27,9 +27,33 @@ Examples
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 from quantlab.dataset.stockfit.as_reported import StockFitAsReportedDataset
+from quantlab.dataset.stockfit.beneficial_owners import StockFitBeneficialOwnersDataset
 from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
 from quantlab.dataset.stockfit.derived import StockFitDerivedDataset
-from quantlab.dataset.stockfit.snapshots import StockFitSnapshotDataset
+from quantlab.dataset.stockfit.events import (
+    StockFitCorporateEventsDataset,
+    StockFitDeclaredEventsDataset,
+)
+from quantlab.dataset.stockfit.executives import StockFitExecutivesDataset
+from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
+from quantlab.dataset.stockfit.footnotes import StockFitFootnoteDataset
+from quantlab.dataset.stockfit.funds import (
+    StockFitFundFeesDataset,
+    StockFitFundFlowsDataset,
+    StockFitFundNcenDataset,
+    StockFitFundProfileDataset,
+)
+from quantlab.dataset.stockfit.holdings import StockFitHoldingsDataset
+from quantlab.dataset.stockfit.insiders import StockFitInsidersDataset
+from quantlab.dataset.stockfit.scores_trends import StockFitScoresTrendsDataset
+from quantlab.dataset.stockfit.snapshots import (
+    StockFitEarningsConsensusDataset,
+    StockFitFilingCalendarDataset,
+    StockFitIpoCalendarDataset,
+    StockFitListingDataset,
+    StockFitNewsCountsDataset,
+    StockFitOfferingsDataset,
+)
 from quantlab.dataset.stockfit.statements import StockFitStatementsDataset
 
 #: The plan the endpoints need.
@@ -63,13 +87,81 @@ STOCKFIT_SOURCE = register_source(
             ),
             # Scores and trends per CIK, accumulated from snapshots.
             Capability(
-                market="us_equity", frequency="1d", data_type="snapshots",
-                dataset_cls=StockFitSnapshotDataset, entitlement=_ENTITLEMENT,
+                market="us_equity", frequency="1d", data_type="scores_trends",
+                dataset_cls=StockFitScoresTrendsDataset, entitlement=_ENTITLEMENT,
+            ),
+            # The 17 footnote tables per CIK, annual and quarterly: one panel per footnote and period type.
+            Capability(
+                market="us_equity", frequency="1d", data_type="footnotes", entitlement=_ENTITLEMENT,
+                dataset_cls=StockFitFootnoteDataset,
+            ),
+            # Fund series (<cik>-<series id>): N-PORT summary and monthly flows, N-1A fees, N-CEN fields.
+            Capability(market="us_equity", frequency="1d", data_type="fund_profile",
+                       dataset_cls=StockFitFundProfileDataset, entitlement=_ENTITLEMENT),
+            Capability(market="us_equity", frequency="1d", data_type="fund_flows",
+                       dataset_cls=StockFitFundFlowsDataset, entitlement=_ENTITLEMENT),
+            Capability(market="us_equity", frequency="1d", data_type="fund_fees",
+                       dataset_cls=StockFitFundFeesDataset, entitlement=_ENTITLEMENT),
+            Capability(market="us_equity", frequency="1d", data_type="fund_ncen",
+                       dataset_cls=StockFitFundNcenDataset, entitlement=_ENTITLEMENT),
+            # N-CSR performance, N-PORT holdings, daily ETF holdings, N-CEN providers, advisers: raw only.
+            Capability(market="us_equity", frequency="1d", data_type="fund_holdings", entitlement=_ENTITLEMENT),
+            # XBRL splits at their first disclosure and successions at their effective day, per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="corporate_events",
+                dataset_cls=StockFitCorporateEventsDataset, entitlement=_ENTITLEMENT,
+            ),
+            # The declared splits and dividends of the coming days, accumulated from snapshots, per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="declared_events",
+                dataset_cls=StockFitDeclaredEventsDataset, entitlement=_ENTITLEMENT,
             ),
             # House and Senate members' trade reports, placed on the CIK of the trade-date ticker holder.
             Capability(
                 market="us_equity", frequency="1d", data_type="congress_trades",
                 dataset_cls=StockFitCongressTradesDataset, entitlement=_ENTITLEMENT,
+            ),
+            # Each company's SEC filing list, and the filing panel by CIK: form counts, 8-K events, amendments.
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="filings",
+                dataset_cls=StockFitFilingsDataset,
+                earliest_available="1994-03-08",
+                entitlement=_ENTITLEMENT,
+            ),
+            # Officers' and directors' Form 4/5 transactions per CIK, with the Sharadar insider panel's variables.
+            Capability(
+                market="us_equity", frequency="1d", data_type="insiders",
+                dataset_cls=StockFitInsidersDataset, earliest_available="2003-01-01", entitlement=_ENTITLEMENT,
+            ),
+            # Schedule 13D/13G stakes per CIK, each placed by its filing's acceptance time.
+            Capability(
+                market="us_equity", frequency="1d", data_type="beneficial_owners",
+                dataset_cls=StockFitBeneficialOwnersDataset, earliest_available="2025-01-01",
+                entitlement=_ENTITLEMENT,
+            ),
+            # Proxy pay versus performance, governance flags and company-selected measures per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="executives",
+                dataset_cls=StockFitExecutivesDataset, earliest_available="2022-01-01", entitlement=_ENTITLEMENT,
+            ),
+            # Panels accumulated from forward snapshots, each placed at its pull time, on the CIK axis.
+            *(
+                Capability(market="us_equity", frequency="1d", data_type=data_type, dataset_cls=cls, entitlement=_ENTITLEMENT)
+                for data_type, cls in (
+                    ("listing", StockFitListingDataset),
+                    ("earnings_consensus", StockFitEarningsConsensusDataset),
+                    ("ipo_calendar", StockFitIpoCalendarDataset),
+                    ("offerings", StockFitOfferingsDataset),
+                    ("filing_calendar", StockFitFilingCalendarDataset),
+                    ("news_counts", StockFitNewsCountsDataset),
+                )
+            ),
+            # 13F: holder rows per company and quarter, managers' filings, managers' portfolios (raw only).
+            Capability(
+                market="us_equity", frequency="1d", data_type="holdings", entitlement=_ENTITLEMENT,
+                dataset_cls=StockFitHoldingsDataset,
             ),
         ),
         # A literal, checked against the client's constant by a test.

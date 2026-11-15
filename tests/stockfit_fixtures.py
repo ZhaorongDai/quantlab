@@ -7,9 +7,12 @@ called as ``vendor(url, params=..., headers=...)`` and returns an
 - a per-entity request (``/api/financials/income-statement?cik=...&period=...``)
   is answered with the recorded body whose path and identifying parameters
   (every parameter but ``page``, ``pageSize`` and ``limit``) match, and with
-  404 when nothing was recorded for it;
+  404 when nothing was recorded for it; a recorded paged object (one page
+  of a longer list) is served as the list's last page, so a pull of it
+  stops after that page;
 - a market-wide list (``/api/symbols``, ``/api/company/delisted``, the
-  Congress ``trades/recent`` feeds) is served
+  declared split and dividend calendars, the Congress ``trades/recent``
+  feeds) is served
   from ``vendor.lists[path]``, filtered on the query parameters that are
   fields of its rows (``status``, ``type``) and paged by ``page`` and
   ``pageSize`` like the vendor's paged objects;
@@ -42,6 +45,17 @@ PAGING = frozenset({"page", "pageSize", "limit"})
 
 #: The CIKs of the recorded companies.
 PLUG, TSM, TWTR, GOOGL = 1093691, 1046179, 1418091, 1652044
+
+
+#: The 13F endpoints: per company and quarter since 2013, too many pulls for a test of the rest.
+THIRTEEN_F_ENDPOINTS = ("institutional_holders", "manager_13f_filings", "manager_portfolio")
+
+
+def all_but_13f() -> list[str]:
+    """Return every endpoint of ``ENDPOINTS`` but the 13F ones, in table order."""
+    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
+
+    return [name for name in ENDPOINTS if name not in THIRTEEN_F_ENDPOINTS]
 
 
 def fixture(name: str):
@@ -132,9 +146,16 @@ class FakeVendor:
         self.lists: dict[str, list[dict]] = {
             "/api/symbols": rows,
             "/api/company/delisted": [dict(row, delistedAt="2022-11-08") for row in rows if row["status"] == "delisted"],
+            # The declared split and dividend calendars: the recorded first page's rows.
+            "/api/company/upcoming-stock-splits": fixture("upcoming_stock_splits_page1")["data"],
+            "/api/earnings/upcoming-dividends": fixture("earnings_upcoming_dividends_page1")["data"],
             "/api/congress/house/trades/recent": fixture("congress_house_trades_recent")["data"],
             "/api/congress/senate/trades/recent": fixture("congress_senate_trades_recent")["data"],
             "/api/filings/latest": [],
+            # Forward snapshots: empty unless a test fills them.
+            "/api/earnings/upcoming": [],
+            "/api/company/ipo-calendar": [],
+            "/api/filings/recent-offerings": [],
         }
         self.per_minute = per_minute
         self.per_day = per_day
@@ -189,6 +210,8 @@ class FakeVendor:
             body = self.bodies.get((path, _identity(params)))
             if body is None:
                 return HttpResponse(404, b'{"error":"Not found"}', self._limits())
+            if isinstance(body, dict) and "totalPages" in body:
+                body = dict(body, totalPages=body.get("page", 1))
         return HttpResponse(200, json.dumps(body).encode(), self._limits())
 
     @staticmethod

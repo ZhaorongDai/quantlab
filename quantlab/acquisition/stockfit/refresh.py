@@ -10,11 +10,13 @@ One run, in two steps:
 2. The planner (``quantlab.acquisition.stockfit.planner``) orders the
    endpoint x entity pulls due now within the requests left today: first the
    entities a filing made since their last pull touches (a 10-K re-pulls the
-   filer's statements), then the entities never pulled, in table order (the
+   filer's statements and footnotes), then the entities never pulled, in table order (the
    backfill order), then the periodic re-pulls (each company's statements
-   once a week). The rest waits for the next run, which plans it again from
-   the raw tier: so a backfill longer than a day's requests resumes where it
-   stopped.
+   once a week). The pulls of a round can add entities (a series' N-PORT
+   quarters, the advisers of its service providers), so the run plans again
+   until nothing new is due. The rest waits for the next run, which plans it
+   again from the raw tier: so a backfill longer than a day's requests
+   resumes where it stopped.
 
 A pull lands under ``<download-dir>/stockfit/<endpoint>/<entity>/<stamp>/``
 by one rename, or is dropped when it equals the entity's newest pull; the
@@ -105,6 +107,7 @@ def refresh_raw_tier(
     end: date | None = None,
     endpoints: Iterable[str | Endpoint] | None = None,
     ciks: Iterable[int] | None = None,
+    fund_series: Iterable[str] | None = None,
     client: StockFitClient | None = None,
 ) -> RawTierRefreshResult:
     """Bring StockFit's raw tier under ``<download_dir>/stockfit/`` current, within today's requests.
@@ -114,8 +117,9 @@ def refresh_raw_tier(
     download_dir : str or Path
         The download root.
     end : date or None, default None
-        Taken for the refresh protocol; none of these endpoints is asked by
-        date, so it bounds nothing.
+        The day the refresh runs for: an endpoint asked per quarter (13F)
+        pulls the quarters whose filings are due by it. The client's today
+        (UTC) when omitted.
     endpoints : iterable of str or Endpoint, or None, default None
         The endpoints to refresh, by name in ``ENDPOINTS`` or as rows; every
         one of ``ENDPOINTS``, in its order, when omitted. The filings that
@@ -124,6 +128,9 @@ def refresh_raw_tier(
     ciks : iterable of int or None, default None
         The companies a per-company endpoint is pulled for; every company of
         the raw tier's company lists when omitted.
+    fund_series : iterable of str or None, default None
+        The fund series (``<cik>-<series id>``) a per-series endpoint is
+        pulled for; every series of the raw tier's fund lists when omitted.
     client : StockFitClient or None, default None
         The client to pull through; one reading ``STOCKFIT_API_KEY`` when
         omitted. Its ``day_reserve`` is left unspent.
@@ -152,27 +159,41 @@ def refresh_raw_tier(
 
         refresh_raw_tier("/data/quantlab/downloads", endpoints=("income_statement_quarter",), ciks=(320193, 789019))
     """
-    del end  # no endpoint here is asked by date
     selected = list(ENDPOINTS.values()) if endpoints is None else [
         endpoint if isinstance(endpoint, Endpoint) else _named(endpoint) for endpoint in endpoints
     ]
     client = client if client is not None else StockFitClient()
     vendor_root = Path(download_dir) / VENDOR_DIR
-    context = PullContext(vendor_root, None if ciks is None else tuple(int(cik) for cik in ciks))
+    context = PullContext(
+        vendor_root,
+        None if ciks is None else tuple(int(cik) for cik in ciks),
+        None if fund_series is None else tuple(str(series) for series in fund_series),
+        end=end if end is not None else client.now().date(),
+    )
     tallies = {endpoint.name: _Tally() for endpoint in selected}
     by_name = {endpoint.name: endpoint for endpoint in selected}
 
     lists = [endpoint for endpoint in selected if isinstance(endpoint, MarketList)]
     jobs = [Job(endpoint.name, entity, "snapshot") for endpoint in lists for entity in endpoint.entities(context)]
     capped = _run(jobs, by_name, tallies, client, vendor_root)
-    if not capped:
-        others = [endpoint for endpoint in selected if not isinstance(endpoint, MarketList)]
+    others = [endpoint for endpoint in selected if not isinstance(endpoint, MarketList)]
+    tried: set[tuple[str, str]] = set()
+    while not capped:
+        # Planned again after each round: some entities come from earlier pulls of this run
+        # (a series' N-PORT quarters, the advisers of its service providers).
         remaining = client.remaining_day
         budget = None if remaining is None else max(remaining - client.day_reserve, 0)
         planned = plan(_states(others, context, client.now()), now=client.now(), budget=budget)
-        for name, count in planned.deferred.items():
-            tallies[name].deferred += count
-        _run(list(planned.jobs), by_name, tallies, client, vendor_root)
+        fresh = [job for job in planned.jobs if (job.endpoint, job.entity) not in tried]
+        if not fresh or planned.deferred:
+            for name, count in planned.deferred.items():
+                tallies[name].deferred += count
+        if not fresh:
+            break
+        tried.update((job.endpoint, job.entity) for job in fresh)
+        capped = _run(fresh, by_name, tallies, client, vendor_root)
+        if planned.deferred:
+            break
     return RawTierRefreshResult("stockfit", tuple(tally.part(name) for name, tally in tallies.items()))
 
 

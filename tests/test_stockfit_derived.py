@@ -260,8 +260,8 @@ def _snapshot_panels(tmp_path):
     Pulled on 2026-11-16, 11-18 and 11-19 at 09:00 in New York, each re-pull
     driven by a 10-Q in the recent-filings feed (SYNTHETIC rows).
     """
-    from quantlab.dataset.config import StockFitSnapshotConfig
-    from quantlab.dataset.stockfit.snapshots import StockFitSnapshotDataset
+    from quantlab.dataset.config import StockFitScoresTrendsConfig
+    from quantlab.dataset.stockfit.scores_trends import StockFitScoresTrendsDataset
 
     vendor = _googl_vendor()
     endpoints = ("filings_latest", "scores", "trends")
@@ -276,7 +276,7 @@ def _snapshot_panels(tmp_path):
     vendor.lists["/api/filings/latest"].append(filing_row("10-Q", GOOGL, "2026-11-18"))
     _refresh(tmp_path, vendor, endpoints, (GOOGL,))
     return {
-        table: StockFitSnapshotDataset(StockFitSnapshotConfig(
+        table: StockFitScoresTrendsDataset(StockFitScoresTrendsConfig(
             zarr_file_path=str(tmp_path / f"{table}.zarr"), raw_data_dir_path=str(root), table=table,
             start_date="2026-11-01",
         )).update().panel("2026-11-01", "2026-12-31").load()

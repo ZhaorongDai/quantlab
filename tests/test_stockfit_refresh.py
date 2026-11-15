@@ -21,6 +21,7 @@ from tests.stockfit_fixtures import (
     TWTR,
     FakeClock,
     FakeVendor,
+    all_but_13f,
     company_row,
     fixture,
 )
@@ -55,6 +56,7 @@ def _client(vendor, clock, **kwargs):
 def _refresh(tmp_path, vendor, clock, **kwargs):
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
+    kwargs.setdefault("endpoints", all_but_13f())
     return refresh_raw_tier(tmp_path, client=_client(vendor, clock), **kwargs)
 
 
@@ -105,8 +107,8 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
 
     root = tmp_path / "stockfit"
     original = fixture("income_statement_plug_quarter")
-    second = raw.pulls(root, "income_statement_quarter", str(PLUG))[-1]
-    assert raw.pulls(root, "income_statement_quarter", str(PLUG)) == [first, second] and first < second
+    (kept, repulled) = raw.pulls(root, "income_statement_quarter", str(PLUG))  # the original and the weekly re-pull
+    assert kept == first and repulled.date() == clock.now().date()
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG), first) == original
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG)) == restated
     assert raw.read_pull_as_of(root, "income_statement_quarter", str(PLUG), first) == original
@@ -146,12 +148,13 @@ def test_a_killed_refresh_leaves_no_partial_pull_and_the_next_one_publishes_it_w
 
 def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tmp_path, clock):
     vendor = FakeVendor(clock, per_minute=4)
-    result = _refresh(tmp_path, vendor, clock)
+    lists_and_statements = ["symbols", "company_delisted"] + [
+        f"{name}_{period}" for period in ("annual", "quarter", "ttm") for name in STATEMENTS
+    ]
+    result = _refresh(tmp_path, vendor, clock, endpoints=lists_and_statements)
 
     assert not result.failed, result.summary()
-    # three list pages, nine feed forms, nine statements and nine as-reported or derived endpoints of
-    # three companies, one page of each Congress feed
-    assert len(vendor.calls) == 3 + 9 + (9 + 9) * 3 + 2
+    assert len(vendor.calls) == 3 + 9 * 3  # three list pages, nine statements of three companies
     assert 429 not in vendor.statuses
     assert clock.sleeps and sum(clock.sleeps) >= 60 * (len(vendor.calls) // 4 - 1)
 

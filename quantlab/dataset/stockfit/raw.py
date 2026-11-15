@@ -24,8 +24,13 @@ entity are the changes the vendor made to it, each kept.
 
 The writer (``quantlab.acquisition.stockfit.raw_tier``) takes every path from
 here; the readers are ``pulls``, ``read_pull``, ``read_pull_as_of``,
-``entities``, ``read_watermark``, ``last_pulled`` and ``company_ciks``. This module only
+``entities``, ``read_watermark``, ``last_pulled`` and ``company_ciks``, and
+for 13F ``thirteen_f_managers`` and ``thirteen_f_periods``. This module only
 reads.
+
+An endpoint asked per quarter (13F holders of a company, a manager's
+portfolio) has one entity per owner and quarter, named
+``<cik>_<quarter end>`` (``quarter_entity``).
 
 Examples
 --------
@@ -66,9 +71,32 @@ SYMBOLS = "symbols"
 #: The endpoint of the delisted companies with their delisting day (``/api/company/delisted``).
 COMPANY_DELISTED = "company_delisted"
 
+#: The endpoint of each company's profile, with its successions (``/api/company/details``).
+COMPANY_DETAILS = "company_details"
+
+#: The endpoint of each company's XBRL split history (``/api/company/stock-splits``).
+STOCK_SPLITS = "stock_splits"
+
+#: The forward snapshot of the declared splits (``/api/company/upcoming-stock-splits``).
+UPCOMING_STOCK_SPLITS = "upcoming_stock_splits"
+
+#: The forward snapshot of the declared dividends (``/api/earnings/upcoming-dividends``).
+UPCOMING_DIVIDENDS = "upcoming_dividends"
+
 #: The endpoints of the House and Senate members' trade reports (``/api/congress/*/trades/recent``).
 CONGRESS_HOUSE_TRADES = "congress_house_trades"
 CONGRESS_SENATE_TRADES = "congress_senate_trades"
+
+#: The forward snapshots, pulled on every refresh: the market-wide earnings
+#: calendar with consensus (``/api/earnings/upcoming``), IPO deals by stage
+#: (``/api/company/ipo-calendar``), recent S-1 offerings
+#: (``/api/filings/recent-offerings``), and per company the predicted filing
+#: calendar (``/api/filings/calendar``) and the latest headlines (``/api/lookup/news``).
+EARNINGS_UPCOMING = "earnings_upcoming"
+IPO_CALENDAR = "ipo_calendar"
+RECENT_OFFERINGS = "recent_offerings"
+FILINGS_CALENDAR = "filings_calendar"
+NEWS = "news"
 
 #: The entity of an endpoint that is one market-wide list.
 WHOLE_LIST = "all"
@@ -350,3 +378,217 @@ def company_ciks(vendor_root: str | Path) -> list[int]:
         if pulls(vendor_root, endpoint, entity):
             ciks.update(int(row["cik"]) for row in read_pull(vendor_root, endpoint, entity) if row.get("cik"))
     return sorted(ciks)
+
+
+# -- fund series -----------------------------------------------------------------
+
+#: The endpoint of the fund lists (``/api/symbols`` by fund kind), one entity per kind and listing status.
+FUND_SYMBOLS = "fund_symbols"
+
+#: StockFit's fund kinds (its ``SecurityType`` but ``stock``): ETFs, open-end and closed-end funds,
+#: and series whose kind is not yet evidenced.
+FUND_KINDS = ("etf", "mf", "cef", "fund")
+
+#: The pulls whose rows name the fund series: (endpoint, entity), operating funds first.
+FUND_LISTS: tuple[tuple[str, str], ...] = tuple(
+    (FUND_SYMBOLS, f"{kind}_{status}") for status in ("operating", "delisted") for kind in FUND_KINDS
+)
+
+#: The endpoint of the tickers with daily website holdings (``/api/fund/holdings/daily/supported-funds``).
+FUND_DAILY_SUPPORTED = "fund_daily_supported"
+
+
+def fund_series_name(cik: int, series_id: int) -> str:
+    """Return the name of a fund series: the trust's CIK and the series id, ``<cik>-<series id>``.
+
+    It is the series' entity in the raw tier and its symbol in every fund panel.
+
+    Examples
+    --------
+    >>> fund_series_name(36405, 2839)
+    '36405-2839'
+    """
+    return f"{int(cik)}-{int(series_id)}"
+
+
+def fund_series_key(name: str) -> tuple[int, int]:
+    """Return a fund series' CIK and series id, the order fund series sort in.
+
+    Examples
+    --------
+    >>> fund_series_key("36405-2839")
+    (36405, 2839)
+    """
+    cik, series_id = name.split("-")
+    return int(cik), int(series_id)
+
+
+def fund_listings(vendor_root: str | Path) -> dict[str, dict]:
+    """Return every fund series of the newest fund lists with what selects it, in series order.
+
+    A row of a fund list is one series of a trust (``cik`` and a non-zero
+    ``seriesId``); a row without a series id is not a fund series. A series
+    listed by several rows keeps its first row's Composite FIGI and kind and
+    every row's tickers, operating lists first.
+
+    Returns
+    -------
+    dict
+        Series name (``fund_series_name``) to ``{"symbols": [...],
+        "composite_figi": str or None, "kind": str}``, sorted by CIK, then
+        series id.
+
+    Examples
+    --------
+    >>> fund_listings("/nonexistent/stockfit")
+    {}
+    """
+    found: dict[str, dict] = {}
+    for endpoint, entity in FUND_LISTS:
+        if not pulls(vendor_root, endpoint, entity):
+            continue
+        for row in read_pull(vendor_root, endpoint, entity):
+            if not row.get("cik") or not row.get("seriesId"):
+                continue
+            listing = found.setdefault(fund_series_name(row["cik"], row["seriesId"]), {
+                "symbols": [], "composite_figi": row.get("compositeFigi"), "kind": row.get("type"),
+            })
+            listing["symbols"] += [s for s in row.get("symbols") or [] if s not in listing["symbols"]]
+    return {name: found[name] for name in sorted(found, key=fund_series_key)}
+
+
+def fund_series(vendor_root: str | Path) -> list[str]:
+    """Return every fund series of the newest fund lists, sorted by CIK, then series id.
+
+    Two series of one trust are two fund series.
+
+    Examples
+    --------
+    >>> fund_series("/nonexistent/stockfit")
+    []
+    """
+    return list(fund_listings(vendor_root))
+
+
+def daily_supported(vendor_root: str | Path) -> list[str]:
+    """Return the tickers whose daily website holdings StockFit serves, as of the newest pull; ``[]`` if none.
+
+    Examples
+    --------
+    >>> daily_supported("/nonexistent/stockfit")
+    []
+    """
+    if not pulls(vendor_root, FUND_DAILY_SUPPORTED, WHOLE_LIST):
+        return []
+    return [str(ticker) for ticker in read_pull(vendor_root, FUND_DAILY_SUPPORTED, WHOLE_LIST)]
+
+
+def newest_watermark(vendor_root: str | Path, endpoint: str) -> date | None:
+    """Return the latest watermark among an endpoint's entities: the last UTC day it was pulled.
+
+    Every entity counts, its pull published or not (an entity the vendor
+    holds nothing for still has a watermark). ``None`` if the endpoint was
+    never pulled.
+
+    Examples
+    --------
+    >>> newest_watermark("/nonexistent/stockfit", "stock_splits") is None
+    True
+    """
+    root = endpoint_dir(vendor_root, endpoint)
+    if not root.exists():
+        return None
+    days = [
+        day for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith((".", "_"))
+        and (day := read_watermark(vendor_root, endpoint, path.name)) is not None
+    ]
+    return max(days, default=None)
+
+
+# -- 13F -----------------------------------------------------------------------
+
+#: The endpoint of a company's 13F holder rows for one quarter
+#: (``/api/ownership/institutional-holders?cik=...&reportDate=...``): one row
+#: per manager and security (CUSIP) of the company; entity ``<cik>_<quarter end>``.
+INSTITUTIONAL_HOLDERS = "institutional_holders"
+
+#: The endpoint of a manager's 13F filings, originals and amendments
+#: (``/api/filings?cik=...&type=13F-HR``); entity ``<manager cik>``.
+MANAGER_13F_FILINGS = "manager_13f_filings"
+
+#: The endpoint of a manager's 13F portfolio for one quarter
+#: (``/api/ownership/portfolio?cik=...&reportDate=...``), raw only; entity
+#: ``<manager cik>_<quarter end>``.
+MANAGER_PORTFOLIO = "manager_portfolio"
+
+
+def quarter_entity(owner: int | str, quarter: date) -> str:
+    """Return the entity of one owner's (a company's or a manager's) pull for one quarter.
+
+    Examples
+    --------
+    >>> quarter_entity(1652044, date(2024, 3, 31))
+    '1652044_2024-03-31'
+    """
+    return f"{owner}_{quarter.isoformat()}"
+
+
+def split_quarter_entity(entity: str) -> tuple[int, date]:
+    """Return the owner's CIK and the quarter end of a ``quarter_entity``.
+
+    Examples
+    --------
+    >>> split_quarter_entity("1652044_2024-03-31")
+    (1652044, datetime.date(2024, 3, 31))
+    """
+    owner, quarter = entity.rsplit("_", 1)
+    return int(owner), date.fromisoformat(quarter)
+
+
+def manager_holdings(vendor_root: str | Path) -> dict[int, list[str]]:
+    """Return, per 13F manager, the holder entities (``<cik>_<quarter end>``) whose newest pull names it.
+
+    Examples
+    --------
+    >>> manager_holdings("/nonexistent/stockfit")
+    {}
+    """
+    held: dict[int, list[str]] = {}
+    for entity in entities(vendor_root, INSTITUTIONAL_HOLDERS):
+        managers = {
+            int(row["managerCik"]) for row in read_pull(vendor_root, INSTITUTIONAL_HOLDERS, entity)
+            if row.get("managerCik")
+        }
+        for manager in managers:
+            held.setdefault(manager, []).append(entity)
+    return held
+
+
+def thirteen_f_managers(vendor_root: str | Path) -> list[int]:
+    """Return the CIK of every manager in the newest 13F holder rows of every company and quarter, sorted.
+
+    Examples
+    --------
+    >>> thirteen_f_managers("/nonexistent/stockfit")
+    []
+    """
+    return sorted(manager_holdings(vendor_root))
+
+
+def thirteen_f_periods(vendor_root: str | Path, manager: int | str) -> list[date]:
+    """Return the quarter ends a manager's newest 13F filing list reports, newest first.
+
+    Examples
+    --------
+    >>> thirteen_f_periods("/nonexistent/stockfit", 1067983)
+    []
+    """
+    if not pulls(vendor_root, MANAGER_13F_FILINGS, str(manager)):
+        return []
+    periods = {
+        date.fromisoformat(row["periodEndDate"][:10])
+        for row in read_pull(vendor_root, MANAGER_13F_FILINGS, str(manager))
+        if row.get("periodEndDate")
+    }
+    return sorted(periods, reverse=True)
