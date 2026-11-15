@@ -1642,3 +1642,29 @@ class StockFitCongressTradesConfig(DatasetConfig):
     market: Market = "us_equity"
     frequency: Frequency = "1d"
     vendor: Vendor | None = "stockfit"
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitFilingsConfig(DatasetConfig):
+    """Config of the StockFit SEC filing panel on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier, ``<download-dir>/stockfit``,
+    holding each company's filing list (``filings/<cik>/``). The panel's
+    symbols are the companies' CIKs, its days NYSE's trading days.
+
+    Examples
+    --------
+    >>> cfg = StockFitFilingsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_filings_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.market, cfg.frequency, cfg.vendor
+    ('us_equity', '1d', 'stockfit')
+    """
+
+    #: StockFit's filers are US-listed companies.
+    market: Market = "us_equity"
+    #: One value per trading day.
+    frequency: Frequency = "1d"
+    #: Always StockFit.
+    vendor: Vendor | None = "stockfit"
