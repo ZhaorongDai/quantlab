@@ -36,15 +36,15 @@ Examples
 ...     EntityState("1046179", last_pulled=week_ago, filed=datetime(2026, 11, 19, tzinfo=UTC)),
 ...     EntityState("1418091"),
 ... ), repull_days=7)
->>> [(job.entity, job.reason) for job in plan([state], now=now).jobs]
+>>> [(job.entity, job.reason) for job in plan_jobs([state], now=now).jobs]
 [('1046179', 'filed'), ('1418091', 'backfill'), ('1093691', 'stale')]
->>> plan([state], now=now, budget=1).deferred
+>>> plan_jobs([state], now=now, budget=1).deferred
 {'income_statement_quarter': 2}
 
 A snapshot's due jobs jump the backfill, up to ``snapshots`` of them:
 
 >>> news = EndpointState("news", (EntityState("1652044"),), repull_days=1, snapshot=True)
->>> [job.endpoint for job in plan([state, news], now=now, snapshots=1).jobs]
+>>> [job.endpoint for job in plan_jobs([state, news], now=now, snapshots=1).jobs]
 ['income_statement_quarter', 'news', 'income_statement_quarter', 'income_statement_quarter']
 """
 
@@ -93,7 +93,7 @@ class EndpointState:
         ``None`` re-pulls only on a new filing.
     snapshot : bool, default False
         Whether the endpoint is a daily snapshot without history, whose due
-        jobs may take the requests ``plan`` reserves for snapshots.
+        jobs may take the requests ``plan_jobs`` reserves for snapshots.
     """
 
     name: str
@@ -130,7 +130,7 @@ def _reason(entity: EntityState, repull_days: int | None, now: datetime) -> str 
     return None
 
 
-def plan(
+def plan_jobs(
     endpoints: Sequence[EndpointState], *, now: datetime, budget: int | None = None, snapshots: int = 0
 ) -> Plan:
     """Return the jobs due now: filings, up to ``snapshots`` snapshot jobs, the backfill, the re-pulls.

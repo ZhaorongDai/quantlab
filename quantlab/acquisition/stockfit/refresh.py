@@ -72,7 +72,7 @@ from quantlab.acquisition.stockfit.endpoints import (
     PullContext,
     filer_cik,
 )
-from quantlab.acquisition.stockfit.planner import EndpointState, EntityState, Job, plan
+from quantlab.acquisition.stockfit.planner import EndpointState, EntityState, Job, plan_jobs
 from quantlab.dataset.stockfit.raw import VENDOR_DIR, last_pulled, pulls, read_pull
 
 #: The errors that skip one entity; its endpoint's other entities still run.
@@ -202,7 +202,7 @@ def refresh_raw_tier(
         budget = None if remaining is None else max(remaining - client.day_reserve, 0)
         if snapshots is None:
             snapshots = 0 if budget is None else int(budget * snapshot_share)
-        planned = plan(_states(others, context, client.now()), now=client.now(), budget=budget, snapshots=snapshots)
+        planned = plan_jobs(_states(others, context, client.now()), now=client.now(), budget=budget, snapshots=snapshots)
         fresh = [job for job in planned.jobs if (job.endpoint, job.entity) not in tried]
         snapshots -= sum(by_name[job.endpoint].snapshot for job in fresh)
         if not fresh or planned.deferred:
