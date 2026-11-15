@@ -33,7 +33,7 @@ converts it to a panel.
 |---|---|---|
 | `sharadar` | US stock and fund daily prices, fundamentals, valuations, events, insider and 13F holdings, S&P 500 membership, tickers | `SHARADAR_API_KEY` |
 | `massive` | Every US-equity SIP trade, minute and day aggregates, dividends, short interest and volume, news, 8-K disclosures, IPOs | `MASSIVE_API_KEY`, `MASSIVE_S3_ACCESS_KEY_ID` (`MASSIVE_S3_SECRET_ACCESS_KEY` optional) |
-| `stockfit` | SEC-filing data parsed from EDGAR: company lists and the income, balance-sheet and cash-flow statements per CIK; quarterly and TTM statement panels, as known on each day; Congress trades on the CIK axis | `STOCKFIT_API_KEY` |
+| `stockfit` | SEC-filing data parsed from EDGAR, on its own identifiers (CIK, CUSIP, fund series): company lists and data dictionaries; quarterly and TTM statement panels as known on each day; as-reported facts, derived metrics, share classes, scores and trends; 17 footnote tables; fund profiles, flows, fees and N-CEN fields; XBRL splits, successions and declared splits and dividends; Congress trades; SEC filing counts and 8-K events; insider transactions; 13D/13G stakes; executive pay and governance; listing, earnings-consensus, IPO, offering, filing-calendar and news-count snapshots; 13F holdings per CUSIP | `STOCKFIT_API_KEY` |
 | `fred` | Interest-rate series such as DTB3, the 3-month Treasury bill rate | none |
 | `tiingo` | US equity daily bars | `TIINGO_API_KEY` |
 | `alpaca` | US equity daily and minute bars; tick quotes and trades | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` |
