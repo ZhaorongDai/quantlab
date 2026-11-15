@@ -92,11 +92,27 @@ def test_executive_values_for_a_fiscal_year_appear_120_days_after_its_end(env, t
     assert _values(panel, "ceo_total_comp", SEPTEMBER, "2026-01-23", "2026-01-26") == [None, 74000000.0]
 
 
+def _later_unchanged_pulls(download_dir, at):
+    """Move every executive endpoint's watermark to ``at``: re-pulls that served nothing new."""
+    from quantlab.acquisition.stockfit.raw_tier import write_entity_watermark
+    from quantlab.dataset.stockfit.raw import entities
+
+    root = download_dir / "stockfit"
+    for endpoint in ("income_statement_annual", "executives_compensation", "executives_governance",
+                     "executives_performance_measures"):
+        for entity in entities(root, endpoint):
+            write_entity_watermark(root, endpoint, entity, at)
+
+
 def test_governance_flags_belong_to_the_newest_fiscal_year_known_when_pulled(env, tmp_path):
     _refresh(tmp_path, FakeClock(datetime(2026, 11, 16, 14, tzinfo=UTC)))
+    _later_unchanged_pulls(tmp_path, datetime(2026, 11, 20, 14, tzinfo=UTC))
 
-    panel = _panel(tmp_path, "2025-01-02", "2026-11-13")
+    panel = _panel(tmp_path, "2025-01-02", "2026-11-19")
 
-    days = ("2026-04-29", "2026-04-30")
-    assert _values(panel, "insider_trading_policy", GOOGL, *days) == [None, 1.0]
-    assert _values(panel, "mnpi_disclosure_timed_for_comp", GOOGL, *days) == [None, 0.0]
+    # The flags belong to FY2025 (available 2026-04-30), but were first pulled on 2026-11-16 (before the
+    # close): a pull's flags are never shown before its day, while FY2025's pay shows from 2026-04-30.
+    days = ("2026-04-30", "2026-11-13", "2026-11-16")
+    assert _values(panel, "insider_trading_policy", GOOGL, *days) == [None, None, 1.0]
+    assert _values(panel, "mnpi_disclosure_timed_for_comp", GOOGL, *days) == [None, None, 0.0]
+    assert _values(panel, "ceo_total_comp", GOOGL, *days) == [10906079.0] * 3

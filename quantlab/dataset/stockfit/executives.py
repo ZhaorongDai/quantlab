@@ -18,7 +18,8 @@ date is left out. The governance flags carry no fiscal year: a pull of
 them belongs to the newest fiscal year of the company's compensation as of
 that pull, and each fiscal year takes the first pull that belongs to it.
 Flags the vendor served before the first pull are not known, so the flags
-gain a history only from the first pull on.
+gain a history only from the first pull on: a year's flags show from the
+later of its available date and the day of the pull that served them.
 
 ``StockFitExecutivesDataset`` shows, per company and day, the newest fiscal
 year available by then:
@@ -56,14 +57,16 @@ Build the store and read a year::
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 
 from quantlab.dataset._support.point_in_time import ReleasePanelDataset, ReleaseSpec, TradingCalendar
 from quantlab.dataset.config import DatasetConfig, StockFitExecutivesConfig
 from quantlab.dataset.stockfit.available import nyse_calendar
+from quantlab.dataset.stockfit.period_panel import as_float as as_number
 from quantlab.dataset.stockfit.raw import entities, pulls, read_pull, read_pull_as_of
+from quantlab.dataset.stockfit.vintages import pull_day
 
 #: The raw tier's endpoints of the per-company proxy data.
 EXECUTIVES_COMPENSATION = "executives_compensation"
@@ -120,10 +123,6 @@ ENDPOINTS: tuple[str, ...] = (
 )
 
 
-def _number(value) -> float | None:
-    return None if value is None else float(value)
-
-
 def _fiscal_year_ends(vendor_root, cik: str) -> dict[int, date]:
     """Return each fiscal year's end from the company's newest annual income statement."""
     if cik not in entities(vendor_root, INCOME_STATEMENT_ANNUAL):
@@ -135,19 +134,49 @@ def _fiscal_year_ends(vendor_root, cik: str) -> dict[int, date]:
     }
 
 
-def _governance(vendor_root, cik: str) -> dict[int, dict]:
-    """Return the governance flags per fiscal year: each year's first pull, by the compensation then."""
-    flags: dict[int, dict] = {}
+def _governance(vendor_root, cik: str) -> dict[int, tuple[datetime, dict]]:
+    """Return the governance flags per fiscal year: each year's first pull and its time, by the compensation then."""
+    flags: dict[int, tuple[datetime, dict]] = {}
     for pulled_at in pulls(vendor_root, EXECUTIVES_GOVERNANCE, cik):
         compensation = read_pull_as_of(vendor_root, EXECUTIVES_COMPENSATION, cik, pulled_at) or []
         years = [int(row["fiscalYear"]) for row in compensation if row.get("fiscalYear") is not None]
         body = read_pull(vendor_root, EXECUTIVES_GOVERNANCE, cik, pulled_at)
         if years and isinstance(body, dict):
-            flags.setdefault(max(years), {
+            flags.setdefault(max(years), (pulled_at, {
                 name: None if body.get(field) is None else float(bool(body[field]))
                 for name, field in GOVERNANCE.items()
-            })
+            }))
     return flags
+
+
+def _years(vendor_root) -> pl.DataFrame:
+    """Every company's proxy values per fiscal year, each year with its own flags and their pull time."""
+    ciks = sorted(
+        {cik for endpoint in ENDPOINTS[:3] for cik in entities(vendor_root, endpoint)}, key=int
+    )
+    records = []
+    for cik in ciks:
+        years: dict[int, dict] = {}
+        if cik in entities(vendor_root, EXECUTIVES_COMPENSATION):
+            for row in read_pull(vendor_root, EXECUTIVES_COMPENSATION, cik):
+                years.setdefault(int(row["fiscalYear"]), {}).update(
+                    {name: as_number(row.get(field)) for name, field in COMPENSATION.items()}
+                )
+        if cik in entities(vendor_root, EXECUTIVES_PERFORMANCE_MEASURES):
+            for row in read_pull(vendor_root, EXECUTIVES_PERFORMANCE_MEASURES, cik):
+                year = years.setdefault(int(row["fiscalYear"]), {})
+                year.setdefault(MEASURE, as_number(row.get("measureValue")))
+        for fiscal_year, (pulled_at, flags) in _governance(vendor_root, cik).items():
+            years.setdefault(fiscal_year, {}).update(flags, governance_pulled=pulled_at)
+        ends = _fiscal_year_ends(vendor_root, cik)
+        records.extend(
+            {"cik": int(cik), "fiscal_year": fiscal_year, "fiscal_year_end": ends.get(fiscal_year), **values}
+            for fiscal_year, values in years.items()
+        )
+    schema = {"cik": pl.Int64, "fiscal_year": pl.Int64, "fiscal_year_end": pl.Date}
+    schema.update({name: pl.Float64 for name in VARIABLES})
+    schema["governance_pulled"] = pl.Datetime("us", "UTC")
+    return pl.DataFrame(records, schema=schema).sort("cik", "fiscal_year")
 
 
 def executive_years(vendor_root) -> pl.DataFrame:
@@ -170,35 +199,34 @@ def executive_years(vendor_root) -> pl.DataFrame:
     >>> executive_years("/nonexistent/stockfit").columns[:3]
     ['cik', 'fiscal_year', 'fiscal_year_end']
     """
-    ciks = sorted(
-        {cik for endpoint in ENDPOINTS[:3] for cik in entities(vendor_root, endpoint)}, key=int
-    )
-    records = []
-    for cik in ciks:
-        years: dict[int, dict] = {}
-        if cik in entities(vendor_root, EXECUTIVES_COMPENSATION):
-            for row in read_pull(vendor_root, EXECUTIVES_COMPENSATION, cik):
-                years.setdefault(int(row["fiscalYear"]), {}).update(
-                    {name: _number(row.get(field)) for name, field in COMPENSATION.items()}
-                )
-        if cik in entities(vendor_root, EXECUTIVES_PERFORMANCE_MEASURES):
-            for row in read_pull(vendor_root, EXECUTIVES_PERFORMANCE_MEASURES, cik):
-                year = years.setdefault(int(row["fiscalYear"]), {})
-                year.setdefault(MEASURE, _number(row.get("measureValue")))
-        for fiscal_year, flags in _governance(vendor_root, cik).items():
-            years.setdefault(fiscal_year, {}).update(flags)
-        ends = _fiscal_year_ends(vendor_root, cik)
-        records.extend(
-            {"cik": int(cik), "fiscal_year": fiscal_year, "fiscal_year_end": ends.get(fiscal_year), **values}
-            for fiscal_year, values in years.items()
-        )
-    schema = {"cik": pl.Int64, "fiscal_year": pl.Int64, "fiscal_year_end": pl.Date}
-    schema.update({name: pl.Float64 for name in VARIABLES})
     return (
-        pl.DataFrame(records, schema=schema)
-        .sort("cik", "fiscal_year")
+        _years(vendor_root)
+        .drop("governance_pulled")
         .with_columns(pl.col(name).forward_fill().over("cik") for name in GOVERNANCE)
     )
+
+
+def _shown(years: list[dict], flags: list[tuple[datetime, int, dict]]) -> list[dict]:
+    """Return one company's rows, one per day what it shows may change.
+
+    ``years`` are its fiscal years at their available dates, in order of
+    availability; ``flags`` each year's own governance flags at theirs. On
+    each day the newest year available by then is shown, with each flag as
+    the newest flags available by then set it (a flag a pull leaves unset
+    keeps its earlier value).
+    """
+    flags = sorted(flags, key=lambda flag: (flag[0], flag[1]))
+    rows = []
+    for day in sorted({year["available"] for year in years} | {at for at, _, _ in flags}):
+        shown = [year for year in years if year["available"] <= day]
+        if not shown:
+            continue
+        known = dict.fromkeys(GOVERNANCE)
+        for at, _, values in flags:
+            if at <= day:
+                known.update({name: value for name, value in values.items() if value is not None})
+        rows.append({**shown[-1], **known, "available": day})
+    return rows
 
 
 class StockFitExecutivesDataset(ReleasePanelDataset):
@@ -261,27 +289,46 @@ class StockFitExecutivesDataset(ReleasePanelDataset):
         return "no StockFit executive fiscal year is available"
 
     def _released(self) -> pl.DataFrame:
-        """Return every company's fiscal years, each at its available date.
+        """Return every company's fiscal years and flag changes, each at its available date.
+
+        A fiscal year is available ``LAG_DAYS`` after its end; its own
+        governance flags at the later of that and the day of the pull that
+        first served them (``available.pull_day``): a pull's flags never show
+        before the pull.
 
         Returns
         -------
         pl.DataFrame
-            ``symbol`` (the CIK), ``available``, ``release_date`` (the
+            ``symbol`` (the CIK), ``available``, ``release_date`` (the shown
             fiscal year's end plus ``LAG_DAYS``, which staleness counts
             from) and one column per variable, sorted by ``available``; one
-            row per company and day, the later fiscal year when two land on
-            one day.
+            row per company and day anything shown may change, the later
+            fiscal year when two land on one day.
         """
-        years = executive_years(self.config.raw_data_dir_path).filter(pl.col("fiscal_year_end").is_not_null())
-        placed = self._trading_calendar().place(years, on="fiscal_year_end", lag=timedelta(days=LAG_DAYS))
-        return (
-            placed.sort("cik", "available", "fiscal_year")
-            .unique(["cik", "available"], keep="last", maintain_order=True)
-            .select(
-                pl.col("cik").alias("symbol"),
-                "available",
-                (pl.col("fiscal_year_end") + timedelta(days=LAG_DAYS)).cast(pl.Datetime("ns")).alias("release_date"),
-                *VARIABLES,
-            )
-            .sort("available", "symbol")
+        calendar = self._trading_calendar()
+        years = _years(self.config.raw_data_dir_path).filter(pl.col("fiscal_year_end").is_not_null())
+        placed = calendar.place(years, on="fiscal_year_end", lag=timedelta(days=LAG_DAYS))
+        pulled = placed.filter(pl.col("governance_pulled").is_not_null()).select(
+            "cik", "fiscal_year", pl.col("available").alias("_year_available"),
+            pl.col("governance_pulled").map_elements(pull_day, return_dtype=pl.Date).alias("_pull_day"),
+            *GOVERNANCE,
         )
+        flag_days = calendar.place(pulled, on="_pull_day").with_columns(
+            pl.max_horizontal("available", "_year_available").alias("available")
+        )
+        flags: dict[int, list] = {}
+        for row in flag_days.iter_rows(named=True):
+            flags.setdefault(row["cik"], []).append(
+                (row["available"], row["fiscal_year"], {name: row[name] for name in GOVERNANCE})
+            )
+        rows = []
+        ordered = placed.drop("governance_pulled").sort("cik", "available", "fiscal_year")
+        for (cik,), company in ordered.group_by("cik", maintain_order=True):
+            rows += _shown(company.to_dicts(), flags.get(cik, []))
+        frame = pl.DataFrame(rows, schema={**ordered.schema}) if rows else ordered.clear()
+        return frame.select(
+            pl.col("cik").alias("symbol"),
+            "available",
+            (pl.col("fiscal_year_end") + timedelta(days=LAG_DAYS)).cast(pl.Datetime("ns")).alias("release_date"),
+            *VARIABLES,
+        ).sort("available", "symbol")
