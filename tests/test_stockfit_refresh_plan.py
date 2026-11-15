@@ -13,6 +13,7 @@ from datetime import timedelta
 import pytest
 
 from tests.stockfit_fixtures import (
+    GOOGL,
     KEY,
     PLUG,
     TSM,
@@ -21,7 +22,9 @@ from tests.stockfit_fixtures import (
     FakeVendor,
     STATEMENT_PATHS,
     all_but_13f,
+    company_row,
     filing_row,
+    fixture,
     list_requests,
     statement_endpoints,
 )
@@ -178,3 +181,28 @@ def test_an_amendment_or_a_40f_re_pulls_the_filers_statements(env, tmp_path, clo
     assert not _refresh(tmp_path, vendor, clock).failed
 
     assert {params["cik"] for params in _statement_calls(vendor)} == {str(PLUG)}
+
+
+def test_the_daily_snapshots_start_on_the_first_day_of_a_backfill_longer_than_a_day(env, tmp_path, clock):
+    from quantlab.dataset.stockfit import raw
+
+    vendor = FakeVendor(clock, companies=[company_row(GOOGL, "Alphabet Inc.")])
+    # every market-wide list, then 10 requests: a fifth of them, 2, for the snapshots
+    vendor.per_day = list_requests(all_but_13f()) + 10
+    result = _refresh(tmp_path, vendor, clock)
+
+    root = tmp_path / "stockfit"
+    assert "deferred" in result.summary()  # the backfill goes on tomorrow
+    assert raw.read_pull(root, "filings_calendar", str(GOOGL)) == fixture("filings_calendar_googl")
+    assert raw.read_pull(root, "news", str(GOOGL)) == fixture("news_googl")
+    assert raw.read_watermark(root, "income_statement_annual", str(GOOGL)) == clock.now().date()  # the backfill too
+
+
+def test_without_a_snapshot_share_the_snapshots_wait_for_the_backfill(env, tmp_path, clock):
+    from quantlab.dataset.stockfit import raw
+
+    vendor = FakeVendor(clock, companies=[company_row(GOOGL, "Alphabet Inc.")])
+    vendor.per_day = list_requests(all_but_13f()) + 10
+    _refresh(tmp_path, vendor, clock, snapshot_share=0)
+
+    assert raw.entities(tmp_path / "stockfit", "news") == []

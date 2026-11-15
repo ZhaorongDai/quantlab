@@ -17,9 +17,14 @@ order (the order of ``ENDPOINTS``, which is the backfill order):
    UTC days old, oldest first.
 
 Filings first, so a day's new filings land even while the backfill runs;
-the periodic re-pulls last, since they only back the filings up. Each job is
-counted as one request; the jobs past ``budget`` are deferred, and the next
-run plans them again, since nothing about them has changed on disk.
+the periodic re-pulls last, since they only back the filings up. A snapshot
+endpoint (``EndpointState.snapshot``: a daily snapshot the vendor keeps no
+history of, such as each company's latest headlines) would wait behind the
+whole backfill, so up to ``snapshots`` of its due jobs (never pulled first,
+then the oldest) go right after the filings: its history starts on the
+first day. Each job is counted as one request; the jobs past ``budget`` are
+deferred, and the next run plans them again, since nothing about them has
+changed on disk.
 
 Examples
 --------
@@ -35,6 +40,12 @@ Examples
 [('1046179', 'filed'), ('1418091', 'backfill'), ('1093691', 'stale')]
 >>> plan([state], now=now, budget=1).deferred
 {'income_statement_quarter': 2}
+
+A snapshot's due jobs jump the backfill, up to ``snapshots`` of them:
+
+>>> news = EndpointState("news", (EntityState("1652044"),), repull_days=1, snapshot=True)
+>>> [job.endpoint for job in plan([state, news], now=now, snapshots=1).jobs]
+['income_statement_quarter', 'news', 'income_statement_quarter', 'income_statement_quarter']
 """
 
 from __future__ import annotations
@@ -80,11 +91,15 @@ class EndpointState:
     repull_days : int or None, default None
         Re-pull an entity once its last pull is this many UTC days old;
         ``None`` re-pulls only on a new filing.
+    snapshot : bool, default False
+        Whether the endpoint is a daily snapshot without history, whose due
+        jobs may take the requests ``plan`` reserves for snapshots.
     """
 
     name: str
     entities: tuple[EntityState, ...]
     repull_days: int | None = None
+    snapshot: bool = False
 
 
 @dataclass(frozen=True)
@@ -115,8 +130,10 @@ def _reason(entity: EntityState, repull_days: int | None, now: datetime) -> str 
     return None
 
 
-def plan(endpoints: Sequence[EndpointState], *, now: datetime, budget: int | None = None) -> Plan:
-    """Return the jobs due now, filings first, then the backfill, then the periodic re-pulls.
+def plan(
+    endpoints: Sequence[EndpointState], *, now: datetime, budget: int | None = None, snapshots: int = 0
+) -> Plan:
+    """Return the jobs due now: filings, up to ``snapshots`` snapshot jobs, the backfill, the re-pulls.
 
     Parameters
     ----------
@@ -126,6 +143,10 @@ def plan(endpoints: Sequence[EndpointState], *, now: datetime, budget: int | Non
         The run's time; the age of a last pull is counted in UTC days to it.
     budget : int or None, default None
         The requests the run may spend, one per job; ``None`` for no limit.
+    snapshots : int, default 0
+        How many due jobs of the snapshot endpoints go before the backfill,
+        never-pulled entities first, then the oldest; the rest keep their
+        place.
 
     Returns
     -------
@@ -146,6 +167,12 @@ def plan(endpoints: Sequence[EndpointState], *, now: datetime, budget: int | Non
                 due[reason].append((oldest, order, Job(endpoint.name, entity.entity, reason)))
     due["stale"].sort(key=lambda item: (item[0].astimezone(UTC).date(), item[1]))
     ordered = [job for reason in REASONS for _, _, job in due[reason]]
+    if snapshots > 0:
+        kinds = {endpoint.name for endpoint in endpoints if endpoint.snapshot}
+        first = len(due["filed"])
+        early = [job for job in ordered[first:] if job.endpoint in kinds][:snapshots]
+        taken = set(early)
+        ordered = ordered[:first] + early + [job for job in ordered[first:] if job not in taken]
     kept = ordered if budget is None else ordered[: max(budget, 0)]
     deferred: dict[str, int] = {}
     for job in ordered[len(kept):]:

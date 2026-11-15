@@ -12,7 +12,11 @@ One run, in two steps:
    entities a filing made since their last pull touches (a 10-K re-pulls the
    filer's statements and footnotes), then the entities never pulled, in table order (the
    backfill order), then the periodic re-pulls (each company's statements
-   once a week). The pulls of a round can add entities (a series' N-PORT
+   once a week). A share of the day's requests (``snapshot_share``) goes to
+   the daily snapshots the vendor keeps no history of (each company's
+   predicted filing calendar and latest headlines, each fund's daily
+   holdings) right after the filings, so their history starts on the first
+   day of a backfill that lasts months. The pulls of a round can add entities (a series' N-PORT
    quarters, the advisers of its service providers), so the run plans again
    until nothing new is due. The rest waits for the next run, which plans it
    again from the raw tier: so a backfill longer than a day's requests
@@ -77,6 +81,9 @@ ENTITY_FAILURES = (StockFitTransportError, StockFitResponseError)
 #: How far back the recent-filings feed reaches, in days.
 FEED_DAYS = 30
 
+#: The share of a run's requests kept for the daily snapshots, ahead of the backfill.
+SNAPSHOT_SHARE = 0.2
+
 
 class _Tally:
     """What one endpoint's pulls did in a run."""
@@ -109,6 +116,7 @@ def refresh_raw_tier(
     ciks: Iterable[int] | None = None,
     fund_series: Iterable[str] | None = None,
     client: StockFitClient | None = None,
+    snapshot_share: float = SNAPSHOT_SHARE,
 ) -> RawTierRefreshResult:
     """Bring StockFit's raw tier under ``<download_dir>/stockfit/`` current, within today's requests.
 
@@ -134,6 +142,11 @@ def refresh_raw_tier(
     client : StockFitClient or None, default None
         The client to pull through; one reading ``STOCKFIT_API_KEY`` when
         omitted. Its ``day_reserve`` is left unspent.
+    snapshot_share : float, default ``SNAPSHOT_SHARE`` (0.2)
+        The share of the requests left after the market-wide lists that the
+        due daily snapshots (``Endpoint.snapshot``) may take ahead of the
+        backfill; what they leave goes to the backfill. 0 plans them with
+        the backfill. No effect without a daily limit.
 
     Returns
     -------
@@ -145,7 +158,8 @@ def refresh_raw_tier(
     Raises
     ------
     ValueError
-        If an endpoint name is not in ``ENDPOINTS``; nothing is requested.
+        If an endpoint name is not in ``ENDPOINTS``, or ``snapshot_share``
+        is outside [0, 1]; nothing is requested.
     StockFitCredentialError
         If ``client`` is omitted and ``STOCKFIT_API_KEY`` is unset; nothing
         is requested.
@@ -159,6 +173,8 @@ def refresh_raw_tier(
 
         refresh_raw_tier("/data/quantlab/downloads", endpoints=("income_statement_quarter",), ciks=(320193, 789019))
     """
+    if not 0 <= snapshot_share <= 1:
+        raise ValueError(f"snapshot_share must be between 0 and 1, got {snapshot_share}.")
     selected = list(ENDPOINTS.values()) if endpoints is None else [
         endpoint if isinstance(endpoint, Endpoint) else _named(endpoint) for endpoint in endpoints
     ]
@@ -178,13 +194,17 @@ def refresh_raw_tier(
     capped = _run(jobs, by_name, tallies, client, vendor_root)
     others = [endpoint for endpoint in selected if not isinstance(endpoint, MarketList)]
     tried: set[tuple[str, str]] = set()
+    snapshots: int | None = None  # the requests kept for the daily snapshots, set at the first plan
     while not capped:
         # Planned again after each round: some entities come from earlier pulls of this run
         # (a series' N-PORT quarters, the advisers of its service providers).
         remaining = client.remaining_day
         budget = None if remaining is None else max(remaining - client.day_reserve, 0)
-        planned = plan(_states(others, context, client.now()), now=client.now(), budget=budget)
+        if snapshots is None:
+            snapshots = 0 if budget is None else int(budget * snapshot_share)
+        planned = plan(_states(others, context, client.now()), now=client.now(), budget=budget, snapshots=snapshots)
         fresh = [job for job in planned.jobs if (job.endpoint, job.entity) not in tried]
+        snapshots -= sum(by_name[job.endpoint].snapshot for job in fresh)
         if not fresh or planned.deferred:
             for name, count in planned.deferred.items():
                 tallies[name].deferred += count
@@ -262,7 +282,7 @@ def _states(endpoints: list[Endpoint], context: PullContext, now: datetime) -> l
             EntityState(entity, last_pulled(context.vendor_root, endpoint.name, entity), touched.get(entity))
             for entity in endpoint.entities(context)
         )
-        states.append(EndpointState(endpoint.name, entities, endpoint.repull_days))
+        states.append(EndpointState(endpoint.name, entities, endpoint.repull_days, endpoint.snapshot))
     return states
 
 

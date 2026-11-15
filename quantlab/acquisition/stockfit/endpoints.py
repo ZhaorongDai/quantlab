@@ -19,7 +19,7 @@ Shapes:
   given;
 - ``CompanySnapshot``: a per-company snapshot (the predicted filing
   calendar, the latest headlines), one request per operating company,
-  re-pulled once a day from what the day's requests leave;
+  re-pulled once a day from the share of requests kept for snapshots;
 - ``PerCompanyQuarter``: one request per company and calendar quarter
   (``cik`` and ``reportDate``), the entity ``<cik>_<quarter end>``;
 - ``PerManager``: one request per 13F manager (``cik``), the managers named
@@ -245,6 +245,10 @@ class Endpoint(ABC):
     repull_days : int or None, default None
         Re-pull an entity once its last pull is this many UTC days old;
         ``None`` re-pulls it only on a new filing of ``triggers``.
+    snapshot : bool, default False
+        Whether each pull is a daily snapshot the vendor keeps no history
+        of; its due pulls take the share of the day's requests the refresh
+        reserves for snapshots (``snapshot_share``), ahead of the backfill.
     """
 
     name: str
@@ -253,6 +257,7 @@ class Endpoint(ABC):
     page_size: int | None = None
     triggers: frozenset[str] = frozenset()
     repull_days: int | None = None
+    snapshot: bool = False
 
     @abstractmethod
     def entities(self, context: PullContext) -> list[str]:
@@ -602,9 +607,10 @@ def _funds() -> list[Endpoint]:
         ),
         # N-PORT holdings, each quarter once (raw only).
         PerFundQuarter("fund_holdings", "/api/fund/holdings", page_size=HOLDINGS_PAGE_SIZE),
-        # Daily website holdings, a snapshot a day: due daily, after the backfill and the filing-driven pulls.
+        # Daily website holdings, a snapshot a day: due daily, from the share of requests kept for snapshots.
         PerFundSeries(
-            "fund_holdings_daily", "/api/fund/holdings/daily", page_size=HOLDINGS_PAGE_SIZE, daily=True, repull_days=1,
+            "fund_holdings_daily", "/api/fund/holdings/daily", page_size=HOLDINGS_PAGE_SIZE, daily=True,
+            repull_days=1, snapshot=True,
         ),
         # N-CEN: fund health and fee analysis (panel), service providers (raw only); an annual form the
         # feed does not follow, re-pulled on age only.
@@ -653,10 +659,13 @@ class CompanySnapshot(PerCompany):
     The endpoint keeps no history, so the raw tier's pulls are its only
     record. A market-wide list is pulled on every run before the planner
     runs; one request per company would spend a day's requests before the
-    backfill got any, so these rows are planned instead: never-pulled
-    companies with the backfill, then each company again once its last pull
-    is ``repull_days`` (one) UTC days old, oldest first, from what the day's
-    requests leave. The companies are those of the newest operating list (a
+    backfill got any, so these rows are planned instead (``snapshot``): from
+    the share of the day's requests the refresh keeps for snapshots, ahead
+    of the backfill, never-pulled companies first, then each company again
+    once its last pull is ``repull_days`` (one) UTC days old, oldest first;
+    past that share, with the backfill and the re-pulls. So the snapshot
+    history starts on the first day of a backfill that lasts months. The
+    companies are those of the newest operating list (a
     delisted company has no calendar and no news), or the CIKs a refresh is
     given.
 
@@ -669,6 +678,7 @@ class CompanySnapshot(PerCompany):
     """
 
     repull_days: int | None = 1
+    snapshot: bool = True
 
     def entities(self, context: PullContext) -> list[str]:
         """Return the given CIKs, or every company of the newest operating list."""
