@@ -180,6 +180,9 @@ panel["revenue"].sel(symbol=1093691)  # Plug Power's trailing revenue, as known 
 
 Annual statements, and StockFit's own TTM response (its latest period only), stay in the raw tier.
 
+To read a company panel on Sharadar's permatickers, wrap it in the CIK map
+({py:class}`~quantlab.dataset.sharadar.cik_map.CikMapDataset`; see the Sharadar guide).
+
 Look-ahead caveats:
 
 - A fact StockFit computes from others (listed in a period's `derived`, such as `ebitda` or

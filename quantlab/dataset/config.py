@@ -1368,6 +1368,31 @@ class RosterDatasetConfig(FrozenConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class CikMapConfig(FrozenConfig):
+    """Config of a company panel keyed by SEC CIK read on Sharadar's permatickers.
+
+    The view holds no store of its own: ``dataset`` keeps its own config (a
+    component field), and ``raw_data_dir_path`` is the Sharadar raw tier
+    whose TICKERS table gives each security's CIK.
+
+    Examples
+    --------
+    With ``statements`` a company panel on the CIK axis:
+
+    >>> cfg = CikMapConfig(dataset=statements, raw_data_dir_path="/data/downloads/sharadar")
+    >>> sorted(cfg.to_dict())
+    ['dataset', 'name', 'raw_data_dir_path']
+    """
+
+    #: The company panel on the CIK axis.
+    dataset: "BaseDataset" = component()
+    #: ``<download-dir>/sharadar``, holding the ``tickers`` raw table.
+    raw_data_dir_path: str
+    #: Dotted import path of the dataset class; filled by the config setter.
+    name: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
 class BadPrintMaskedDatasetConfig(MergedDatasetConfig):
     """Config of a merged dataset whose bad prints are masked.
 
