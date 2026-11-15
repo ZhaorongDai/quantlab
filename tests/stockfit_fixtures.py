@@ -8,7 +8,8 @@ called as ``vendor(url, params=..., headers=...)`` and returns an
   is answered with the recorded body whose path and identifying parameters
   (every parameter but ``page``, ``pageSize`` and ``limit``) match, and with
   404 when nothing was recorded for it;
-- a market-wide list (``/api/symbols``, ``/api/company/delisted``) is served
+- a market-wide list (``/api/symbols``, ``/api/company/delisted``, the
+  Congress ``trades/recent`` feeds) is served
   from ``vendor.lists[path]``, filtered on the query parameters that are
   fields of its rows (``status``, ``type``) and paged by ``page`` and
   ``pageSize`` like the vendor's paged objects;
@@ -116,6 +117,8 @@ class FakeVendor:
         self.lists: dict[str, list[dict]] = {
             "/api/symbols": rows,
             "/api/company/delisted": [dict(row, delistedAt="2022-11-08") for row in rows if row["status"] == "delisted"],
+            "/api/congress/house/trades/recent": fixture("congress_house_trades_recent")["data"],
+            "/api/congress/senate/trades/recent": fixture("congress_senate_trades_recent")["data"],
         }
         self.per_minute = per_minute
         self.per_day = per_day

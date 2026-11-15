@@ -1554,3 +1554,27 @@ class MassiveNewsConfig(MassiveRestPanelConfig):
     >>> cfg.vendor, cfg.table
     ('massive', 'sep')
     """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitCongressTradesConfig(DatasetConfig):
+    """Config of the StockFit Congress trade panel on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier (``<download-dir>/stockfit``),
+    holding the House and Senate trade feeds and the company lists whose
+    current and prior tickers resolve a trade to its company. The panel
+    needs no other vendor.
+
+    Examples
+    --------
+    >>> cfg = StockFitCongressTradesConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_congress_trades_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.vendor, cfg.market, cfg.frequency
+    ('stockfit', 'us_equity', '1d')
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "1d"
+    vendor: Vendor | None = "stockfit"
