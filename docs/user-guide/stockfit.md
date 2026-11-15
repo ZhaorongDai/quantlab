@@ -324,7 +324,7 @@ one `period` and one `reported` set:
 | `period` | Each day shows |
 |---|---|
 | `"quarter"` | the latest fiscal quarter available by that day |
-| `"ttm"` | the four latest quarters, once they are four consecutive fiscal quarters: flows summed, weighted share counts averaged, balance-sheet items and `endCash` from the latest quarter, `beginningCash` from the earliest |
+| `"ttm"` | the four latest quarters, once they are four consecutive fiscal quarters: flows summed (missing when one of the four lacks the flow, never a partial sum), weighted share counts averaged, balance-sheet items and `endCash` from the latest quarter, `beginningCash` from the earliest |
 
 | `reported` | Each value is |
 |---|---|

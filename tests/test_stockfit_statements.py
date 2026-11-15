@@ -136,9 +136,12 @@ def test_the_ttm_panel_agrees_with_the_vendors_own_ttm_on_its_latest_quarter(env
 
     # Flows summed, share counts averaged, balance-sheet items and closing cash from the latest quarter.
     for name in ("revenue", "netIncome", "eps", "operatingCashFlow", "weightedAverageSharesOutstanding",
-                 "assets", "stockholdersEquity", "endCash", "impairments"):
+                 "assets", "stockholdersEquity", "endCash"):
         assert _on(panel, "2026-11-13", name) == pytest.approx(vendor_ttm[name]), name
     assert _on(panel, "2026-11-13", "period_end") == pd.Timestamp("2026-09-30").value
+    # The 2026-09-30 10-Q reports no impairments: the vendor sums the other three quarters, the panel does not.
+    assert vendor_ttm["impairments"] == 19_365_000 + 3_856_000 + 724_944_000
+    assert np.isnan(_on(panel, "2026-11-13", "impairments"))
 
 
 def test_a_ttm_value_changes_when_a_quarter_in_it_is_restated(env, tmp_path):
@@ -146,6 +149,16 @@ def test_a_ttm_value_changes_when_a_quarter_in_it_is_restated(env, tmp_path):
 
     before = _on(panel, "2026-11-11", "revenue")
     assert _on(panel, "2026-11-12", "revenue") - before == 210_000_000 - 200_602_000
+
+
+def test_a_ttm_flow_one_of_the_four_quarters_lacks_is_missing_not_a_partial_sum(env, tmp_path):
+    vendor = FakeVendor(FakeClock())
+    (quarter,) = [entry for entry in _plug_income(vendor) if entry["period"] == "2026-06-30"]
+    quarter["facts"]["revenue"] = None  # SYNTHETIC: the 10-Q of 2026-06-30 reports no revenue
+    panel = _panel(tmp_path, _raw_tier(tmp_path, vendor), period="ttm")
+
+    assert np.isnan(_on(panel, "2026-11-13", "revenue"))
+    assert not np.isnan(_on(panel, "2026-11-13", "netIncome"))
 
 
 def test_annual_statements_stay_in_the_raw_tier(tmp_path):

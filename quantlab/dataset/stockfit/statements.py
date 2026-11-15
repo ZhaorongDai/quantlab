@@ -31,8 +31,10 @@ fiscal quarter filed by then, each fact as known that day (``reported=
 restatement is shown from its own available date, never earlier; a later
 filing of an older quarter never replaces a newer quarter. A TTM store
 (``period="ttm"``) shows the four latest quarters as known that day, once
-they are four consecutive fiscal quarters: flows summed over the quarters
-that report them, weighted share counts averaged (rounded half up to whole
+they are four consecutive fiscal quarters: flows summed over the four
+quarters (missing when any of them lacks the flow, where the vendor's own
+TTM sums the quarters that report it), weighted share counts averaged over
+the quarters that report them (rounded half up to whole
 shares), balance-sheet items and ``endCash`` from the latest quarter and
 ``beginningCash`` from the earliest. Annual statements stay in the raw tier;
 the vendor's own TTM response (its latest period only, the same for the
@@ -417,11 +419,14 @@ def _ttm(window: list[_Quarter], at: np.datetime64) -> dict[str, float | None]:
         elif name in TTM_EARLIEST:
             values[name] = window[0].value(name, at)
         else:
-            found = [value for value in (quarter.value(name, at) for quarter in window) if value is not None]
+            quarters = [quarter.value(name, at) for quarter in window]
+            found = [value for value in quarters if value is not None]
             if not found:
                 values[name] = None
             elif name in TTM_AVERAGED:
                 values[name] = float(np.floor(sum(found) / len(found) + 0.5))
+            elif len(found) < len(quarters):
+                values[name] = None  # a flow one quarter lacks: a partial sum would understate the year
             else:
                 values[name] = float(sum(found))
     return values
