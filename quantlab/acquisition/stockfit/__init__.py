@@ -35,6 +35,7 @@ from quantlab.dataset.stockfit.funds import (
     StockFitFundNcenDataset,
     StockFitFundProfileDataset,
 )
+from quantlab.dataset.stockfit.statements import StockFitStatementsDataset
 
 #: The plan the endpoints need.
 _ENTITLEMENT = "StockFit Professional (api.stockfit.io)"
@@ -49,8 +50,12 @@ STOCKFIT_SOURCE = register_source(
         capabilities=(
             # The company lists, operating and delisted: raw only, keyed by CIK.
             Capability(market="us_equity", frequency="1d", data_type="reference", entitlement=_ENTITLEMENT),
-            # The income, balance-sheet and cash-flow statements per CIK, annual, quarterly and TTM: raw only.
-            Capability(market="us_equity", frequency="1d", data_type="statements", entitlement=_ENTITLEMENT),
+            # The income, balance-sheet and cash-flow statements per CIK, annual, quarterly and TTM;
+            # the quarterly pulls build the quarterly and TTM panels, as known on each day.
+            Capability(
+                market="us_equity", frequency="1d", data_type="statements",
+                dataset_cls=StockFitStatementsDataset, entitlement=_ENTITLEMENT,
+            ),
             # Fund series (<cik>-<series id>): N-PORT summary and monthly flows, N-1A fees, N-CEN fields.
             Capability(market="us_equity", frequency="1d", data_type="fund_profile",
                        dataset_cls=StockFitFundProfileDataset, entitlement=_ENTITLEMENT),

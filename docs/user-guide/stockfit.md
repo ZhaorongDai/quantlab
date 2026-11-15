@@ -184,6 +184,76 @@ that many days old. A new shape is a subclass of
 {py:class}`~quantlab.acquisition.stockfit.endpoints.Endpoint` that says which entities it is
 pulled for and what query selects one.
 
+## Available dates
+
+Every StockFit panel places a row at its *available date*, the first day a close-based backtest may
+use it, by one rule ({py:func}`quantlab.dataset.stockfit.placement.available_dates`):
+
+- a row with an EDGAR acceptance time (`acceptedAt`) is available on its New York day when it was
+  accepted before that day's NYSE close (16:00, or 13:00 on a half day), and on the next NYSE trading
+  day when it was accepted at or after the close, or on a day without a session;
+- a row with only a filing date (`dateFiled`) is available on that day (the next trading day when
+  it is not one), as in the Sharadar panels.
+
+So a 10-Q accepted at 16:30 is not on that day's bar; one accepted at 15:59 is. The panels use
+NYSE's trading calendar, through the day before the raw tier's newest pull.
+
+## Statement panels
+
+{py:class}`~quantlab.dataset.stockfit.statements.StockFitStatementsDataset` builds a daily panel of
+the three statements' 178 facts on the CIK axis from the quarterly pulls
+(`income_statement_quarter`, `balance_sheet_quarter`, `cash_flow_statement_quarter`). One store holds
+one `period` and one `reported` set:
+
+| `period` | Each day shows |
+|---|---|
+| `"quarter"` | the latest fiscal quarter available by that day |
+| `"ttm"` | the four latest quarters, once they are four consecutive fiscal quarters: flows summed, weighted share counts averaged, balance-sheet items and `endCash` from the latest quarter, `beginningCash` from the earliest |
+
+| `reported` | Each value is |
+|---|---|
+| `"as_known"` | as known that day: a restatement shows from its own available date, never earlier |
+| `"original"` | as first reported; it never changes after its first filing |
+
+StockFit keeps, per fact, which filing supplied each value and the value each later filing replaced
+(`sources[accession].facts[fact].before`). The panel rebuilds every version of a fact from that chain
+and places each at its filing's available date. Amendments are filings like any other; the value of
+a pruned filing, and a reconstructed quarter (Q4 from the fiscal year less nine months, cash-flow Q2
+and Q3 from year-to-date values), are dated at the period's original filing. A later filing of an
+older quarter never replaces a newer one, and a quarter no newer one replaced stops being shown
+`stale_after_days` (365) after its filing date.
+
+Facts keep the vendor's names; the five the cash-flow statement shares with the income statement
+are prefixed (`cashFlowNetIncome`, `cashFlowDepreciation`, `cashFlowAmortization`,
+`cashFlowDepreciationAndAmortization`, `cashFlowImpairments`). `release_date` (the shown quarter's
+original filing date) and `period_end` (its fiscal period end) say which quarter a cell shows.
+
+```python
+from quantlab.dataset.config import StockFitStatementsConfig
+from quantlab.dataset.stockfit.statements import StockFitStatementsDataset
+
+config = StockFitStatementsConfig(
+    zarr_file_path="/data/market/stockfit/stockfit_statements_ttm/stockfit_statements_ttm.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    period="ttm",
+)
+panel = StockFitStatementsDataset(config).update().panel("2024-01-02", "2024-12-31")
+panel["revenue"].sel(symbol=1093691)  # Plug Power's trailing revenue, as known each day
+```
+
+Annual statements, and StockFit's own TTM response (its latest period only), stay in the raw tier.
+
+To read a company panel on Sharadar's permatickers, wrap it in the CIK map
+({py:class}`~quantlab.dataset.sharadar.cik_map.CikMapDataset`; see the Sharadar guide).
+
+Look-ahead caveats:
+
+- A fact StockFit computes from others (listed in a period's `derived`, such as `ebitda` or
+  `freeCashFlow`) has no restatement chain: the panel shows its latest value from the period's first
+  filing, so a derived fact of a later-restated period may show the restated value early.
+- The raw tier is taken as complete through the day before its newest statement pull: a company not
+  re-pulled since is taken to be unchanged.
+
 ## Fund series
 
 StockFit's fund data (N-PORT, N-1A, N-CSR, N-CEN and the issuers' daily ETF holdings) is keyed by

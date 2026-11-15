@@ -266,6 +266,11 @@ def isolated_registry(monkeypatch):
     """
     from quantlab.acquisition.base import DataSourceRegistry
 
+    # Register every shipped source before the snapshot: a vendor module first
+    # imported inside the test would register into the patched tuple, and the
+    # restore would drop it for the rest of the session.
+    import quantlab.acquisition.registry  # noqa: F401
+
     monkeypatch.setattr(
         DataSourceRegistry,
         "SOURCES",

@@ -149,6 +149,7 @@ LEAF_OVERRIDES: dict[str, dict[str, str]] = {
     "SharadarListingDataset": {"_on_config_installed": _DROPS_CACHE},
     "ReleasePanelDataset": {"_on_config_installed": _DROPS_CACHE},
     "SepReleasePanelDataset": {},
+    "StockFitStatementsDataset": {"_normalize_config": _CHECKS_FIELDS},
     "SharadarShareClassDataset": {},
     "SpellPanelDataset": {"_normalize_config": _CHECKS_FIELDS, "_on_config_installed": _DROPS_CACHE},
     "StockFitFilingsDataset": {},
