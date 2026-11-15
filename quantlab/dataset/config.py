@@ -1617,3 +1617,94 @@ class StockFitCongressTradesConfig(DatasetConfig):
     market: Market = "us_equity"
     frequency: Frequency = "1d"
     vendor: Vendor | None = "stockfit"
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitAsReportedConfig(DatasetConfig):
+    """Config of a StockFit as-reported panel on the CIK axis: chosen us-gaap concepts, quarterly or annual.
+
+    ``concepts`` are the us-gaap concepts the panel holds (``"us-gaap:Revenues"``,
+    ...), each a variable named without its prefix. The usual list, the
+    concepts at least 5% of companies use, is regenerated from the raw tier
+    by ``quantlab.dataset.stockfit.as_reported.as_reported_concepts`` and
+    passed here, so a store's list is fixed by its config. Filer extensions
+    stay in the raw tier. ``raw_data_dir_path`` is ``<download-dir>/stockfit``.
+
+    Examples
+    --------
+    >>> cfg = StockFitAsReportedConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_as_reported_quarter.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ...     concepts=("us-gaap:Revenues", "us-gaap:NetIncomeLoss"),
+    ... )
+    >>> cfg.vendor, cfg.period, cfg.stale_after_days
+    ('stockfit', 'quarter', 365)
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "1d"
+    vendor: Vendor | None = "stockfit"
+    #: The us-gaap concepts the panel holds, prefix included.
+    concepts: tuple[str, ...]
+    #: The periods the store holds: ``"quarter"`` or ``"annual"``.
+    period: str = "quarter"
+    #: Days after the shown period's filing date a row stops being shown
+    #: when no newer period has replaced it. ``None`` shows it until replaced.
+    stale_after_days: int | None = 365
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitDerivedConfig(DatasetConfig):
+    """Config of a StockFit derived-metric or share-class panel on the CIK axis.
+
+    ``table`` is one of ``quantlab.dataset.stockfit.derived.DERIVED_TABLES``:
+    ``"growth"``, ``"key_metrics"``, ``"eps_history"``,
+    ``"dividend_history"`` (quarterly) or ``"share_classes"``. Each row takes
+    the filing date of the same CIK and fiscal period from the statements in
+    the same raw tier (``raw_data_dir_path``, ``<download-dir>/stockfit``).
+
+    Examples
+    --------
+    >>> cfg = StockFitDerivedConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_growth_quarter.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ...     table="growth",
+    ... )
+    >>> cfg.vendor, cfg.table, cfg.stale_after_days
+    ('stockfit', 'growth', 365)
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "1d"
+    vendor: Vendor | None = "stockfit"
+    #: The table the panel holds.
+    table: str
+    #: Days after the shown period's filing date a row stops being shown
+    #: when no newer period has replaced it. ``None`` shows it until replaced.
+    stale_after_days: int | None = 365
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitSnapshotConfig(DatasetConfig):
+    """Config of a StockFit panel accumulated from snapshots: ``"scores"`` or ``"trends"``, on the CIK axis.
+
+    The vendor keeps no history of either, so the panel shows each pull's
+    values from the day of the pull and nothing before a company's first
+    pull. ``raw_data_dir_path`` is ``<download-dir>/stockfit``.
+
+    Examples
+    --------
+    >>> cfg = StockFitSnapshotConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_scores.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ...     table="scores",
+    ... )
+    >>> cfg.vendor, cfg.table
+    ('stockfit', 'scores')
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "1d"
+    vendor: Vendor | None = "stockfit"
+    #: The snapshot table the panel holds: ``"scores"`` or ``"trends"``.
+    table: str

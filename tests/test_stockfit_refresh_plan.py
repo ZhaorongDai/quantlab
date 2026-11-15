@@ -60,7 +60,8 @@ def _statement_calls(vendor) -> list[dict]:
 
 def test_a_capped_backfill_spans_several_runs_and_ends_with_the_raw_tier_of_one_uncapped_run(env, tmp_path, clock):
     uncapped = tmp_path / "uncapped"
-    assert not _refresh(uncapped, FakeVendor(FakeClock()), clock).failed
+    own = FakeClock()  # the vendor's clock must be the one the client sleeps on, or a throttle never ends
+    assert not _refresh(uncapped, FakeVendor(own), own).failed
 
     capped = tmp_path / "capped"
     vendor = FakeVendor(clock, per_day=20)  # 12 for the lists and the feed, 8 for the backfill

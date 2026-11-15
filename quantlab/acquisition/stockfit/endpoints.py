@@ -67,6 +67,12 @@ from quantlab.dataset.stockfit.raw import (
 #: The most periods one statement request returns.
 STATEMENT_LIMIT = 80
 
+#: The most periods ``/api/earnings/dividend-history`` returns.
+DIVIDEND_HISTORY_LIMIT = 40
+
+#: Days after which a company's scores and trends (snapshots without history) are re-pulled.
+SNAPSHOT_REPULL_DAYS = 30
+
 #: The largest page ``/api/symbols`` and ``/api/company/delisted`` serve.
 LIST_PAGE_SIZE = 1000
 
@@ -371,6 +377,38 @@ def _statements() -> list[Endpoint]:
     ]
 
 
+def _as_reported_and_derived() -> list[Endpoint]:
+    """The as-reported facts, the derived metrics, the share classes, the scores and the trends."""
+    on_report = {"triggers": REPORT_FORMS, "repull_days": None}  # re-pulled on a new report only
+    return [
+        *(
+            PerCompany(
+                f"as_reported_{period}", "/api/financials/as-reported",
+                {"period": period, "limit": STATEMENT_LIMIT}, **on_report,
+            )
+            for period in ("annual", "quarter")
+        ),
+        PerCompany("growth_quarter", "/api/financials/growth", {"period": "quarter", "limit": STATEMENT_LIMIT}, **on_report),
+        PerCompany(
+            "key_metrics_quarter", "/api/financials/key-metrics", {"period": "quarter", "limit": STATEMENT_LIMIT},
+            **on_report,
+        ),
+        # Per-share values as filed: a split-adjusted history would change on every split.
+        PerCompany(
+            "eps_history_quarter", "/api/earnings/eps-history",
+            {"period": "quarter", "limit": STATEMENT_LIMIT, "splitAdjust": "false"}, **on_report,
+        ),
+        PerCompany(
+            "dividend_history_quarter", "/api/earnings/dividend-history",
+            {"period": "quarter", "limit": DIVIDEND_HISTORY_LIMIT, "splitAdjust": "false"}, **on_report,
+        ),
+        PerCompany("share_classes", "/api/ownership/share-classes", **on_report),
+        # No history: each pull is a snapshot, re-pulled on a new report and monthly.
+        PerCompany("scores", "/api/financials/scores", triggers=REPORT_FORMS, repull_days=SNAPSHOT_REPULL_DAYS),
+        PerCompany("trends", "/api/earnings/trends", triggers=REPORT_FORMS, repull_days=SNAPSHOT_REPULL_DAYS),
+    ]
+
+
 #: Every endpoint the refresh pulls, by name, in pull order: the company
 #: lists first, since the per-company endpoints take their CIKs from them.
 ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
@@ -388,6 +426,8 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     ),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
+    # As-reported facts, derived metrics, share classes, scores and trends.
+    *_as_reported_and_derived(),
     # Congress members' periodic transaction reports, House and Senate, by filing day.
     SinceFeed(CONGRESS_HOUSE_TRADES, "/api/congress/house/trades/recent", page_size=CONGRESS_PAGE_SIZE),
     SinceFeed(CONGRESS_SENATE_TRADES, "/api/congress/senate/trades/recent", page_size=CONGRESS_PAGE_SIZE),

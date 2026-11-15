@@ -188,6 +188,71 @@ Look-ahead caveats:
 - The raw tier is taken as complete through the day before its newest statement pull: a company not
   re-pulled since is taken to be unchanged.
 
+## As-reported facts, derived metrics, share classes, scores and trends
+
+These endpoints are re-pulled when the company files a new 10-K, 10-Q or 20-F (scores and trends
+also once a month). Unlike the statements, none of them keeps the values it replaced: each pull is
+what StockFit serves today. Their panels share one rule
+({py:mod}`quantlab.dataset.stockfit.period_panel`):
+
+- Values from a company's **first pull** are placed at the filing date of their fiscal period, but
+  they **may include restatements made after that date**. The panel flags them with
+  `may_include_restatement = 1`.
+- From the first pull on, each pull is compared with the one before. A value that a later pull adds
+  or changes is shown from its filing date when that filing came after the previous pull, and
+  otherwise from the day of the pull (the vendor changed it silently). Such values are not flagged
+  (`may_include_restatement = 0`), so from a company's first pull on the history is point in time.
+- Each day shows the latest fiscal period available by then. `release_date` and `period_end` say
+  which period that is. A later filing of an older period never replaces a newer one.
+
+| Dataset | Endpoints | What a store holds | Placed at |
+|---|---|---|---|
+| {py:class}`~quantlab.dataset.stockfit.as_reported.StockFitAsReportedDataset` | `as_reported_quarter`, `as_reported_annual` | the chosen us-gaap concepts (`concepts=`), each named without its prefix (`Revenues`) | the period's own filing |
+| {py:class}`~quantlab.dataset.stockfit.derived.StockFitDerivedDataset` | `growth_quarter`, `key_metrics_quarter` (the `general` block), `eps_history_quarter`, `dividend_history_quarter` (per-share values as filed, not split-adjusted), `share_classes` | one `table=` | the filing of the same CIK and period in the statements |
+| {py:class}`~quantlab.dataset.stockfit.snapshots.StockFitSnapshotDataset` | `scores`, `trends` | one `table=` | the day of the pull |
+
+The as-reported concept list is a config parameter, so a store's variables stay fixed. Regenerate the
+usual list, the us-gaap concepts that at least 5% of companies use, from the raw tier with
+{py:func}`~quantlab.dataset.stockfit.as_reported.as_reported_concepts`. Filer extensions stay in the
+raw tier.
+
+```python
+from quantlab.dataset.config import StockFitAsReportedConfig
+from quantlab.dataset.stockfit.as_reported import StockFitAsReportedDataset, as_reported_concepts
+
+root = "/data/downloads/stockfit"
+config = StockFitAsReportedConfig(
+    zarr_file_path="/data/market/stockfit/stockfit_as_reported_quarter/stockfit_as_reported_quarter.zarr",
+    raw_data_dir_path=root,
+    concepts=as_reported_concepts(root, period="quarter", min_share=0.05),
+)
+panel = StockFitAsReportedDataset(config).update().panel("2024-01-02", "2024-12-31")
+panel["NetIncomeLoss"].where(panel["may_include_restatement"] == 0)  # point-in-time values only
+```
+
+Derived metrics and share classes carry no filing date of their own. A row whose CIK and period end
+match no statement period is dropped, and the build counts it in the dataset's `build_report`:
+
+```python
+from quantlab.dataset.config import StockFitDerivedConfig
+from quantlab.dataset.stockfit.derived import StockFitDerivedDataset
+
+dataset = StockFitDerivedDataset(StockFitDerivedConfig(
+    zarr_file_path="/data/market/stockfit/stockfit_growth_quarter/stockfit_growth_quarter.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    table="growth",
+)).update()
+dataset.build_report  # DerivedBuildReport(rows=..., unmatched=...)
+```
+
+StockFit serves share classes for the latest period only, so `share_classes` (`class_count`,
+`shares_outstanding`, `shares_authorized`, summed over the classes) gains one period per pull; the
+per-class detail stays in the raw tier. Scores and trends have no history at all: each pull's values
+show from the day of the pull, and nothing shows before a company's first pull. Their text
+categories are coded: the Altman zone as `distress` 0, `grey` 1, `safe` 2; a margin direction as
+`compressing` -1, `stable` 0, `expanding` 1; each Piotroski criterion as 1 when met. The sector and
+industry blocks of the key metrics vary by company and stay in the raw tier.
+
 ## Congress trades
 
 {py:class}`~quantlab.dataset.stockfit.congress.StockFitCongressTradesDataset` is a daily panel, on

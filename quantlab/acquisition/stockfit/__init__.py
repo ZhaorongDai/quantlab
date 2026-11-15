@@ -19,14 +19,17 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'congress_trades']
+['reference', 'statements', 'as_reported', 'derived', 'snapshots', 'congress_trades']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
+from quantlab.dataset.stockfit.as_reported import StockFitAsReportedDataset
 from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
+from quantlab.dataset.stockfit.derived import StockFitDerivedDataset
+from quantlab.dataset.stockfit.snapshots import StockFitSnapshotDataset
 from quantlab.dataset.stockfit.statements import StockFitStatementsDataset
 
 #: The plan the endpoints need.
@@ -47,6 +50,21 @@ STOCKFIT_SOURCE = register_source(
             Capability(
                 market="us_equity", frequency="1d", data_type="statements",
                 dataset_cls=StockFitStatementsDataset, entitlement=_ENTITLEMENT,
+            ),
+            # As-reported us-gaap facts per CIK, quarterly and annual: a panel of the chosen concepts.
+            Capability(
+                market="us_equity", frequency="1d", data_type="as_reported",
+                dataset_cls=StockFitAsReportedDataset, entitlement=_ENTITLEMENT,
+            ),
+            # Growth, key metrics, EPS and dividend history, and share classes per CIK, at the statements' filing dates.
+            Capability(
+                market="us_equity", frequency="1d", data_type="derived",
+                dataset_cls=StockFitDerivedDataset, entitlement=_ENTITLEMENT,
+            ),
+            # Scores and trends per CIK, accumulated from snapshots.
+            Capability(
+                market="us_equity", frequency="1d", data_type="snapshots",
+                dataset_cls=StockFitSnapshotDataset, entitlement=_ENTITLEMENT,
             ),
             # House and Senate members' trade reports, placed on the CIK of the trade-date ticker holder.
             Capability(
