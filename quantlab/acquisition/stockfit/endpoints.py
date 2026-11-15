@@ -56,6 +56,7 @@ from pathlib import Path
 
 from quantlab.acquisition.stockfit.client import StockFitClient, StockFitResponseError
 from quantlab.acquisition.stockfit.raw_tier import StagedPull, write_entity_watermark
+from quantlab.dataset.stockfit.filings import FILINGS
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
     CONGRESS_HOUSE_TRADES,
@@ -101,6 +102,9 @@ REPORT_FORMS = frozenset({"10-K", "10-Q", "20-F"})
 
 #: Matches the filer's CIK in a filing's EDGAR URL (``.../edgar/data/<cik>/...``).
 _FILER_CIK = re.compile(r"/edgar/data/(\d+)/")
+
+#: The largest page ``/api/filings`` serves.
+FILINGS_PAGE_SIZE = 100
 
 
 class Outcome(Enum):
@@ -215,6 +219,9 @@ class Endpoint(ABC):
             page, pages = 1, 1
             while page <= pages:
                 body = client.get_json(self.path, {**query, "page": page, "pageSize": self.page_size})
+                if body is None and page == 1:  # the vendor holds nothing for the entity
+                    write_entity_watermark(vendor_root, self.name, entity, pulled_at)
+                    return Outcome.MISSING
                 if not isinstance(body, dict) or not isinstance(body.get("data"), list) or "totalPages" not in body:
                     raise StockFitResponseError(f"{self.path} page {page} is not a paged object with data.")
                 staged.add_page(body)
@@ -435,6 +442,12 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     # Congress members' periodic transaction reports, House and Senate, by filing day.
     SinceFeed(CONGRESS_HOUSE_TRADES, "/api/congress/house/trades/recent", page_size=CONGRESS_PAGE_SIZE),
     SinceFeed(CONGRESS_SENATE_TRADES, "/api/congress/senate/trades/recent", page_size=CONGRESS_PAGE_SIZE),
+    # Each company's SEC filing list, every form, newest first: the filing panel and accession lookups.
+    # Re-pulled when the company files any form the feed follows, and weekly.
+    PerCompany(
+        FILINGS, "/api/filings", page_size=FILINGS_PAGE_SIZE,
+        triggers=frozenset(FEED_FORMS.values()), repull_days=7,
+    ),
     # Forward snapshots: the vendor keeps no history of these, so every refresh pulls them.
     # Companies reporting in the next 28 days, with consensus EPS (keyed by ticker).
     MarketList(EARNINGS_UPCOMING, "/api/earnings/upcoming", {"days": 28}, page_size=500),

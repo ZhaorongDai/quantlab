@@ -7,7 +7,9 @@ called as ``vendor(url, params=..., headers=...)`` and returns an
 - a per-entity request (``/api/financials/income-statement?cik=...&period=...``)
   is answered with the recorded body whose path and identifying parameters
   (every parameter but ``page``, ``pageSize`` and ``limit``) match, and with
-  404 when nothing was recorded for it;
+  404 when nothing was recorded for it; a recorded paged object (one page
+  of a longer list) is served as the list's last page, so a pull of it
+  stops after that page;
 - a market-wide list (``/api/symbols``, ``/api/company/delisted``, the
   Congress ``trades/recent`` feeds) is served
   from ``vendor.lists[path]``, filtered on the query parameters that are
@@ -193,6 +195,8 @@ class FakeVendor:
             body = self.bodies.get((path, _identity(params)))
             if body is None:
                 return HttpResponse(404, b'{"error":"Not found"}', self._limits())
+            if isinstance(body, dict) and "totalPages" in body:
+                body = dict(body, totalPages=body.get("page", 1))
         return HttpResponse(200, json.dumps(body).encode(), self._limits())
 
     @staticmethod

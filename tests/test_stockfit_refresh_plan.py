@@ -107,12 +107,17 @@ def test_a_day_with_one_new_10k_re_pulls_only_that_companys_filing_driven_endpoi
     assert not result.failed, result.summary()
     assert {params["cik"] for params in _statement_calls(vendor)} == {str(PLUG)}
     assert len(_statement_calls(vendor)) == 9  # three statements, annual, quarterly and TTM
+    # the filing list follows every form the feed carries: both filers' lists are re-pulled
+    assert {params["cik"] for params in vendor.requested("/api/filings") if str(params["page"]) == "1"} == {str(PLUG), str(TSM)}
     assert raw.read_watermark(tmp_path / "stockfit", "income_statement_quarter", str(TSM)) == (clock.now() - timedelta(days=1)).date()
 
     clock.advance(days=1)  # the 10-K is still in the 30-day feed, but already re-pulled
     vendor.calls.clear()
     _refresh(tmp_path, vendor, clock)
     assert _statement_calls(vendor) == []
+    # a filing with only a date counts from the end of its day, so the pull made that day may miss it:
+    # the date-only Form 4 re-pulls its filer once more, the timed 10-K does not
+    assert {params["cik"] for params in vendor.requested("/api/filings")} == {str(TSM)}
 
 
 def test_the_weekly_re_pull_of_the_statements_happens_once_a_week(env, tmp_path, clock):

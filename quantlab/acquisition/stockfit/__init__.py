@@ -19,7 +19,7 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'congress_trades', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts']
+['reference', 'statements', 'congress_trades', 'filings', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
@@ -27,6 +27,7 @@ Examples
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
+from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
 from quantlab.dataset.stockfit.snapshots import (
     StockFitEarningsConsensusDataset,
     StockFitFilingCalendarDataset,
@@ -55,6 +56,15 @@ STOCKFIT_SOURCE = register_source(
             Capability(
                 market="us_equity", frequency="1d", data_type="congress_trades",
                 dataset_cls=StockFitCongressTradesDataset, entitlement=_ENTITLEMENT,
+            ),
+            # Each company's SEC filing list, and the filing panel by CIK: form counts, 8-K events, amendments.
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="filings",
+                dataset_cls=StockFitFilingsDataset,
+                earliest_available="1994-03-08",
+                entitlement=_ENTITLEMENT,
             ),
             # Panels accumulated from forward snapshots, each placed at its pull time, on the CIK axis.
             *(
