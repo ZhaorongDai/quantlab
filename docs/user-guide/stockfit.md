@@ -115,7 +115,8 @@ have room, waits out an HTTP 429 and sends again (a throttle never fails a run),
 once the day's requests are spent (`day_reserve=` keeps some unspent). Running out of the day's
 requests is not a failure: each endpoint's part of the result says how many pulls it deferred to
 the next run. A 404 means StockFit holds nothing for that entity; nothing is published and the
-watermark moves.
+watermark moves. So does an HTTP 400 that says the same: a company with no financial history yet
+(scores, trends) or a CIK StockFit does not know (a 13F manager's filing list).
 
 A part that fails (an endpoint StockFit refuses, an entity whose request kept failing) is listed
 in `result.failed` and the other endpoints still run.
@@ -756,8 +757,9 @@ The refresh pulls 13F data last, since it is by far the largest part (see
   `<cik>_<quarter end>`, newest quarter first;
 - `manager_13f_filings`: for every manager those rows name, its 13F filings (originals and
   amendments) with their filing date and acceptance time;
-- `manager_portfolio`: for every manager and quarter its filings report, its whole portfolio. These
-  stay raw files; no panel reads them.
+- `manager_portfolio`: for every manager and quarter its filings report, its whole portfolio. Most
+  managers are not in StockFit's company lists, so their filing list holds nothing; their quarters
+  are then the quarters their holder rows name. These stay raw files; no panel reads them.
 
 {py:class}`~quantlab.dataset.stockfit.holdings.StockFitHoldingsDataset` sums the holder rows by
 security and quarter into a daily panel on NYSE's trading days. Its symbol is the 9-character

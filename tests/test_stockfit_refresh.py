@@ -201,6 +201,25 @@ def test_an_endpoint_stockfit_refuses_fails_its_part_and_the_others_still_run(en
     assert raw.entities(tmp_path / "stockfit", "balance_sheet_quarter") == [str(PLUG), str(TWTR)]
 
 
+@pytest.mark.parametrize("message", [
+    b'{"error":"No financial history available for this symbol yet"}',  # VERBATIM, /api/financials/scores
+    b"{\"error\":\"CIK '1631208' not found\"}",  # VERBATIM, /api/filings for a 13F manager
+])
+def test_a_400_saying_stockfit_holds_nothing_is_a_missing_entity_not_a_failure(env, tmp_path, clock, message):
+    vendor = FakeVendor(clock, replies=[(400, message)])
+    result = _refresh(tmp_path, vendor, clock, endpoints=["income_statement_quarter"], ciks=[PLUG, TWTR])
+
+    assert not result.failed, result.summary()
+    assert "1 missing" in result.summary()
+
+
+def test_another_400_still_fails_its_entity(env, tmp_path, clock):
+    vendor = FakeVendor(clock, replies=[(400, b'{"error":"Param \\"type\\" not one of 10-K"}')])
+    result = _refresh(tmp_path, vendor, clock, endpoints=["income_statement_quarter"], ciks=[PLUG, TWTR])
+
+    assert result.failed == ("income_statement_quarter",)
+
+
 def test_stockfit_is_a_registered_source_refreshed_through_the_registry(env, tmp_path, clock, monkeypatch):
     from quantlab.acquisition import registry
     from quantlab.acquisition.base import DataSourceRegistry

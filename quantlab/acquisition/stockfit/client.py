@@ -23,7 +23,9 @@ reads them from the headers and hard-codes neither:
   (``quantlab.acquisition._support.request_policy``).
 
 A 401 or 403 raises ``StockFitEntitlementError``; a 404 returns ``None``
-(the vendor holds nothing for that entity); any other 4xx, or a 200 body that
+(the vendor holds nothing for that entity), and so does a 400 whose message
+says the same (``NOTHING_HELD``: a company with no financial history yet, a
+13F manager StockFit does not know); any other 4xx, or a 200 body that
 is not JSON, raises ``StockFitResponseError``. The key is read from the
 environment only, kept out of every message, and never sent in a URL.
 
@@ -39,6 +41,7 @@ Needs ``STOCKFIT_API_KEY`` and the network::
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -62,6 +65,11 @@ BASE_URL = "https://api.stockfit.io/v1"
 
 #: Seconds to connect, and to wait for each read.
 TIMEOUT = (30, 120)
+
+#: The HTTP 400 messages that mean StockFit holds nothing for the entity, as a 404 does
+#: (VERBATIM from live responses: ``/api/financials/scores`` and ``/api/earnings/trends`` for a
+#: company with no statements yet, ``/api/filings`` for a CIK outside its company lists).
+NOTHING_HELD = re.compile(r"No financial history available|CIK '\d+' not found")
 
 #: The length of the per-minute window, in seconds.
 WINDOW_SECONDS = 60.0
@@ -304,7 +312,7 @@ class StockFitClient:
         -------
         object or None
             The decoded body, or ``None`` when StockFit holds nothing for the
-            request (HTTP 404).
+            request (HTTP 404, or a 400 matching ``NOTHING_HELD``).
 
         Raises
         ------
@@ -345,7 +353,7 @@ class StockFitClient:
         def attempt() -> object | None:
             response = send()
             body = response.read()
-            if response.status == 404:
+            if response.status == 404 or (response.status == 400 and NOTHING_HELD.search(body[:500].decode(errors="replace"))):
                 return None
             if response.status in REFUSAL_STATUSES:
                 raise policy.refusal(response.status, where=path, detail=policy.scrub(body[:200].decode(errors="replace")))

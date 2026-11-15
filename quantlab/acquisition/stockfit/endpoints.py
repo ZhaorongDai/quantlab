@@ -944,14 +944,21 @@ class PerManagerQuarter(PerCompanyQuarter):
     """
 
     def entities(self, context: PullContext) -> list[str]:
-        """Return each manager's entity for each quarter its filings report."""
+        """Return each manager's entity for each quarter its filings report.
+
+        A manager whose filing list StockFit holds nothing for (``/api/filings``
+        knows only the CIKs of its company lists, and most 13F managers are not
+        in them) takes the quarters its holder rows name instead.
+        """
         last = _today(context)
-        return [
-            quarter_entity(manager, quarter)
-            for manager in thirteen_f_managers(context.vendor_root)
-            for quarter in thirteen_f_periods(context.vendor_root, manager)
-            if self.first_quarter <= quarter <= last
-        ]
+        held = manager_holdings(context.vendor_root)
+        found = []
+        for manager in sorted(held):
+            quarters = thirteen_f_periods(context.vendor_root, manager)
+            if not quarters and read_watermark(context.vendor_root, MANAGER_13F_FILINGS, str(manager)) is not None:
+                quarters = sorted({split_quarter_entity(name)[1] for name in held[manager]}, reverse=True)
+            found += [quarter_entity(manager, quarter) for quarter in quarters if self.first_quarter <= quarter <= last]
+        return found
 
     def filer_entities(self, ciks: Iterable[int], context: PullContext) -> dict[int, list[str]]:
         """Return each filing manager's newest pulled quarters.

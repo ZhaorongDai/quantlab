@@ -152,6 +152,21 @@ def test_holders_are_pulled_per_company_and_quarter_and_managers_from_their_rows
     assert raw.read_pull(root, "manager_portfolio", f"{MANAGER_A}_2024-03-31") == [{"cusip": CLASS_A, "shares": 100.0}]
 
 
+def test_a_manager_stockfit_has_no_filing_list_for_takes_its_quarters_from_its_holder_rows(env, tmp_path, clock):
+    from quantlab.dataset.stockfit import raw
+
+    vendor = _vendor(clock)
+    serve_holders(vendor, ALPHA, "2024-03-31", [holder(MANAGER_B, CLASS_C, "2024-03-31", "0000009002-24-000001", 50.0)])
+    # /api/filings answers a manager outside StockFit's company lists with HTTP 400 "CIK '<cik>' not found"
+    vendor.bodies.pop(key(FILINGS, cik=MANAGER_B, type="13F-HR"), None)
+    serve_portfolio(vendor, MANAGER_B, "2024-03-31", [{"cusip": CLASS_C, "shares": 50.0}])
+    _refresh(tmp_path, vendor, clock, end=date(2024, 8, 20))
+
+    root = tmp_path / "stockfit"
+    assert raw.entities(root, "manager_13f_filings") == []
+    assert raw.read_pull(root, "manager_portfolio", f"{MANAGER_B}_2024-03-31") == [{"cusip": CLASS_C, "shares": 50.0}]
+
+
 def test_a_managers_new_13f_filing_re_pulls_its_filings_and_the_holders_of_what_it_held(env, tmp_path, clock):
     from tests.stockfit_fixtures import filing_row
 
