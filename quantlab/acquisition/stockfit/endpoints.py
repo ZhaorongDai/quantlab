@@ -20,6 +20,12 @@ Shapes:
 - ``CompanySnapshot``: a per-company snapshot (the predicted filing
   calendar, the latest headlines), one request per operating company,
   re-pulled once a day from what the day's requests leave;
+- ``PerCompanyQuarter``: one request per company and calendar quarter
+  (``cik`` and ``reportDate``), the entity ``<cik>_<quarter end>``;
+- ``PerManager``: one request per 13F manager (``cik``), the managers named
+  in the raw tier's 13F holder rows;
+- ``PerManagerQuarter``: one request per 13F manager and quarter its 13F
+  filings report;
 - ``LatestFilings``: the market-wide feed of recent filings
   (``/api/filings/latest``), one entity per form type, read newest first
   back to the entity's last pull. The refresh takes from it the filers whose
@@ -56,7 +62,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -82,7 +88,10 @@ from quantlab.dataset.stockfit.raw import (
     FUND_DAILY_SUPPORTED,
     FUND_LISTS,
     FUND_SYMBOLS,
+    INSTITUTIONAL_HOLDERS,
     IPO_CALENDAR,
+    MANAGER_13F_FILINGS,
+    MANAGER_PORTFOLIO,
     NEWS,
     RECENT_OFFERINGS,
     STOCK_SPLITS,
@@ -94,10 +103,15 @@ from quantlab.dataset.stockfit.raw import (
     daily_supported,
     fund_listings,
     last_pulled,
+    manager_holdings,
     newest_pull_dir,
     pulls,
+    quarter_entity,
     read_pull,
     read_watermark,
+    split_quarter_entity,
+    thirteen_f_managers,
+    thirteen_f_periods,
 )
 from quantlab.dataset.stockfit.raw import entities as raw_entities
 
@@ -187,11 +201,16 @@ class PullContext:
     fund_series : tuple of str or None, default None
         The fund series (``<cik>-<series id>``) to pull; every series of the
         raw tier's fund lists when ``None``.
+    end : date or None, default None
+        The day the refresh runs for; today (UTC) when ``None``.
     """
 
     vendor_root: Path
     ciks: tuple[int, ...] | None = None
     fund_series: tuple[str, ...] | None = None
+    #: The day the refresh runs for: an endpoint asked per quarter pulls the
+    #: quarters ended by it. ``None`` is today (UTC).
+    end: date | None = None
 
 
 @dataclass(frozen=True)
@@ -707,6 +726,195 @@ class SinceFeed(MarketList):
         return {**self.params, "since": max(last - timedelta(days=self.overlap_days), date.fromisoformat(self.start)).isoformat()}
 
 
+#: The first quarter StockFit serves 13F holdings for.
+FIRST_13F_QUARTER = date(2013, 3, 31)
+
+#: Days after a quarter's end before its 13F holder rows are first pulled:
+#: the 45 days managers have to file, and a few for the vendor to load them.
+SETTLE_DAYS = 50
+
+#: How many of a company's (or a manager's) newest quarters a new 13F filing re-pulls.
+REPULLED_QUARTERS = 2
+
+#: The largest page the 13F endpoints serve.
+THIRTEEN_F_PAGE_SIZE = 500
+
+#: The largest page ``/api/filings`` serves.
+FILINGS_PAGE_SIZE = 100
+
+#: The form whose new filing re-pulls the 13F endpoints, as the feed names it.
+THIRTEEN_F_FORMS = frozenset({"13F-HR"})
+
+
+def quarter_ends(first: date, end: date) -> list[date]:
+    """Return the calendar quarter ends from ``first`` to ``end``, both inclusive, newest first.
+
+    Examples
+    --------
+    >>> quarter_ends(date(2024, 1, 15), date(2024, 7, 1))
+    [datetime.date(2024, 6, 30), datetime.date(2024, 3, 31)]
+    """
+    found = []
+    year, month = first.year, (first.month - 1) // 3 * 3 + 3
+    while True:
+        quarter = (date(year, month + 1, 1) if month < 12 else date(year + 1, 1, 1)) - timedelta(days=1)
+        if quarter > end:
+            return found[::-1]
+        if quarter >= first:
+            found.append(quarter)
+        year, month = (year, month + 3) if month < 12 else (year + 1, 3)
+
+
+def _today(context: PullContext) -> date:
+    return context.end if context.end is not None else datetime.now(UTC).date()
+
+
+def _newest_quarters(names: Iterable[str]) -> dict[int, list[str]]:
+    """Return, per owner, its ``REPULLED_QUARTERS`` newest quarter entities among ``names``."""
+    by_owner: dict[int, list[tuple[date, str]]] = {}
+    for name in names:
+        owner, quarter = split_quarter_entity(name)
+        by_owner.setdefault(owner, []).append((quarter, name))
+    return {
+        owner: [name for _, name in sorted(found, reverse=True)[:REPULLED_QUARTERS]]
+        for owner, found in by_owner.items()
+    }
+
+
+@dataclass(frozen=True)
+class PerCompanyQuarter(Endpoint):
+    """One request per company and calendar quarter, selected by ``cik`` and ``reportDate``.
+
+    The quarters are those from ``first_quarter`` whose filings are all due
+    by the refresh's day (``SETTLE_DAYS`` after the quarter end), newest
+    first; each quarter is asked of every company before the one before it.
+    An entity is ``<cik>_<quarter end>``. A new 13F filing of a manager
+    re-pulls the ``REPULLED_QUARTERS`` newest pulled quarters of every
+    company the manager's holder rows name (a late filing, an amendment).
+
+    Parameters
+    ----------
+    first_quarter : date, default ``FIRST_13F_QUARTER``
+        The oldest quarter pulled.
+
+    Examples
+    --------
+    >>> row = ENDPOINTS["institutional_holders"]
+    >>> row.entities(PullContext(Path("/d/stockfit"), ciks=(1652044,), end=date(2024, 9, 1)))[:2]
+    ['1652044_2024-06-30', '1652044_2024-03-31']
+    >>> row.query("1652044_2024-03-31")
+    {'cik': 1652044, 'reportDate': '2024-03-31'}
+    """
+
+    first_quarter: date = FIRST_13F_QUARTER
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return every company's entity for each settled quarter, newest quarter first."""
+        ciks: Sequence[int] = context.ciks if context.ciks is not None else company_ciks(context.vendor_root)
+        settled = _today(context) - timedelta(days=SETTLE_DAYS)
+        return [quarter_entity(cik, quarter) for quarter in quarter_ends(self.first_quarter, settled) for cik in ciks]
+
+    def query(self, entity: str) -> dict:
+        """Return the fixed parameters, ``cik`` and ``reportDate``."""
+        cik, quarter = split_quarter_entity(entity)
+        return {**self.params, "cik": cik, "reportDate": quarter.isoformat()}
+
+    def filer_entities(self, ciks: Iterable[int], context: PullContext) -> dict[int, list[str]]:
+        """Return, per filing manager, the newest pulled quarters of the companies its holder rows name.
+
+        Examples
+        --------
+        >>> ENDPOINTS["institutional_holders"].filer_entities([1067983], PullContext(Path("/nonexistent")))
+        {}
+        """
+        holdings = manager_holdings(context.vendor_root)
+        newest = _newest_quarters(raw_entities(context.vendor_root, self.name))
+        wanted = None if context.ciks is None else set(context.ciks)
+        touched = {}
+        for manager in ciks:
+            companies = {split_quarter_entity(name)[0] for name in holdings.get(manager, ())}
+            names = [
+                name for company in sorted(companies) if wanted is None or company in wanted
+                for name in newest.get(company, [])
+            ]
+            if names:
+                touched[manager] = names
+        return touched
+
+
+@dataclass(frozen=True)
+class PerManager(Endpoint):
+    """One request per 13F manager, selected by its CIK.
+
+    The managers are those named in the raw tier's 13F holder rows
+    (``quantlab.dataset.stockfit.raw.thirteen_f_managers``), so a manager
+    first appears in the run after its holder rows land. A manager's new
+    13F filing re-pulls it.
+
+    Examples
+    --------
+    >>> ENDPOINTS["manager_13f_filings"].query("1067983")
+    {'type': '13F-HR', 'cik': 1067983}
+    """
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return every manager of the raw tier's holder rows."""
+        return [str(cik) for cik in thirteen_f_managers(context.vendor_root)]
+
+    def query(self, entity: str) -> dict:
+        """Return the fixed parameters and ``cik``."""
+        return {**self.params, "cik": int(entity)}
+
+    def filer_entities(self, ciks: Iterable[int], context: PullContext) -> dict[int, list[str]]:
+        """Return each filing manager's own entity.
+
+        Examples
+        --------
+        >>> ENDPOINTS["manager_13f_filings"].filer_entities([1067983], PullContext(Path("/nonexistent")))
+        {1067983: ['1067983']}
+        """
+        return {cik: [str(cik)] for cik in ciks}
+
+
+@dataclass(frozen=True)
+class PerManagerQuarter(PerCompanyQuarter):
+    """One request per 13F manager and quarter its filings report.
+
+    The quarters of a manager are the periods of its newest 13F filing list
+    (``quantlab.dataset.stockfit.raw.thirteen_f_periods``) from
+    ``first_quarter`` on, newest first, so a quarter first appears in the
+    run after the manager's filing list shows it. An entity is
+    ``<manager cik>_<quarter end>``. A manager's new 13F filing re-pulls its
+    ``REPULLED_QUARTERS`` newest pulled quarters.
+
+    Examples
+    --------
+    >>> ENDPOINTS["manager_portfolio"].query("1067983_2023-09-30")
+    {'cik': 1067983, 'reportDate': '2023-09-30'}
+    """
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return each manager's entity for each quarter its filings report."""
+        last = _today(context)
+        return [
+            quarter_entity(manager, quarter)
+            for manager in thirteen_f_managers(context.vendor_root)
+            for quarter in thirteen_f_periods(context.vendor_root, manager)
+            if self.first_quarter <= quarter <= last
+        ]
+
+    def filer_entities(self, ciks: Iterable[int], context: PullContext) -> dict[int, list[str]]:
+        """Return each filing manager's newest pulled quarters.
+
+        Examples
+        --------
+        >>> ENDPOINTS["manager_portfolio"].filer_entities([1067983], PullContext(Path("/nonexistent")))
+        {}
+        """
+        newest = _newest_quarters(raw_entities(context.vendor_root, self.name))
+        return {cik: newest[cik] for cik in ciks if cik in newest}
+
+
 def _statements() -> list[Endpoint]:
     paths = {
         "income_statement": "/api/financials/income-statement",
@@ -801,4 +1009,19 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     # Per operating company: the predicted next 10-K, 10-Q and DEF 14A, and the latest 50 headlines.
     CompanySnapshot(FILINGS_CALENDAR, "/api/filings/calendar"),
     CompanySnapshot(NEWS, "/api/lookup/news", {"limit": 50}),
+    # 13F, last: the holder rows of each company per quarter (every share
+    # class, by CUSIP), then the filings of each manager they name (the
+    # filing date of each row's accession), then each manager's portfolio
+    # per quarter it reported (raw only, the largest pull).
+    PerCompanyQuarter(
+        INSTITUTIONAL_HOLDERS, "/api/ownership/institutional-holders",
+        page_size=THIRTEEN_F_PAGE_SIZE, triggers=THIRTEEN_F_FORMS,
+    ),
+    PerManager(
+        MANAGER_13F_FILINGS, "/api/filings", {"type": "13F-HR"},
+        page_size=FILINGS_PAGE_SIZE, triggers=THIRTEEN_F_FORMS,
+    ),
+    PerManagerQuarter(
+        MANAGER_PORTFOLIO, "/api/ownership/portfolio", page_size=THIRTEEN_F_PAGE_SIZE, triggers=THIRTEEN_F_FORMS,
+    ),
 )}

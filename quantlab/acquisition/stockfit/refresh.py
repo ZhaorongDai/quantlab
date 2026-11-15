@@ -117,8 +117,9 @@ def refresh_raw_tier(
     download_dir : str or Path
         The download root.
     end : date or None, default None
-        Taken for the refresh protocol; none of these endpoints is asked by
-        date, so it bounds nothing.
+        The day the refresh runs for: an endpoint asked per quarter (13F)
+        pulls the quarters whose filings are due by it. The client's today
+        (UTC) when omitted.
     endpoints : iterable of str or Endpoint, or None, default None
         The endpoints to refresh, by name in ``ENDPOINTS`` or as rows; every
         one of ``ENDPOINTS``, in its order, when omitted. The filings that
@@ -158,7 +159,6 @@ def refresh_raw_tier(
 
         refresh_raw_tier("/data/quantlab/downloads", endpoints=("income_statement_quarter",), ciks=(320193, 789019))
     """
-    del end  # no endpoint here is asked by date
     selected = list(ENDPOINTS.values()) if endpoints is None else [
         endpoint if isinstance(endpoint, Endpoint) else _named(endpoint) for endpoint in endpoints
     ]
@@ -168,6 +168,7 @@ def refresh_raw_tier(
         vendor_root,
         None if ciks is None else tuple(int(cik) for cik in ciks),
         None if fund_series is None else tuple(str(series) for series in fund_series),
+        end=end if end is not None else client.now().date(),
     )
     tallies = {endpoint.name: _Tally() for endpoint in selected}
     by_name = {endpoint.name: endpoint for endpoint in selected}

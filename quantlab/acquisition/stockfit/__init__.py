@@ -19,7 +19,7 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'footnotes', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts']
+['reference', 'statements', 'footnotes', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts', 'holdings']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
@@ -38,6 +38,7 @@ from quantlab.dataset.stockfit.funds import (
     StockFitFundNcenDataset,
     StockFitFundProfileDataset,
 )
+from quantlab.dataset.stockfit.holdings import StockFitHoldingsDataset
 from quantlab.dataset.stockfit.insiders import StockFitInsidersDataset
 from quantlab.dataset.stockfit.snapshots import (
     StockFitEarningsConsensusDataset,
@@ -135,6 +136,11 @@ STOCKFIT_SOURCE = register_source(
                     ("filing_calendar", StockFitFilingCalendarDataset),
                     ("news_counts", StockFitNewsCountsDataset),
                 )
+            ),
+            # 13F: holder rows per company and quarter, managers' filings, managers' portfolios (raw only).
+            Capability(
+                market="us_equity", frequency="1d", data_type="holdings", entitlement=_ENTITLEMENT,
+                dataset_cls=StockFitHoldingsDataset,
             ),
         ),
         # A literal, checked against the client's constant by a test.

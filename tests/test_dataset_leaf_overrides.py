@@ -175,6 +175,7 @@ LEAF_OVERRIDES: dict[str, dict[str, str]] = {
     "StockFitBeneficialOwnersDataset": {"_normalize_config": _CHECKS_FIELDS},
     "StockFitExecutivesDataset": {"_normalize_config": _CHECKS_FIELDS},
     "StockFitFootnoteDataset": {"_normalize_config": _CHECKS_FIELDS},
+    "StockFitHoldingsDataset": {"_normalize_config": _CHECKS_FIELDS},
 }
 
 

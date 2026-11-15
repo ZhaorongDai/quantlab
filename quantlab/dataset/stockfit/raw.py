@@ -24,8 +24,13 @@ entity are the changes the vendor made to it, each kept.
 
 The writer (``quantlab.acquisition.stockfit.raw_tier``) takes every path from
 here; the readers are ``pulls``, ``read_pull``, ``read_pull_as_of``,
-``entities``, ``read_watermark``, ``last_pulled`` and ``company_ciks``. This module only
+``entities``, ``read_watermark``, ``last_pulled`` and ``company_ciks``, and
+for 13F ``thirteen_f_managers`` and ``thirteen_f_periods``. This module only
 reads.
+
+An endpoint asked per quarter (13F holders of a company, a manager's
+portfolio) has one entity per owner and quarter, named
+``<cik>_<quarter end>`` (``quarter_entity``).
 
 Examples
 --------
@@ -476,6 +481,8 @@ def daily_supported(vendor_root: str | Path) -> list[str]:
     if not pulls(vendor_root, FUND_DAILY_SUPPORTED, WHOLE_LIST):
         return []
     return [str(ticker) for ticker in read_pull(vendor_root, FUND_DAILY_SUPPORTED, WHOLE_LIST)]
+
+
 def newest_watermark(vendor_root: str | Path, endpoint: str) -> date | None:
     """Return the latest watermark among an endpoint's entities: the last UTC day it was pulled.
 
@@ -497,3 +504,91 @@ def newest_watermark(vendor_root: str | Path, endpoint: str) -> date | None:
         and (day := read_watermark(vendor_root, endpoint, path.name)) is not None
     ]
     return max(days, default=None)
+
+
+# -- 13F -----------------------------------------------------------------------
+
+#: The endpoint of a company's 13F holder rows for one quarter
+#: (``/api/ownership/institutional-holders?cik=...&reportDate=...``): one row
+#: per manager and security (CUSIP) of the company; entity ``<cik>_<quarter end>``.
+INSTITUTIONAL_HOLDERS = "institutional_holders"
+
+#: The endpoint of a manager's 13F filings, originals and amendments
+#: (``/api/filings?cik=...&type=13F-HR``); entity ``<manager cik>``.
+MANAGER_13F_FILINGS = "manager_13f_filings"
+
+#: The endpoint of a manager's 13F portfolio for one quarter
+#: (``/api/ownership/portfolio?cik=...&reportDate=...``), raw only; entity
+#: ``<manager cik>_<quarter end>``.
+MANAGER_PORTFOLIO = "manager_portfolio"
+
+
+def quarter_entity(owner: int | str, quarter: date) -> str:
+    """Return the entity of one owner's (a company's or a manager's) pull for one quarter.
+
+    Examples
+    --------
+    >>> quarter_entity(1652044, date(2024, 3, 31))
+    '1652044_2024-03-31'
+    """
+    return f"{owner}_{quarter.isoformat()}"
+
+
+def split_quarter_entity(entity: str) -> tuple[int, date]:
+    """Return the owner's CIK and the quarter end of a ``quarter_entity``.
+
+    Examples
+    --------
+    >>> split_quarter_entity("1652044_2024-03-31")
+    (1652044, datetime.date(2024, 3, 31))
+    """
+    owner, quarter = entity.rsplit("_", 1)
+    return int(owner), date.fromisoformat(quarter)
+
+
+def manager_holdings(vendor_root: str | Path) -> dict[int, list[str]]:
+    """Return, per 13F manager, the holder entities (``<cik>_<quarter end>``) whose newest pull names it.
+
+    Examples
+    --------
+    >>> manager_holdings("/nonexistent/stockfit")
+    {}
+    """
+    held: dict[int, list[str]] = {}
+    for entity in entities(vendor_root, INSTITUTIONAL_HOLDERS):
+        managers = {
+            int(row["managerCik"]) for row in read_pull(vendor_root, INSTITUTIONAL_HOLDERS, entity)
+            if row.get("managerCik")
+        }
+        for manager in managers:
+            held.setdefault(manager, []).append(entity)
+    return held
+
+
+def thirteen_f_managers(vendor_root: str | Path) -> list[int]:
+    """Return the CIK of every manager in the newest 13F holder rows of every company and quarter, sorted.
+
+    Examples
+    --------
+    >>> thirteen_f_managers("/nonexistent/stockfit")
+    []
+    """
+    return sorted(manager_holdings(vendor_root))
+
+
+def thirteen_f_periods(vendor_root: str | Path, manager: int | str) -> list[date]:
+    """Return the quarter ends a manager's newest 13F filing list reports, newest first.
+
+    Examples
+    --------
+    >>> thirteen_f_periods("/nonexistent/stockfit", 1067983)
+    []
+    """
+    if not pulls(vendor_root, MANAGER_13F_FILINGS, str(manager)):
+        return []
+    periods = {
+        date.fromisoformat(row["periodEndDate"][:10])
+        for row in read_pull(vendor_root, MANAGER_13F_FILINGS, str(manager))
+        if row.get("periodEndDate")
+    }
+    return sorted(periods, reverse=True)

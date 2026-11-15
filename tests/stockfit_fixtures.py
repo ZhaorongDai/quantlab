@@ -47,6 +47,17 @@ PAGING = frozenset({"page", "pageSize", "limit"})
 PLUG, TSM, TWTR, GOOGL = 1093691, 1046179, 1418091, 1652044
 
 
+#: The 13F endpoints: per company and quarter since 2013, too many pulls for a test of the rest.
+THIRTEEN_F_ENDPOINTS = ("institutional_holders", "manager_13f_filings", "manager_portfolio")
+
+
+def all_but_13f() -> list[str]:
+    """Return every endpoint of ``ENDPOINTS`` but the 13F ones, in table order."""
+    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
+
+    return [name for name in ENDPOINTS if name not in THIRTEEN_F_ENDPOINTS]
+
+
 def fixture(name: str):
     """Return one recorded response body."""
     return json.loads((FIXTURES / f"{name}.json").read_text())
