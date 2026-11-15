@@ -187,8 +187,8 @@ SharadarFundamentalsDataset(config).update()
 panel = SharadarFundamentalsDataset(config).panel("2024-01-02", "2024-12-31")
 ```
 
-The release panels (SF1, EVENTS, SF2, SF3A) share one point-in-time rule
-({py:mod}`quantlab.dataset.sharadar.point_in_time`): a row is available from the first trading day
+The release panels (SF1, EVENTS, SF2, SF3A) share one point-in-time rule, placed on SEP's
+trading days ({py:mod}`quantlab.dataset.sharadar.point_in_time`): a row is available from the first trading day
 on or after its release date, and on each day a security shows its latest available row, until
 that row is `stale_after_days` old. A weekend filing shows on Monday. Points worth knowing:
 

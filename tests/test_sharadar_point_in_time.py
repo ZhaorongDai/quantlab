@@ -1,4 +1,4 @@
-"""The point-in-time rule of Sharadar release panels, through `quantlab.dataset.sharadar.point_in_time`.
+"""The point-in-time rule of Sharadar release panels, through `quantlab.dataset._support.point_in_time`.
 
 Every Sharadar panel built from releases (fundamentals, fiscal years, 13F
 holdings, filings) places a row at its available date, the first SEP trading
@@ -18,7 +18,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from quantlab.dataset.sharadar.point_in_time import (
+from quantlab.dataset._support.point_in_time import (
     ReleasePanelDataset,
     ReleaseSpec,
     TradingCalendar,

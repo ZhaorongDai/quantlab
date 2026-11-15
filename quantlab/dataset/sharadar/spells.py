@@ -24,9 +24,10 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.dataset.raw import RawDataset
+from quantlab.dataset._support.point_in_time import TradingCalendar
 from quantlab.dataset.config import DatasetConfig, SharadarDatasetConfig
-from quantlab.dataset.sharadar.point_in_time import TradingCalendar
+from quantlab.dataset.raw import RawDataset
+from quantlab.dataset.sharadar.point_in_time import sep_calendar
 from quantlab.dataset.sharadar.universe import normalize_universe
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
@@ -128,7 +129,7 @@ class SpellPanelDataset(RawDataset):
     def _trading_calendar(self) -> TradingCalendar:
         """Return SEP's trading days through the day ``RAW_TABLES`` are complete through (cached)."""
         if self._calendar_cache is None:
-            self._calendar_cache = TradingCalendar.of_sep(
+            self._calendar_cache = sep_calendar(
                 self.config.raw_data_dir_path,
                 self.RAW_TABLES,
                 start=self.config.start_date,

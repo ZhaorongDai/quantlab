@@ -9,7 +9,7 @@ transaction (no ``transactioncode``, ``N``/``D``), which never counts.
 
 ``SharadarInsidersDataset`` places each line at the first SEP trading day
 on or after its filing date (never its transaction date) and sums a day's
-lines per security (``quantlab.dataset.sharadar.filings.FilingPanelDataset``):
+lines per security (``quantlab.dataset.sharadar.filings.SharadarFilingPanelDataset``):
 
 - ``net_shares``, ``net_value``: open-market trades in the stock, shares
   and USD bought (``P``) minus sold (``S``) on a non-derivative line. The
@@ -62,7 +62,7 @@ from __future__ import annotations
 import polars as pl
 
 from quantlab.dataset.config import SharadarInsidersConfig
-from quantlab.dataset.sharadar.filings import FilingPanelDataset
+from quantlab.dataset.sharadar.filings import SharadarFilingPanelDataset
 
 #: Transaction codes of open-market trades, and the sign each counts with.
 OPEN_MARKET: dict[str, int] = {"P": 1, "S": -1}
@@ -98,7 +98,7 @@ TRADE_KEY: tuple[str, ...] = (
 )
 
 
-class SharadarInsidersDataset(FilingPanelDataset):
+class SharadarInsidersDataset(SharadarFilingPanelDataset):
     """Daily panel of insiders' transactions per code, on each filing's available date.
 
     Parameters

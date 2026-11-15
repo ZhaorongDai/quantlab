@@ -7,7 +7,7 @@ record the exact consideration of single deals). ``SharadarActionsDataset``
 folds them into *families*, one variable or a few per family, each row
 placed on its effective date (``date``; for a takeover or a delisting the
 security's last trading day): on the first SEP trading day on or after it,
-and on no other day (``quantlab.dataset.sharadar.filings.FilingPanelDataset``).
+and on no other day (``quantlab.dataset.sharadar.filings.SharadarFilingPanelDataset``).
 A day without the action is NaN for a value and False for a flag.
 
 The families and the vendor names in each (``FAMILIES``), with what each
@@ -99,7 +99,7 @@ import polars as pl
 from loguru import logger
 
 from quantlab.dataset.config import SharadarActionsConfig
-from quantlab.dataset.sharadar.filings import FilingPanelDataset
+from quantlab.dataset.sharadar.filings import SharadarFilingPanelDataset
 from quantlab.dataset.sharadar.permatickers import PermatickerResolver
 from quantlab.dataset.sharadar.tables import (
     scan_raw_table,
@@ -275,7 +275,7 @@ _WITH_COUNTERPARTY: tuple[str, ...] = tuple(
 )
 
 
-class SharadarActionsDataset(FilingPanelDataset):
+class SharadarActionsDataset(SharadarFilingPanelDataset):
     """Daily panel of corporate actions by family, each on its effective date.
 
     Parameters

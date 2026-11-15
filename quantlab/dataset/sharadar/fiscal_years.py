@@ -51,9 +51,10 @@ from __future__ import annotations
 
 import polars as pl
 
+from quantlab.dataset._support.point_in_time import ReleaseSpec
 from quantlab.dataset.config import DatasetConfig, SharadarFiscalYearsConfig
 from quantlab.dataset.sharadar.permatickers import map_raw_table
-from quantlab.dataset.sharadar.point_in_time import ReleasePanelDataset, ReleaseSpec
+from quantlab.dataset.sharadar.point_in_time import SepReleasePanelDataset
 from quantlab.dataset.sharadar.tables import (
     SF1_INDICATORS,
     scan_raw_table,
@@ -80,7 +81,7 @@ def slot_name(name: str, slot: int) -> str:
     return f"{name}_fy{slot}"
 
 
-class SharadarFiscalYearsDataset(ReleasePanelDataset):
+class SharadarFiscalYearsDataset(SepReleasePanelDataset):
     """Daily point-in-time panel of each company's latest fiscal years, keyed by permaticker.
 
     Parameters

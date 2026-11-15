@@ -3,7 +3,9 @@
 Some Sharadar tables are events, not states: an 8-K (EVENTS) or an insider's
 Form 4 (SF2) is filed on one day and says something about that day only. A
 panel of them has a value on the day a filing became public and nothing
-in between. ``FilingPanelDataset`` is that shape; a subclass says which raw
+in between. ``SharadarFilingPanelDataset`` is that shape on a Sharadar
+table (the shape itself is ``FilingPanelDataset`` in
+``quantlab.dataset._support.point_in_time``); a subclass says which raw
 rows count and how one day's filings of one security combine.
 
 Each filing is placed at its *available date*, the first SEP trading day on
@@ -17,29 +19,24 @@ formed at a bar's close should read the panel one bar back.
 
 from __future__ import annotations
 
-import pandas as pd
 import polars as pl
-import xarray as xr
 
+from quantlab.dataset._support.point_in_time import FilingPanelDataset
 from quantlab.dataset.config import DatasetConfig, SharadarDatasetConfig
 from quantlab.dataset.sharadar.permatickers import map_raw_table
-from quantlab.dataset.sharadar.point_in_time import (
-    ReleasePanelDataset,
-    ReleaseSpec,
-    on_grid,
-    to_panel,
-)
+from quantlab.dataset.sharadar.point_in_time import SepReleasePanelDataset
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.utils.timer import Timer
 
 
-class FilingPanelDataset(ReleasePanelDataset):
+class SharadarFilingPanelDataset(SepReleasePanelDataset, FilingPanelDataset):
     """Daily panel of one Sharadar filing table, each filing at its available date.
 
     A subclass sets ``config_cls`` and ``TABLE`` and implements
     ``_empty`` (each variable's value on a day without a filing),
     ``_filings`` (the raw rows that count, with their values) and
     ``_combine`` (how one day's rows of one security add up).
+    The windows, the spec and the widening fill are ``FilingPanelDataset``'s.
 
     Parameters
     ----------
@@ -81,10 +78,6 @@ class FilingPanelDataset(ReleasePanelDataset):
 
     # -- the subclass's part --------------------------------------------------
 
-    def _empty(self) -> dict[str, object]:
-        """Return each variable's value on a day without a filing, in variable order."""
-        raise NotImplementedError
-
     def _filings(self, raw: pl.DataFrame) -> pl.DataFrame:
         """Return the raw rows that count, with their values.
 
@@ -105,10 +98,6 @@ class FilingPanelDataset(ReleasePanelDataset):
     def _combine(self) -> list[pl.Expr]:
         """Return one aggregation per variable, combining a security's filings of one day."""
         raise NotImplementedError
-
-    def _attrs(self) -> dict[str, dict]:
-        """Return each variable's attributes; none by default."""
-        return {}
 
     # -- the release table ------------------------------------------------------
 
@@ -152,68 +141,6 @@ class FilingPanelDataset(ReleasePanelDataset):
                 .sort("symbol", "available")
             )
 
-    def _spec(self) -> ReleaseSpec:
-        """Return the variables, in ``_empty()`` order, with their attributes."""
-        attrs = self._attrs()
-        return ReleaseSpec(
-            variables={name: attrs.get(name, {}) for name in self._empty()}, stamp=None
-        )
-
     def _nothing_shown(self) -> str:
         """Return what an empty window lacks."""
         return f"no {self.TABLE!r} filing"
-
-    # -- windows: a filing on its own day only ----------------------------------
-
-    def _raw_data_to_xr_window(
-        self, start_date, end_date, symbols: list[int] | None = None
-    ) -> xr.Dataset:
-        """Return one window of the panel: a day's filings on that day, the empty value elsewhere.
-
-        Parameters
-        ----------
-        start_date, end_date : date-like
-            The window, both inclusive.
-        symbols : list of int, optional
-            Permatickers to build; ``None`` is every one with a filing by
-            the window's end.
-        """
-        days, symbols = self._window_axes(start_date, end_date, symbols)
-        cells = (
-            on_grid(days, symbols)
-            .join(
-                self._released_rows(),
-                left_on=["timestamp", "symbol"],
-                right_on=["available", "symbol"],
-                how="left",
-            )
-            .sort("_day", "_column")
-            .with_columns(pl.col(name).fill_null(value) for name, value in self._empty().items())
-        )
-        return to_panel(cells, days, symbols, self._spec().variables)
-
-    def _added_symbols_with_raw_history(self, added: list, start, end) -> dict[str, int]:
-        """Count each added permaticker's filing days between ``start`` and ``end``.
-
-        A security whose first filing is after the store's last day has
-        none in it, so it widens the store.
-        """
-        if not added:
-            return {}
-        counts = (
-            self._released_rows()
-            .filter(
-                pl.col("symbol").is_in([int(s) for s in added])
-                & pl.col("available").is_between(
-                    pl.lit(pd.Timestamp(start).to_datetime64()),
-                    pl.lit(pd.Timestamp(end).to_datetime64()),
-                )
-            )
-            .group_by("symbol")
-            .len()
-        )
-        return {str(symbol): int(rows) for symbol, rows in counts.iter_rows()}
-
-    def _widen_fill_values(self) -> dict:
-        """Fill a new permaticker's stored days with the empty values: it filed nothing then."""
-        return self._empty()

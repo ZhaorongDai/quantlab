@@ -56,7 +56,7 @@ from quantlab.dataset.config import MassiveDisclosuresConfig
 from quantlab.dataset.massive.placement import TickerPlacement
 from quantlab.dataset.massive.raw import read_rest_snapshot, rest_frame
 from quantlab.dataset.massive.rest_panel import MassiveRestPanel
-from quantlab.dataset.sharadar.filings import FilingPanelDataset
+from quantlab.dataset.sharadar.filings import SharadarFilingPanelDataset
 from quantlab.dataset.sharadar.universe import universe
 from quantlab.utils.timer import Timer
 
@@ -76,7 +76,7 @@ DISCLOSURE_SCHEMA = {
 }
 
 
-class MassiveDisclosureDataset(MassiveRestPanel, FilingPanelDataset):
+class MassiveDisclosureDataset(MassiveRestPanel, SharadarFilingPanelDataset):
     """Daily panel of Massive's 8-K disclosure categories, one flag per primary category, by permaticker.
 
     See the module docstring for the variables and the placement.

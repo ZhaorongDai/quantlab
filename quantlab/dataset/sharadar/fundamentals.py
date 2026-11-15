@@ -54,16 +54,17 @@ from __future__ import annotations
 
 import polars as pl
 
+from quantlab.dataset._support.point_in_time import ReleaseSpec
 from quantlab.dataset.config import DatasetConfig, SharadarFundamentalsConfig
 from quantlab.dataset.sharadar.permatickers import map_raw_table
-from quantlab.dataset.sharadar.point_in_time import ReleasePanelDataset, ReleaseSpec
-from quantlab.dataset.sharadar.universe import normalize_universe, universe
+from quantlab.dataset.sharadar.point_in_time import SepReleasePanelDataset
 from quantlab.dataset.sharadar.tables import (
     DAILY_INDICATORS,
     SF1_INDICATORS,
     scan_raw_table,
     table,
 )
+from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.utils.timer import Timer
 
 #: The dimensions a store may hold: as reported, quarterly or trailing twelve months.
@@ -76,7 +77,7 @@ DATE_VARIABLES: tuple[str, ...] = ("release_date", "reportperiod")
 _ERROR_SAMPLE = 5
 
 
-class SharadarFundamentalsDataset(ReleasePanelDataset):
+class SharadarFundamentalsDataset(SepReleasePanelDataset):
     """Daily point-in-time panel of one as-reported SF1 dimension, keyed by permaticker.
 
     Parameters

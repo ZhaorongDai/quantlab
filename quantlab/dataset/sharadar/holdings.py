@@ -57,14 +57,10 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
+from quantlab.dataset._support.point_in_time import ReleaseSpec, on_grid, to_panel
 from quantlab.dataset.config import DatasetConfig, SharadarHoldingsConfig
 from quantlab.dataset.sharadar.permatickers import map_raw_table
-from quantlab.dataset.sharadar.point_in_time import (
-    ReleasePanelDataset,
-    ReleaseSpec,
-    on_grid,
-    to_panel,
-)
+from quantlab.dataset.sharadar.point_in_time import SepReleasePanelDataset
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.utils.timer import Timer
 
@@ -92,7 +88,7 @@ VALUE_SCALE = 1_000_000.0
 _ERROR_SAMPLE = 5
 
 
-class SharadarHoldingsDataset(ReleasePanelDataset):
+class SharadarHoldingsDataset(SepReleasePanelDataset):
     """Daily panel of 13F holders and shares held, each quarter from quarter end + 45 days.
 
     Parameters
