@@ -1,0 +1,46 @@
+[
+ {
+  "period": "2026-09-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q3",
+  "eps": 2.14,
+  "epsDiluted": 2.12,
+  "netIncome": 26468000000,
+  "sharesOutstanding": 12256000000,
+  "sharesOutstandingDiluted": 12368000000,
+  "epsGrowth": -0.7681
+ },
+ {
+  "period": "2026-06-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q2",
+  "eps": 9.23,
+  "epsDiluted": 9.11,
+  "netIncome": 112193000000,
+  "sharesOutstanding": 12151000000,
+  "sharesOutstandingDiluted": 12309000000,
+  "epsGrowth": 0.7853
+ },
+ {
+  "period": "2026-03-31",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q1",
+  "eps": 5.17,
+  "epsDiluted": 5.11,
+  "netIncome": 62578000000,
+  "sharesOutstanding": 12099000000,
+  "sharesOutstandingDiluted": 12238000000,
+  "epsGrowth": 0.814
+ },
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q4",
+  "eps": 2.85,
+  "epsDiluted": 2.64,
+  "netIncome": 34455000000,
+  "sharesOutstanding": 12074608696,
+  "sharesOutstandingDiluted": 12230000000,
+  "epsGrowth": -0.0138
+ }
+]

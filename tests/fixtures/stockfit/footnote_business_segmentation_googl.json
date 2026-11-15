@@ -1,0 +1,80 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "unit": "USD",
+  "segments": [
+   {
+    "member": "goog:GoogleServicesMember",
+    "name": "Google Services",
+    "role": "segment",
+    "metrics": {
+     "revenue": 342721000000,
+     "operatingIncome": 139404000000,
+     "goodwill": 24870000000
+    }
+   },
+   {
+    "member": "goog:GoogleCloudMember",
+    "name": "Google Cloud",
+    "role": "segment",
+    "metrics": {
+     "revenue": 58705000000,
+     "operatingIncome": 13910000000,
+     "goodwill": 7660000000
+    }
+   },
+   {
+    "member": "us-gaap:AllOtherSegmentsMember",
+    "name": "All Other Segments",
+    "role": "segment",
+    "metrics": {
+     "revenue": 1537000000,
+     "operatingIncome": -7515000000,
+     "goodwill": 850000000
+    }
+   }
+  ],
+  "dateFiled": "2026-10-29"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "unit": "USD",
+  "segments": [
+   {
+    "member": "goog:GoogleServicesMember",
+    "name": "Google Services",
+    "role": "segment",
+    "metrics": {
+     "revenue": 304930000000,
+     "operatingIncome": 121263000000,
+     "goodwill": 23521000000
+    }
+   },
+   {
+    "member": "goog:GoogleCloudMember",
+    "name": "Google Cloud",
+    "role": "segment",
+    "metrics": {
+     "revenue": 43229000000,
+     "operatingIncome": 6112000000,
+     "goodwill": 7490000000
+    }
+   },
+   {
+    "member": "us-gaap:AllOtherSegmentsMember",
+    "name": "All Other Segments",
+    "role": "segment",
+    "metrics": {
+     "revenue": 1648000000,
+     "operatingIncome": -4444000000,
+     "goodwill": 874000000
+    }
+   }
+  ],
+  "dateFiled": "2026-02-05"
+ }
+]

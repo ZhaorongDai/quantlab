@@ -1,0 +1,303 @@
+[
+ {
+  "reportDate": "2026-06-30",
+  "holderCount": 6312,
+  "totalShares": 8097750782,
+  "totalValue": 2746220911607,
+  "pctOfSharesOutstanding": 66.21
+ },
+ {
+  "reportDate": "2026-03-31",
+  "holderCount": 6201,
+  "totalShares": 7768178753,
+  "totalValue": 2126955330548,
+  "pctOfSharesOutstanding": 64.12
+ },
+ {
+  "reportDate": "2025-12-31",
+  "holderCount": 6253,
+  "totalShares": 8010510445,
+  "totalValue": 2353786423857,
+  "pctOfSharesOutstanding": 66.27
+ },
+ {
+  "reportDate": "2025-09-30",
+  "holderCount": 5630,
+  "totalShares": 7896238670,
+  "totalValue": 1829485737553,
+  "pctOfSharesOutstanding": 65.38
+ },
+ {
+  "reportDate": "2025-06-30",
+  "holderCount": 5497,
+  "totalShares": 7789472697,
+  "totalValue": 1307091861761,
+  "pctOfSharesOutstanding": 64.35
+ },
+ {
+  "reportDate": "2025-03-31",
+  "holderCount": 5422,
+  "totalShares": 7786020170,
+  "totalValue": 1143518937505,
+  "pctOfSharesOutstanding": 64.06
+ },
+ {
+  "reportDate": "2024-12-31",
+  "holderCount": 5538,
+  "totalShares": 6857589080,
+  "totalValue": 1216234587995,
+  "pctOfSharesOutstanding": 56.16
+ },
+ {
+  "reportDate": "2024-09-30",
+  "holderCount": 4973,
+  "totalShares": 7061949894,
+  "totalValue": 1097269414918,
+  "pctOfSharesOutstanding": 57.58
+ },
+ {
+  "reportDate": "2024-06-30",
+  "holderCount": 5001,
+  "totalShares": 7064999514,
+  "totalValue": 1266656185345,
+  "pctOfSharesOutstanding": 57.34
+ },
+ {
+  "reportDate": "2024-03-31",
+  "holderCount": 4887,
+  "totalShares": 7498233379,
+  "totalValue": 1119964589368,
+  "pctOfSharesOutstanding": 60.56
+ },
+ {
+  "reportDate": "2023-12-31",
+  "holderCount": 4841,
+  "totalShares": 7233108904,
+  "totalValue": 998291534705,
+  "pctOfSharesOutstanding": 58.05
+ },
+ {
+  "reportDate": "2023-09-30",
+  "holderCount": 4501,
+  "totalShares": 6135496269,
+  "totalValue": 793304792041,
+  "pctOfSharesOutstanding": 48.92
+ },
+ {
+  "reportDate": "2023-06-30",
+  "holderCount": 4411,
+  "totalShares": 6228736553,
+  "totalValue": 733419680342,
+  "pctOfSharesOutstanding": 49.32
+ },
+ {
+  "reportDate": "2023-03-31",
+  "holderCount": 4339,
+  "totalShares": 6356457461,
+  "totalValue": 614959262289,
+  "pctOfSharesOutstanding": 49.96
+ },
+ {
+  "reportDate": "2022-12-31",
+  "holderCount": 4304,
+  "totalShares": 6346477270,
+  "totalValue": 497870926608,
+  "pctOfSharesOutstanding": 49.39
+ },
+ {
+  "reportDate": "2022-09-30",
+  "holderCount": 4144,
+  "totalShares": 6154823544,
+  "totalValue": 71189082080,
+  "pctOfSharesOutstanding": 47.45
+ },
+ {
+  "reportDate": "2022-06-30",
+  "holderCount": 4184,
+  "totalShares": 337240889,
+  "totalValue": 76344876682,
+  "pctOfSharesOutstanding": 2.58
+ },
+ {
+  "reportDate": "2022-03-31",
+  "holderCount": 4284,
+  "totalShares": 327467708,
+  "totalValue": 101017090276,
+  "pctOfSharesOutstanding": 49.71
+ },
+ {
+  "reportDate": "2021-12-31",
+  "holderCount": 4253,
+  "totalShares": 309973332,
+  "totalValue": 19809717653,
+  "pctOfSharesOutstanding": 2.34
+ },
+ {
+  "reportDate": "2021-09-30",
+  "holderCount": 3796,
+  "totalShares": 300571475,
+  "totalValue": 12976567384,
+  "pctOfSharesOutstanding": 45.22
+ },
+ {
+  "reportDate": "2021-06-30",
+  "holderCount": 3757,
+  "totalShares": 308420909,
+  "totalValue": 19505949284,
+  "pctOfSharesOutstanding": 46.2
+ },
+ {
+  "reportDate": "2021-03-31",
+  "holderCount": 3681,
+  "totalShares": 316853487,
+  "totalValue": 16079786304,
+  "pctOfSharesOutstanding": 47.21
+ },
+ {
+  "reportDate": "2020-12-31",
+  "holderCount": 3602,
+  "totalShares": 316538608,
+  "totalValue": 11103744259,
+  "pctOfSharesOutstanding": 46.88
+ },
+ {
+  "reportDate": "2020-09-30",
+  "holderCount": 3241,
+  "totalShares": 316860562,
+  "totalValue": 9400153134,
+  "pctOfSharesOutstanding": 46.75
+ },
+ {
+  "reportDate": "2020-06-30",
+  "holderCount": 3225,
+  "totalShares": 321405519,
+  "totalValue": 9338387274,
+  "pctOfSharesOutstanding": 47.18
+ },
+ {
+  "reportDate": "2020-03-31",
+  "holderCount": 3193,
+  "totalShares": 328602695,
+  "totalValue": 7555100873,
+  "pctOfSharesOutstanding": 48.04
+ },
+ {
+  "reportDate": "2019-12-31",
+  "holderCount": 3203,
+  "totalShares": 329689507,
+  "totalValue": 8053692822,
+  "pctOfSharesOutstanding": 47.9
+ },
+ {
+  "reportDate": "2019-09-30",
+  "holderCount": 2887,
+  "totalShares": 330064423,
+  "totalValue": 7262051193,
+  "pctOfSharesOutstanding": 47.77
+ },
+ {
+  "reportDate": "2019-06-30",
+  "holderCount": 2853,
+  "totalShares": 328863614,
+  "totalValue": 5441508382,
+  "pctOfSharesOutstanding": 47.38
+ },
+ {
+  "reportDate": "2019-03-31",
+  "holderCount": 2908,
+  "totalShares": 326557988,
+  "totalValue": 6471907591,
+  "pctOfSharesOutstanding": 47
+ },
+ {
+  "reportDate": "2018-12-31",
+  "holderCount": 2854,
+  "totalShares": 328931380,
+  "totalValue": 5103281238,
+  "pctOfSharesOutstanding": 47.29
+ },
+ {
+  "reportDate": "2018-09-30",
+  "holderCount": 2682,
+  "totalShares": 320499425,
+  "totalValue": 7525410688,
+  "pctOfSharesOutstanding": 46.05
+ },
+ {
+  "reportDate": "2018-06-30",
+  "holderCount": 2636,
+  "totalShares": 321092772,
+  "totalValue": 6787016049,
+  "pctOfSharesOutstanding": 46.14
+ },
+ {
+  "reportDate": "2018-03-31",
+  "holderCount": 2589,
+  "totalShares": 316703865,
+  "totalValue": 5911929976,
+  "pctOfSharesOutstanding": 45.57
+ },
+ {
+  "reportDate": "2017-12-31",
+  "holderCount": 2593,
+  "totalShares": 322394542,
+  "totalValue": 6050927300,
+  "pctOfSharesOutstanding": 46.4
+ },
+ {
+  "reportDate": "2017-09-30",
+  "holderCount": 2345,
+  "totalShares": 319653837,
+  "totalValue": 5879177136,
+  "pctOfSharesOutstanding": 46.01
+ },
+ {
+  "reportDate": "2017-06-30",
+  "holderCount": 2361,
+  "totalShares": 321308874,
+  "totalValue": 5687535471,
+  "pctOfSharesOutstanding": 46.37
+ },
+ {
+  "reportDate": "2017-03-31",
+  "holderCount": 2312,
+  "totalShares": 328224276,
+  "totalValue": 5140194256,
+  "pctOfSharesOutstanding": 47.42
+ },
+ {
+  "reportDate": "2016-12-31",
+  "holderCount": 2264,
+  "totalShares": 363436489,
+  "totalValue": 2760801490,
+  "pctOfSharesOutstanding": 52.57
+ },
+ {
+  "reportDate": "2016-09-30",
+  "holderCount": 2135,
+  "totalShares": 361345778,
+  "totalValue": 3008006835,
+  "pctOfSharesOutstanding": 52.43
+ },
+ {
+  "reportDate": "2016-06-30",
+  "holderCount": 2081,
+  "totalShares": 352819392,
+  "totalValue": 2377355801,
+  "pctOfSharesOutstanding": 51.37
+ },
+ {
+  "reportDate": "2016-03-31",
+  "holderCount": 2112,
+  "totalShares": 362149639,
+  "totalValue": 2650435290,
+  "pctOfSharesOutstanding": 52.73
+ },
+ {
+  "reportDate": "2015-12-31",
+  "holderCount": 2082,
+  "totalShares": 361599805,
+  "totalValue": 3099324300,
+  "pctOfSharesOutstanding": 52.61
+ }
+]

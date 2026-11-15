@@ -1,0 +1,257 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2026-04-16",
+  "acceptedAt": "2026-04-16T10:05:49Z",
+  "facts": {
+   "operatingCashFlow": 72520700000,
+   "netIncome": 54036500000,
+   "amortization": 268200000,
+   "stockBasedCompensation": 39700000,
+   "changeInInventory": -7700000,
+   "investingCashFlow": -36480500000,
+   "financingCashFlow": -14037100000,
+   "commonStockRepurchased": 0,
+   "effectOfExchangeRateChanges": -1594100000,
+   "netChangeInCashIncludingFx": 20409000000,
+   "incomeTaxPaid": 8529100000,
+   "interestPaid": 609800000,
+   "capitalExpenditure": 40561400000,
+   "purchaseOfPropertyPlantAndEquipment": 40561400000,
+   "cashDividendsPaid": 14879800000,
+   "endCash": 88232600000,
+   "netCommonStockIssuance": 0,
+   "beginningCash": 67823600000,
+   "changeInWorkingCapital": 18444500000,
+   "changeInCash": 22003100000,
+   "freeCashFlow": 31959300000
+  },
+  "sources": {
+   "0001628280-26-025362": {
+    "type": "20-F",
+    "dateFiled": "2026-04-16",
+    "acceptedAt": "2026-04-16T10:05:49Z",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "commonStockRepurchased": {},
+     "effectOfExchangeRateChanges": {},
+     "netChangeInCashIncludingFx": {},
+     "incomeTaxPaid": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "cashDividendsPaid": {},
+     "endCash": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "beginningCash",
+   "changeInWorkingCapital",
+   "changeInCash",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2025-04-17",
+  "acceptedAt": "2025-04-17T10:16:18Z",
+  "facts": {
+   "operatingCashFlow": 55693100000,
+   "netIncome": 35301100000,
+   "amortization": 286447006,
+   "stockBasedCompensation": 37900000,
+   "changeInInventory": -1124500000,
+   "investingCashFlow": -26375200000,
+   "financingCashFlow": -10561100000,
+   "commonStockRepurchased": 96329464,
+   "proceedsFromStockOptionsExercised": 193020647,
+   "effectOfExchangeRateChanges": 1438400000,
+   "netChangeInCashIncludingFx": 20195200000,
+   "incomeTaxPaid": 5726386257,
+   "interestPaid": 571900000,
+   "capitalExpenditure": 29155400000,
+   "purchaseOfPropertyPlantAndEquipment": 29155400000,
+   "cashDividendsPaid": 11072100000,
+   "endCash": 67823600000,
+   "netCommonStockIssuance": -96329464,
+   "beginningCash": 44691300000,
+   "changeInWorkingCapital": 20354100000,
+   "changeInCash": 21693900000,
+   "freeCashFlow": 26537700000
+  },
+  "sources": {
+   "0001193125-25-083423": {
+    "type": "20-F",
+    "dateFiled": "2025-04-17",
+    "acceptedAt": "2025-04-17T10:16:18Z",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromStockOptionsExercised": {},
+     "effectOfExchangeRateChanges": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "cashDividendsPaid": {},
+     "endCash": {}
+    }
+   },
+   "0001628280-26-025362": {
+    "type": "20-F",
+    "dateFiled": "2026-04-16",
+    "acceptedAt": "2026-04-16T10:05:49Z",
+    "amendment": false,
+    "facts": {
+     "amortization": {},
+     "commonStockRepurchased": {},
+     "incomeTaxPaid": {},
+     "endCash": {
+      "before": 64886500000
+     }
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "beginningCash",
+   "changeInWorkingCapital",
+   "changeInCash",
+   "freeCashFlow"
+  ],
+  "fx": {
+   "targetCurrency": "USD",
+   "originalCurrencies": [
+    "USD",
+    "TWD"
+   ],
+   "rates": [
+    {
+     "from": "TWD",
+     "method": "average",
+     "rate": 0.031182657037854025,
+     "start": "2024-01-01",
+     "end": "2024-12-31"
+    }
+   ]
+  }
+ },
+ {
+  "period": "2023-12-31",
+  "fiscalYear": 2023,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2024-04-18",
+  "acceptedAt": "2024-04-18T10:27:53Z",
+  "facts": {
+   "operatingCashFlow": 40560700000,
+   "netIncome": 27793200000,
+   "amortization": 297603161,
+   "stockBasedCompensation": 15800000,
+   "changeInInventory": -974800000,
+   "investingCashFlow": -29592500000,
+   "financingCashFlow": -6691500000,
+   "commonStockRepurchased": 0,
+   "proceedsFromStockOptionsExercised": 8743391,
+   "effectOfExchangeRateChanges": -272400000,
+   "netChangeInCashIncludingFx": 4004300000,
+   "incomeTaxPaid": 5139156116,
+   "interestPaid": 566900000,
+   "capitalExpenditure": 31019500000,
+   "purchaseOfPropertyPlantAndEquipment": 31019500000,
+   "cashDividendsPaid": 9527200000,
+   "endCash": 44691300000,
+   "netCommonStockIssuance": 0,
+   "beginningCash": 43854200000,
+   "changeInWorkingCapital": 12751700000,
+   "changeInCash": 1109500000,
+   "freeCashFlow": 9541200000
+  },
+  "sources": {
+   "0001193125-24-099840": {
+    "type": "20-F",
+    "dateFiled": "2024-04-18",
+    "acceptedAt": "2024-04-18T10:27:53Z",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromStockOptionsExercised": {},
+     "effectOfExchangeRateChanges": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "cashDividendsPaid": {},
+     "endCash": {}
+    }
+   },
+   "0001193125-25-083423": {
+    "type": "20-F",
+    "dateFiled": "2025-04-17",
+    "acceptedAt": "2025-04-17T10:16:18Z",
+    "amendment": false,
+    "facts": {
+     "endCash": {
+      "before": 47858500000
+     }
+    }
+   },
+   "0001628280-26-025362": {
+    "type": "20-F",
+    "dateFiled": "2026-04-16",
+    "acceptedAt": "2026-04-16T10:05:49Z",
+    "amendment": false,
+    "facts": {
+     "amortization": {},
+     "commonStockRepurchased": {},
+     "incomeTaxPaid": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "beginningCash",
+   "changeInWorkingCapital",
+   "changeInCash",
+   "freeCashFlow"
+  ],
+  "fx": {
+   "targetCurrency": "USD",
+   "originalCurrencies": [
+    "USD",
+    "TWD"
+   ],
+   "rates": [
+    {
+     "from": "TWD",
+     "method": "average",
+     "rate": 0.03214481877549289,
+     "start": "2023-01-01",
+     "end": "2023-12-31"
+    }
+   ]
+  }
+ }
+]

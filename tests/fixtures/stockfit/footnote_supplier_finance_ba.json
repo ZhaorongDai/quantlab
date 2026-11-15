@@ -1,0 +1,42 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "totals": {
+   "currency": "USD",
+   "obligation": 1994000000
+  },
+  "programs": [
+   {
+    "member": "ba:SupplyChainFinancingProgramsMember",
+    "name": "Supply Chain Financing Programs",
+    "currency": "USD",
+    "obligation": 1994000000,
+    "additions": 10948000000,
+    "settlements": 11657000000
+   }
+  ],
+  "dateFiled": "2026-04-22"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "totals": {
+   "currency": "USD",
+   "obligation": 2703000000
+  },
+  "programs": [
+   {
+    "member": "ba:SupplyChainFinancingProgramsMember",
+    "name": "Supply Chain Financing Programs",
+    "currency": "USD",
+    "obligation": 2703000000,
+    "additions": 12476000000,
+    "settlements": 12644000000
+   }
+  ],
+  "dateFiled": "2026-01-30"
+ }
+]

@@ -1,0 +1,26 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "currency": "USD",
+  "dateFiled": "2026-02-05",
+  "cashSpent": 45709000000,
+  "repurchased": {
+   "value": 45398000000,
+   "style": "retired"
+  }
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "currency": "USD",
+  "dateFiled": "2025-02-05",
+  "cashSpent": 62222000000,
+  "repurchased": {
+   "value": 62047000000,
+   "style": "retired"
+  }
+ }
+]

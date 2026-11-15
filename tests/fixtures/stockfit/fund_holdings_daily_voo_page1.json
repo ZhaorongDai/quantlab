@@ -1,0 +1,69 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 101,
+ "totalResults": 503,
+ "reportDate": "2026-09-30",
+ "data": [
+  {
+   "name": "NVIDIA CORP",
+   "ticker": "NVDA",
+   "cusip": "67066G104",
+   "isin": "US67066G1040",
+   "sedol": "2379504",
+   "balance": 635561927,
+   "units": "NS",
+   "currency": "USD",
+   "valueUsd": 145149632888.26,
+   "pctVal": 8.38
+  },
+  {
+   "name": "APPLE INC",
+   "ticker": "AAPL",
+   "cusip": "037833100",
+   "isin": "US0378331005",
+   "sedol": "2046251",
+   "balance": 383293319,
+   "units": "NS",
+   "currency": "USD",
+   "valueUsd": 127644341093.38,
+   "pctVal": 7.37
+  },
+  {
+   "name": "MICROSOFT CORP",
+   "ticker": "MSFT",
+   "cusip": "594918104",
+   "isin": "US5949181045",
+   "sedol": "2588173",
+   "balance": 195017862,
+   "units": "NS",
+   "currency": "USD",
+   "valueUsd": 100024661419.8,
+   "pctVal": 5.78
+  },
+  {
+   "name": "AMAZON.COM INC",
+   "ticker": "AMZN",
+   "cusip": "023135106",
+   "isin": "US0231351067",
+   "sedol": "2000019",
+   "balance": 257790345,
+   "units": "NS",
+   "currency": "USD",
+   "valueUsd": 64228464456.75,
+   "pctVal": 3.71
+  },
+  {
+   "name": "ALPHABET INC-A",
+   "ticker": "GOOGL",
+   "cusip": "02079K305",
+   "isin": "US02079K3059",
+   "sedol": "BYVY8G0",
+   "balance": 154411224,
+   "units": "NS",
+   "currency": "USD",
+   "valueUsd": 53129813953.92,
+   "pctVal": 3.07
+  }
+ ]
+}

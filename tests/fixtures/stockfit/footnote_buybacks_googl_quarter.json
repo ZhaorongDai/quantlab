@@ -1,0 +1,34 @@
+[
+ {
+  "period": "2026-09-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q3",
+  "currency": "USD",
+  "dateFiled": "2026-10-29",
+  "cashSpent": 0
+ },
+ {
+  "period": "2026-06-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q2",
+  "currency": "USD",
+  "dateFiled": "2026-07-23",
+  "cashSpent": 0
+ },
+ {
+  "period": "2026-03-31",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q1",
+  "currency": "USD",
+  "dateFiled": "2026-04-30",
+  "cashSpent": 0
+ },
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q4",
+  "currency": "USD",
+  "dateFiled": "2026-02-05",
+  "cashSpent": 5499000000
+ }
+]

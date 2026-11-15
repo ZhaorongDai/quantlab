@@ -1,0 +1,247 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "instruments": [
+   {
+    "member": "goog:A2025USDNotesMember",
+    "name": "A 2025 USDNotes",
+    "currency": "USD",
+    "faceAmount": 22500000000,
+    "carryingAmount": 22500000000,
+    "debtType": "us-gaap:SeniorNotesMember",
+    "debtTypeName": "Senior Notes",
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2025USDFixedRateNotesMember",
+    "name": "A 2025 USDFixed Rate Notes",
+    "currency": "USD",
+    "faceAmount": 17000000000,
+    "debtType": "us-gaap:SeniorNotesMember",
+    "debtTypeName": "Senior Notes",
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2025EuroNotesMember",
+    "name": "A 2025 Euro Notes",
+    "currency": "USD",
+    "faceAmount": 15569185937.20624,
+    "carryingAmount": 15585000000,
+    "debtType": "us-gaap:SeniorNotesMember",
+    "debtTypeName": "Senior Notes",
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2020NotesMember",
+    "name": "A 2020 Notes",
+    "currency": "USD",
+    "carryingAmount": 9000000000,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2026AustralianDenominatedFloatingRateNotesMember",
+    "name": "A 2026 Australian Denominated Floating Rate Notes",
+    "currency": "USD",
+    "carryingAmount": 1538976246.2361996,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2016NotesMember",
+    "name": "A 2016 Notes",
+    "currency": "USD",
+    "carryingAmount": 2000000000,
+    "statedRate": 0.02,
+    "effectiveRate": 0.0223,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2025USDFloatingRateNotesMember",
+    "name": "A 2025 USDFloating Rate Notes",
+    "currency": "USD",
+    "faceAmount": 500000000,
+    "debtType": "us-gaap:SeniorNotesMember",
+    "debtTypeName": "Senior Notes",
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2025USDNotesFloatingRateDueIn2028Member",
+    "name": "A 2025 USDNotes Floating Rate Due In 2028",
+    "currency": "USD",
+    "carryingAmount": 500000000,
+    "variableSpread": 0.0052,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": 2028
+   },
+   {
+    "member": "goog:A2026AustralianDollarNotesMember",
+    "name": "A 2026 Australian Dollar Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2026CanadianDollarNotesMember",
+    "name": "A 2026 Canadian Dollar Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2026EuroNotesMember",
+    "name": "A 2026 Euro Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2026JapaneseYenNotesMember",
+    "name": "A 2026 Japanese Yen Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2026SterlingNotesMember",
+    "name": "A 2026 Sterling Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2026SwissFrancNotesMember",
+    "name": "A 2026 Swiss Franc Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2026USDollarNotesMember",
+    "name": "A 2026 USDollar Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:OtherLongTermDebtMember",
+    "name": "Other Long Term Debt",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   }
+  ],
+  "types": [],
+  "dateFiled": "2026-10-29",
+  "fx": {
+   "targetCurrency": "USD",
+   "originalCurrencies": [
+    "USD",
+    "EUR",
+    "AUD"
+   ],
+   "rates": [
+    {
+     "from": "EUR",
+     "method": "spot",
+     "rate": 1.1750329009212257,
+     "effectiveDate": "2025-12-31"
+    },
+    {
+     "from": "AUD",
+     "method": "spot",
+     "rate": 0.6691201070592172,
+     "effectiveDate": "2025-12-31"
+    }
+   ]
+  }
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "instruments": [
+   {
+    "member": "goog:A2020NotesMember",
+    "name": "A 2020 Notes",
+    "currency": "USD",
+    "carryingAmount": 10000000000,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2016NotesMember",
+    "name": "A 2016 Notes",
+    "currency": "USD",
+    "carryingAmount": 2000000000,
+    "statedRate": 0.02,
+    "effectiveRate": 0.0223,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2014NotesMember",
+    "name": "A 2014 Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "statedRate": 0.0338,
+    "effectiveRate": 0.0338,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2025EuroNotesMember",
+    "name": "A 2025 Euro Notes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   },
+   {
+    "member": "goog:A2025USDNotesMember",
+    "name": "A 2025 USDNotes",
+    "currency": "USD",
+    "carryingAmount": 0,
+    "debtType": null,
+    "debtTypeName": null,
+    "dueYear": null
+   }
+  ],
+  "types": [
+   {
+    "member": "us-gaap:CommercialPaperMember",
+    "name": "Commercial Paper",
+    "currency": null,
+    "weightedAverageRate": 0.044
+   }
+  ],
+  "dateFiled": "2026-02-05"
+ }
+]

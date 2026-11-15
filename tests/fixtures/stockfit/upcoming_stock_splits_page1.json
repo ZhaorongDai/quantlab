@@ -1,0 +1,59 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 3,
+ "totalResults": 15,
+ "data": [
+  {
+   "symbols": [
+    "DFSC",
+    "DFSCW"
+   ],
+   "name": "DEFSEC Technologies Inc.",
+   "splitDate": "2026-11-16",
+   "ratio": 0.1111111111111111,
+   "ratioText": "1:9",
+   "type": "reverse"
+  },
+  {
+   "symbols": [
+    "EMBJ"
+   ],
+   "name": "EMBRAER S.A.",
+   "splitDate": "2026-11-16",
+   "ratio": 4,
+   "ratioText": "4 : 1",
+   "type": "forward"
+  },
+  {
+   "symbols": [
+    "KALA"
+   ],
+   "name": "KALA BIO, Inc.",
+   "splitDate": "2026-11-16",
+   "ratio": 0.03333333333333333,
+   "ratioText": "1:30",
+   "type": "reverse"
+  },
+  {
+   "symbols": [
+    "NCT"
+   ],
+   "name": "Intercont (Cayman) Ltd",
+   "splitDate": "2026-11-16",
+   "ratio": 0.125,
+   "ratioText": "1:8",
+   "type": "reverse"
+  },
+  {
+   "symbols": [
+    "SGRX"
+   ],
+   "name": "BIT ORIGIN Ltd",
+   "splitDate": "2026-11-16",
+   "ratio": 0.125,
+   "ratioText": "1:8",
+   "type": "reverse"
+  }
+ ]
+}

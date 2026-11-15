@@ -1,0 +1,56 @@
+[
+ {
+  "fiscalYear": 2025,
+  "ceoTotalComp": 10906079,
+  "ceoActuallyPaidComp": 213903156,
+  "avgOfficerTotalComp": 32934710,
+  "avgOfficerActuallyPaidComp": 100887548,
+  "companyTsr": 360.95,
+  "peerGroupTsr": 138.27
+ },
+ {
+  "fiscalYear": 2024,
+  "ceoTotalComp": 10800694,
+  "ceoActuallyPaidComp": 215748120,
+  "avgOfficerTotalComp": 39094699,
+  "avgOfficerActuallyPaidComp": 60458916,
+  "companyTsr": 218.2,
+  "peerGroupTsr": 115.41
+ },
+ {
+  "fiscalYear": 2023,
+  "ceoTotalComp": 8802824,
+  "ceoActuallyPaidComp": 235105454,
+  "avgOfficerTotalComp": 34648486,
+  "avgOfficerActuallyPaidComp": 80022929,
+  "companyTsr": 160.89,
+  "peerGroupTsr": 86.6
+ },
+ {
+  "fiscalYear": 2022,
+  "ceoTotalComp": 225985145,
+  "ceoActuallyPaidComp": 115820786,
+  "avgOfficerTotalComp": 30766792,
+  "avgOfficerActuallyPaidComp": -15249938,
+  "companyTsr": 101.3,
+  "peerGroupTsr": 59.35
+ },
+ {
+  "fiscalYear": 2021,
+  "ceoTotalComp": 6322599,
+  "ceoActuallyPaidComp": 267277583,
+  "avgOfficerTotalComp": 21657558,
+  "avgOfficerActuallyPaidComp": 72131743,
+  "companyTsr": 165.17,
+  "peerGroupTsr": 97.88
+ },
+ {
+  "fiscalYear": 2020,
+  "ceoTotalComp": 7410162,
+  "ceoActuallyPaidComp": 121360289,
+  "avgOfficerTotalComp": 55846864,
+  "avgOfficerActuallyPaidComp": 76136650,
+  "companyTsr": 132.73,
+  "peerGroupTsr": 137.32
+ }
+]

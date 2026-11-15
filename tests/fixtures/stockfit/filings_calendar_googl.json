@@ -1,0 +1,45 @@
+{
+ "nextExpected": [
+  {
+   "type": "10-K",
+   "expectedDate": "2027-02-04",
+   "confidence": "high",
+   "basedOn": "earnings prediction (2027-02-03)"
+  },
+  {
+   "type": "10-Q",
+   "expectedDate": "2027-02-24",
+   "confidence": "low",
+   "basedOn": "2026-10-29"
+  },
+  {
+   "type": "DEF 14A",
+   "expectedDate": "2027-04-25",
+   "confidence": "high",
+   "basedOn": "2026-04-24"
+  }
+ ],
+ "historicalPattern": {
+  "10-K": {
+   "typicalMonths": [
+    1,
+    2
+   ],
+   "avgDaysAfterPeriodEnd": 34
+  },
+  "10-Q": {
+   "typicalMonths": [
+    4,
+    7,
+    10
+   ],
+   "avgDaysAfterPeriodEnd": 27
+  },
+  "DEF 14A": {
+   "typicalMonths": [
+    4
+   ],
+   "avgDaysAfterPeriodEnd": -33
+  }
+ }
+}

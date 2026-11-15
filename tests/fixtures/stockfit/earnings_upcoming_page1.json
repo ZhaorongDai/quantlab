@@ -1,0 +1,58 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 68,
+ "totalResults": 338,
+ "data": [
+  {
+   "earningsDate": "2026-11-16",
+   "filingDate": "2026-11-17",
+   "filingType": "10-Q",
+   "epsEstimate": 1.59,
+   "numEstimates": 3,
+   "reportTime": "after_hours",
+   "symbols": [
+    "ACM"
+   ],
+   "name": "AECOM"
+  },
+  {
+   "earningsDate": "2026-11-16",
+   "filingDate": "2026-11-16",
+   "filingType": "10-K",
+   "symbols": [
+    "AIFC"
+   ],
+   "name": "AI Financial Corp"
+  },
+  {
+   "earningsDate": "2026-11-16",
+   "filingDate": "2026-11-16",
+   "filingType": "10-K",
+   "epsEstimate": -0.09,
+   "numEstimates": 1,
+   "symbols": [
+    "AIM"
+   ],
+   "name": "AIM ImmunoTech Inc."
+  },
+  {
+   "earningsDate": "2026-11-16",
+   "filingDate": "2026-11-16",
+   "filingType": "10-K",
+   "symbols": [
+    "AIV"
+   ],
+   "name": "APARTMENT INVESTMENT & MANAGEMENT CO"
+  },
+  {
+   "earningsDate": "2026-11-16",
+   "filingDate": "2026-11-16",
+   "filingType": "10-Q",
+   "symbols": [
+    "AMCI"
+   ],
+   "name": "AMC Robotics Corp"
+  }
+ ]
+}

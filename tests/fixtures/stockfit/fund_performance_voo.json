@@ -1,0 +1,62 @@
+{
+ "page": 1,
+ "pageSize": 3,
+ "totalPages": 3,
+ "totalResults": 8,
+ "data": [
+  {
+   "periodEndDate": "2026-06-30",
+   "formType": "N-CSRS",
+   "filedDate": "2026-06-30",
+   "symbol": "VFINX",
+   "shareClassName": "Investor Shares",
+   "expenseRatio": 0.0014,
+   "expensesPaid": 7,
+   "advisoryFeesPaid": null,
+   "netAssets": 1675038000000,
+   "return1yr": null,
+   "return5yr": null,
+   "return10yr": null,
+   "returnSinceInception": null,
+   "inceptionDate": null,
+   "portfolioTurnoverRate": 0.01,
+   "holdingsCount": 519
+  },
+  {
+   "periodEndDate": "2026-06-30",
+   "formType": "N-CSRS",
+   "filedDate": "2026-06-30",
+   "symbol": "VFIAX",
+   "shareClassName": "Admiral™ Shares",
+   "expenseRatio": 0.0004,
+   "expensesPaid": 2,
+   "advisoryFeesPaid": null,
+   "netAssets": 1675038000000,
+   "return1yr": null,
+   "return5yr": null,
+   "return10yr": null,
+   "returnSinceInception": null,
+   "inceptionDate": null,
+   "portfolioTurnoverRate": 0.01,
+   "holdingsCount": 519
+  },
+  {
+   "periodEndDate": "2026-06-30",
+   "formType": "N-CSRS",
+   "filedDate": "2026-06-30",
+   "symbol": "VOO",
+   "shareClassName": "ETF Shares",
+   "expenseRatio": 0.0003,
+   "expensesPaid": 2,
+   "advisoryFeesPaid": null,
+   "netAssets": 1675038000000,
+   "return1yr": null,
+   "return5yr": null,
+   "return10yr": null,
+   "returnSinceInception": null,
+   "inceptionDate": null,
+   "portfolioTurnoverRate": 0.01,
+   "holdingsCount": 519
+  }
+ ]
+}

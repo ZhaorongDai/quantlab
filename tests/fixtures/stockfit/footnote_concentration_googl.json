@@ -1,0 +1,53 @@
+{
+ "groups": [
+  {
+   "riskType": "geographic",
+   "benchmark": "revenue",
+   "riskTypeMembers": [
+    "us-gaap:GeographicConcentrationRiskMember"
+   ],
+   "benchmarkMembers": [
+    "us-gaap:SalesRevenueNetMember"
+   ],
+   "counterparties": [],
+   "aggregate": {
+    "history": [
+     {
+      "period": "2025-12-31",
+      "fiscalYear": 2025,
+      "fiscalPeriod": "FY",
+      "share": 1,
+      "dateFiled": "2026-02-05"
+     },
+     {
+      "period": "2024-12-31",
+      "fiscalYear": 2024,
+      "fiscalPeriod": "FY",
+      "share": 1,
+      "dateFiled": "2026-02-05"
+     }
+    ]
+   }
+  },
+  {
+   "riskType": null,
+   "benchmark": "revenue",
+   "riskTypeMembers": [],
+   "benchmarkMembers": [
+    "us-gaap:SalesRevenueNetMember"
+   ],
+   "counterparties": [],
+   "aggregate": {
+    "history": [
+     {
+      "period": "2015-12-31",
+      "fiscalYear": 2015,
+      "fiscalPeriod": "FY",
+      "share": 0.1,
+      "dateFiled": "2016-02-11"
+     }
+    ]
+   }
+  }
+ ]
+}

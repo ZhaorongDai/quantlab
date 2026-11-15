@@ -1,0 +1,68 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "facilities": [
+   {
+    "member": "us-gaap:RevolvingCreditFacilityMember",
+    "name": "Revolving Credit Facility",
+    "debtInstrumentMember": null,
+    "debtInstrumentName": null,
+    "currency": "USD",
+    "maxCapacity": 10000000000,
+    "outstanding": 0,
+    "utilization": 0
+   },
+   {
+    "member": "us-gaap:RevolvingCreditFacilityMember",
+    "name": "Revolving Credit Facility",
+    "debtInstrumentMember": "goog:CreditFacilityDueApril2030Member",
+    "debtInstrumentName": "Credit Facility Due April 2030",
+    "currency": "USD",
+    "maxCapacity": 6000000000
+   },
+   {
+    "member": "us-gaap:RevolvingCreditFacilityMember",
+    "name": "Revolving Credit Facility",
+    "debtInstrumentMember": "goog:CreditFacilityDueApril2026Member",
+    "debtInstrumentName": "Credit Facility Due April 2026",
+    "currency": "USD",
+    "maxCapacity": 4000000000
+   }
+  ],
+  "dateFiled": "2026-10-29"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "facilities": [
+   {
+    "member": "us-gaap:RevolvingCreditFacilityMember",
+    "name": "Revolving Credit Facility",
+    "debtInstrumentMember": null,
+    "debtInstrumentName": null,
+    "currency": "USD",
+    "maxCapacity": 10000000000
+   },
+   {
+    "member": "us-gaap:RevolvingCreditFacilityMember",
+    "name": "Revolving Credit Facility",
+    "debtInstrumentMember": "goog:CreditFacilityDueApril2028Member",
+    "debtInstrumentName": "Credit Facility Due April 2028",
+    "currency": "USD",
+    "maxCapacity": 6000000000
+   },
+   {
+    "member": "us-gaap:RevolvingCreditFacilityMember",
+    "name": "Revolving Credit Facility",
+    "debtInstrumentMember": "goog:CreditFacilityDueApril2025Member",
+    "debtInstrumentName": "Credit Facility Due April 2025",
+    "currency": "USD",
+    "maxCapacity": 4000000000
+   }
+  ],
+  "dateFiled": "2025-02-05"
+ }
+]

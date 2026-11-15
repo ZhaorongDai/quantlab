@@ -1,0 +1,62 @@
+[
+ {
+  "period": "2026-09-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q3",
+  "revenueGrowth": 0.065,
+  "grossProfitGrowth": 0.0312,
+  "operatingIncomeGrowth": -0.0048,
+  "netIncomeGrowth": -0.7641,
+  "epsGrowth": -0.7681,
+  "ebitdaGrowth": -0.7148,
+  "freeCashFlowGrowth": -0.5482,
+  "totalAssetsGrowth": 0.0882,
+  "stockholdersEquityGrowth": 0.0579,
+  "operatingCashFlowGrowth": 0.0824
+ },
+ {
+  "period": "2026-06-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q2",
+  "revenueGrowth": 0.0901,
+  "grossProfitGrowth": 0.0762,
+  "operatingIncomeGrowth": 0.0271,
+  "netIncomeGrowth": 0.7929,
+  "epsGrowth": 0.7853,
+  "ebitdaGrowth": 0.7434,
+  "freeCashFlowGrowth": -1.5788,
+  "totalAssetsGrowth": 0.3098,
+  "stockholdersEquityGrowth": 0.3378,
+  "operatingCashFlowGrowth": -0.1468
+ },
+ {
+  "period": "2026-03-31",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q1",
+  "revenueGrowth": -0.0346,
+  "grossProfitGrowth": 0.0083,
+  "operatingIncomeGrowth": 0.1047,
+  "netIncomeGrowth": 0.8162,
+  "epsGrowth": 0.814,
+  "ebitdaGrowth": 0.8613,
+  "freeCashFlowGrowth": -0.588,
+  "totalAssetsGrowth": 0.1825,
+  "stockholdersEquityGrowth": 0.1529,
+  "operatingCashFlowGrowth": -0.1262
+ },
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q4",
+  "revenueGrowth": 0.1122,
+  "grossProfitGrowth": 0.1162,
+  "operatingIncomeGrowth": 0.1507,
+  "netIncomeGrowth": -0.015,
+  "epsGrowth": -0.0138,
+  "ebitdaGrowth": -0.0885,
+  "freeCashFlowGrowth": 0.0037,
+  "totalAssetsGrowth": 0.1096,
+  "stockholdersEquityGrowth": 0.0734,
+  "operatingCashFlowGrowth": 0.0824
+ }
+]

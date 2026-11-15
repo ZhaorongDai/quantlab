@@ -1,0 +1,300 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2026-04-16",
+  "acceptedAt": "2026-04-16T10:05:49Z",
+  "facts": {
+   "assets": 252879900000,
+   "currentAssets": 121680900000,
+   "cash": 88232600000,
+   "netReceivables": 8895500000,
+   "accountsReceivable": 8895500000,
+   "inventory": 9184200000,
+   "nonCurrentAssets": 131199000000,
+   "liabilities": 80861400000,
+   "currentLiabilities": 48530900000,
+   "accountsPayable": 2631600000,
+   "currentCapitalLeaseObligations": 122272553,
+   "totalNonCurrentLiabilities": 32330500000,
+   "longTermDebt": 1269800000,
+   "longTermCapitalLeaseObligations": 1007200000,
+   "stockholdersEquity": 170705700000,
+   "commonStock": 8266600000,
+   "retainedEarnings": 160629400000,
+   "capitalLeaseObligations": 1130151844,
+   "minorityInterest": 1312800000,
+   "totalEquity": 172018500000,
+   "propertyPlantAndEquipmentNet": 117687000000,
+   "currentSharesOutstanding": 25932524521,
+   "totalPayable": 2631600000,
+   "totalDebt": 2399951844,
+   "totalBorrowings": 1269800000,
+   "workingCapital": 73150000000,
+   "otherCurrentLiabilities": 45777027447,
+   "cashAndShortTermInvestments": 88232600000
+  },
+  "sources": {
+   "0001628280-26-025362": {
+    "type": "20-F",
+    "dateFiled": "2026-04-16",
+    "acceptedAt": "2026-04-16T10:05:49Z",
+    "amendment": false,
+    "facts": {
+     "assets": {},
+     "currentAssets": {},
+     "cash": {},
+     "netReceivables": {},
+     "accountsReceivable": {},
+     "inventory": {},
+     "nonCurrentAssets": {},
+     "liabilities": {},
+     "currentLiabilities": {},
+     "accountsPayable": {},
+     "currentCapitalLeaseObligations": {},
+     "totalNonCurrentLiabilities": {},
+     "longTermDebt": {},
+     "longTermCapitalLeaseObligations": {},
+     "stockholdersEquity": {},
+     "commonStock": {},
+     "retainedEarnings": {},
+     "capitalLeaseObligations": {},
+     "minorityInterest": {},
+     "totalEquity": {},
+     "propertyPlantAndEquipmentNet": {},
+     "currentSharesOutstanding": {}
+    }
+   }
+  },
+  "derived": [
+   "totalPayable",
+   "totalDebt",
+   "totalBorrowings",
+   "workingCapital",
+   "otherCurrentLiabilities",
+   "cashAndShortTermInvestments"
+  ],
+  "fx": {
+   "targetCurrency": "USD",
+   "originalCurrencies": [
+    "USD",
+    "TWD"
+   ],
+   "rates": [
+    {
+     "from": "TWD",
+     "method": "spot",
+     "rate": 0.03189996172004594,
+     "effectiveDate": "2025-12-31"
+    }
+   ]
+  }
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2025-04-17",
+  "acceptedAt": "2025-04-17T10:16:18Z",
+  "facts": {
+   "assets": 204079400000,
+   "currentAssets": 94185800000,
+   "cash": 67823600000,
+   "netReceivables": 8255100000,
+   "accountsReceivable": 8255100000,
+   "inventory": 8779200000,
+   "nonCurrentAssets": 109893600000,
+   "liabilities": 73574000000,
+   "currentLiabilities": 39910200000,
+   "accountsPayable": 2220200000,
+   "currentCapitalLeaseObligations": 93127673,
+   "totalNonCurrentLiabilities": 33663800000,
+   "longTermDebt": 970500000,
+   "longTermCapitalLeaseObligations": 877000000,
+   "stockholdersEquity": 129437800000,
+   "commonStock": 7908700000,
+   "retainedEarnings": 118114500000,
+   "capitalLeaseObligations": 971420281,
+   "minorityInterest": 1067600000,
+   "totalEquity": 130505400000,
+   "propertyPlantAndEquipmentNet": 98657500000,
+   "currentSharesOutstanding": 25932733242,
+   "totalPayable": 2220200000,
+   "totalDebt": 1941920281,
+   "totalBorrowings": 970500000,
+   "workingCapital": 54275600000,
+   "otherCurrentLiabilities": 37596872327,
+   "cashAndShortTermInvestments": 67823600000
+  },
+  "sources": {
+   "0001193125-25-083423": {
+    "type": "20-F",
+    "dateFiled": "2025-04-17",
+    "acceptedAt": "2025-04-17T10:16:18Z",
+    "amendment": false,
+    "facts": {
+     "assets": {},
+     "currentAssets": {},
+     "netReceivables": {},
+     "accountsReceivable": {},
+     "inventory": {},
+     "nonCurrentAssets": {},
+     "liabilities": {},
+     "currentLiabilities": {},
+     "accountsPayable": {},
+     "currentCapitalLeaseObligations": {},
+     "totalNonCurrentLiabilities": {},
+     "longTermDebt": {},
+     "longTermCapitalLeaseObligations": {},
+     "stockholdersEquity": {},
+     "commonStock": {},
+     "retainedEarnings": {},
+     "capitalLeaseObligations": {},
+     "minorityInterest": {},
+     "totalEquity": {},
+     "propertyPlantAndEquipmentNet": {},
+     "currentSharesOutstanding": {},
+     "cash": {}
+    }
+   },
+   "0001628280-26-025362": {
+    "type": "20-F",
+    "dateFiled": "2026-04-16",
+    "acceptedAt": "2026-04-16T10:05:49Z",
+    "amendment": false,
+    "facts": {
+     "cash": {
+      "before": 64886500000
+     }
+    }
+   }
+  },
+  "derived": [
+   "totalPayable",
+   "totalDebt",
+   "totalBorrowings",
+   "workingCapital",
+   "otherCurrentLiabilities",
+   "cashAndShortTermInvestments"
+  ],
+  "fx": {
+   "targetCurrency": "USD",
+   "originalCurrencies": [
+    "USD",
+    "TWD"
+   ],
+   "rates": [
+    {
+     "from": "TWD",
+     "method": "spot",
+     "rate": 0.030543677458766034,
+     "effectiveDate": "2024-12-31"
+    }
+   ]
+  }
+ },
+ {
+  "period": "2023-12-31",
+  "fiscalYear": 2023,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2024-04-18",
+  "acceptedAt": "2024-04-18T10:27:53Z",
+  "facts": {
+   "assets": 180672700000,
+   "currentAssets": 71653600000,
+   "cash": 44691300000,
+   "netReceivables": 6574600000,
+   "accountsReceivable": 6574600000,
+   "inventory": 8197200000,
+   "nonCurrentAssets": 109019100000,
+   "liabilities": 67874900000,
+   "currentLiabilities": 30790500000,
+   "accountsPayable": 1819900000,
+   "currentCapitalLeaseObligations": 91702829,
+   "totalNonCurrentLiabilities": 37084400000,
+   "longTermDebt": 143100000,
+   "longTermCapitalLeaseObligations": 936700000,
+   "stockholdersEquity": 112002700000,
+   "commonStock": 8469000000,
+   "retainedEarnings": 102176300000,
+   "capitalLeaseObligations": 1027518027,
+   "minorityInterest": 795100000,
+   "totalEquity": 112797800000,
+   "propertyPlantAndEquipmentNet": 100080900000,
+   "currentSharesOutstanding": 25932070992,
+   "totalPayable": 1819900000,
+   "totalDebt": 1170618027,
+   "totalBorrowings": 143100000,
+   "workingCapital": 40863100000,
+   "otherCurrentLiabilities": 28878897171,
+   "cashAndShortTermInvestments": 44691300000
+  },
+  "sources": {
+   "0001193125-24-099840": {
+    "type": "20-F",
+    "dateFiled": "2024-04-18",
+    "acceptedAt": "2024-04-18T10:27:53Z",
+    "amendment": false,
+    "facts": {
+     "assets": {},
+     "currentAssets": {},
+     "netReceivables": {},
+     "accountsReceivable": {},
+     "inventory": {},
+     "nonCurrentAssets": {},
+     "liabilities": {},
+     "currentLiabilities": {},
+     "accountsPayable": {},
+     "currentCapitalLeaseObligations": {},
+     "totalNonCurrentLiabilities": {},
+     "longTermDebt": {},
+     "longTermCapitalLeaseObligations": {},
+     "stockholdersEquity": {},
+     "commonStock": {},
+     "retainedEarnings": {},
+     "capitalLeaseObligations": {},
+     "minorityInterest": {},
+     "totalEquity": {},
+     "propertyPlantAndEquipmentNet": {},
+     "currentSharesOutstanding": {},
+     "cash": {}
+    }
+   },
+   "0001193125-25-083423": {
+    "type": "20-F",
+    "dateFiled": "2025-04-17",
+    "acceptedAt": "2025-04-17T10:16:18Z",
+    "amendment": false,
+    "facts": {
+     "cash": {
+      "before": 47858500000
+     }
+    }
+   }
+  },
+  "derived": [
+   "totalPayable",
+   "totalDebt",
+   "totalBorrowings",
+   "workingCapital",
+   "otherCurrentLiabilities",
+   "cashAndShortTermInvestments"
+  ],
+  "fx": {
+   "targetCurrency": "USD",
+   "originalCurrencies": [
+    "USD",
+    "TWD"
+   ],
+   "rates": [
+    {
+     "from": "TWD",
+     "method": "spot",
+     "rate": 0.032627491924695745,
+     "effectiveDate": "2023-12-31"
+    }
+   ]
+  }
+ }
+]

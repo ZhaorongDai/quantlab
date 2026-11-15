@@ -1,0 +1,138 @@
+{
+ "page": 1,
+ "pageSize": 3,
+ "totalPages": 1,
+ "totalResults": 2,
+ "data": [
+  {
+   "filingId": "a89c0c6b-4c12-4955-98f9-3a54ca52d8a3",
+   "filingDate": "2026-11-04",
+   "filingUrl": "https://efdsearch.senate.gov/search/view/ptr/a89c0c6b-4c12-4955-98f9-3a54ca52d8a3/",
+   "parseStatus": "parsed",
+   "isAmendment": false,
+   "member": {
+    "bioguideId": "C001047",
+    "name": "Shelley Moore Capito",
+    "party": "Republican",
+    "state": "WV",
+    "district": null
+   },
+   "transactionCount": 4,
+   "transactions": [
+    {
+     "owner": "spouse",
+     "assetName": "Zoetis Inc. Class A Common Stock",
+     "assetTypeCode": "ST",
+     "ticker": "ZTS",
+     "transactionType": "sale",
+     "transactionDate": "2026-10-21",
+     "notificationDate": null,
+     "amountRange": "$1,001 - $15,000",
+     "amountMin": 1001,
+     "amountMax": 15000,
+     "capGainsOver200": null,
+     "description": null,
+     "resolvedTicker": "ZTS",
+     "linkConfidence": "high"
+    },
+    {
+     "owner": "spouse",
+     "assetName": "Microsoft Corporation - Common Stock",
+     "assetTypeCode": "ST",
+     "ticker": "MSFT",
+     "transactionType": "sale_partial",
+     "transactionDate": "2026-10-21",
+     "notificationDate": null,
+     "amountRange": "$1,001 - $15,000",
+     "amountMin": 1001,
+     "amountMax": 15000,
+     "capGainsOver200": null,
+     "description": null,
+     "resolvedTicker": "MSFT",
+     "linkConfidence": "high"
+    },
+    {
+     "owner": "spouse",
+     "assetName": "Meta Platforms, Inc. - Class A Common Stock",
+     "assetTypeCode": "ST",
+     "ticker": "META",
+     "transactionType": "sale_partial",
+     "transactionDate": "2026-10-21",
+     "notificationDate": null,
+     "amountRange": "$1,001 - $15,000",
+     "amountMin": 1001,
+     "amountMax": 15000,
+     "capGainsOver200": null,
+     "description": null,
+     "resolvedTicker": "META",
+     "linkConfidence": "high"
+    },
+    {
+     "owner": "spouse",
+     "assetName": "Apple Inc. - Common Stock",
+     "assetTypeCode": "ST",
+     "ticker": "AAPL",
+     "transactionType": "sale_partial",
+     "transactionDate": "2026-10-21",
+     "notificationDate": null,
+     "amountRange": "$1,001 - $15,000",
+     "amountMin": 1001,
+     "amountMax": 15000,
+     "capGainsOver200": null,
+     "description": null,
+     "resolvedTicker": "AAPL",
+     "linkConfidence": "high"
+    }
+   ]
+  },
+  {
+   "filingId": "02b5fe88-e8e1-4ef3-b6b5-6a46b420fb3c",
+   "filingDate": "2026-11-02",
+   "filingUrl": "https://efdsearch.senate.gov/search/view/ptr/02b5fe88-e8e1-4ef3-b6b5-6a46b420fb3c/",
+   "parseStatus": "parsed",
+   "isAmendment": false,
+   "member": {
+    "bioguideId": "W000802",
+    "name": "Sheldon Whitehouse",
+    "party": "Democrat",
+    "state": "RI",
+    "district": null
+   },
+   "transactionCount": 2,
+   "transactions": [
+    {
+     "owner": "spouse",
+     "assetName": "Microsoft Corporation - Common Stock",
+     "assetTypeCode": "ST",
+     "ticker": "MSFT",
+     "transactionType": "sale_partial",
+     "transactionDate": "2026-10-15",
+     "notificationDate": null,
+     "amountRange": "$1,001 - $15,000",
+     "amountMin": 1001,
+     "amountMax": 15000,
+     "capGainsOver200": null,
+     "description": null,
+     "resolvedTicker": "MSFT",
+     "linkConfidence": "high"
+    },
+    {
+     "owner": "spouse",
+     "assetName": "Amgen Inc. - Common Stock",
+     "assetTypeCode": "ST",
+     "ticker": "AMGN",
+     "transactionType": "sale",
+     "transactionDate": "2026-10-15",
+     "notificationDate": null,
+     "amountRange": "$15,001 - $50,000",
+     "amountMin": 15001,
+     "amountMax": 50000,
+     "capGainsOver200": null,
+     "description": null,
+     "resolvedTicker": "AMGN",
+     "linkConfidence": "high"
+    }
+   ]
+  }
+ ]
+}

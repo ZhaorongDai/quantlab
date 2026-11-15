@@ -1,0 +1,122 @@
+{
+ "page": 1,
+ "pageSize": 10,
+ "totalPages": 257,
+ "totalResults": 2565,
+ "data": [
+  {
+   "type": "144",
+   "accessionNumber": "0001969223-26-001174",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/0001969223-26-001174.txt",
+   "dateFiled": "2026-11-12",
+   "acceptedAt": "2026-11-12T21:03:19Z",
+   "xbrl": false,
+   "amendment": false
+  },
+  {
+   "type": "144",
+   "accessionNumber": "0001968582-26-001139",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/0001968582-26-001139.txt",
+   "dateFiled": "2026-11-12",
+   "acceptedAt": "2026-11-12T21:25:07Z",
+   "xbrl": false,
+   "amendment": false
+  },
+  {
+   "type": "144",
+   "accessionNumber": "0001968582-26-001138",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/0001968582-26-001138.txt",
+   "dateFiled": "2026-11-12",
+   "acceptedAt": "2026-11-12T21:23:39Z",
+   "xbrl": false,
+   "amendment": false
+  },
+  {
+   "type": "144",
+   "accessionNumber": "0001968582-26-001137",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/0001968582-26-001137.txt",
+   "dateFiled": "2026-11-12",
+   "acceptedAt": "2026-11-12T21:22:08Z",
+   "xbrl": false,
+   "amendment": false
+  },
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0001652044-26-000086",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000086/primary_doc.xml",
+   "dateFiled": "2026-11-06",
+   "acceptedAt": "2026-11-05T23:21:46Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-09-30"
+  },
+  {
+   "type": "8-K",
+   "accessionNumber": "0001193125-26-449835",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000119312526449835/d174184d8k.htm",
+   "dateFiled": "2026-11-05",
+   "acceptedAt": "2026-11-05T21:10:44Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-11-05",
+   "documents": [],
+   "items": [
+    "8.01",
+    "9.01"
+   ],
+   "events": [
+    "other",
+    "financial_exhibits"
+   ]
+  },
+  {
+   "type": "4",
+   "accessionNumber": "0001193125-26-442116",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000119312526442116/ownership.xml",
+   "dateFiled": "2026-10-30",
+   "acceptedAt": "2026-10-30T23:07:58Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-10-29"
+  },
+  {
+   "type": "144",
+   "accessionNumber": "0001921094-26-001121",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/0001921094-26-001121.txt",
+   "dateFiled": "2026-10-29",
+   "acceptedAt": "2026-10-29T20:17:01Z",
+   "xbrl": false,
+   "amendment": false
+  },
+  {
+   "type": "10-Q",
+   "accessionNumber": "0001652044-26-000084",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000084/goog-20260930.htm",
+   "dateFiled": "2026-10-29",
+   "acceptedAt": "2026-10-29T00:29:06Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-09-30",
+   "documents": []
+  },
+  {
+   "type": "8-K",
+   "accessionNumber": "0001652044-26-000080",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000080/goog-20261028.htm",
+   "dateFiled": "2026-10-28",
+   "acceptedAt": "2026-10-28T20:01:33Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-10-28",
+   "documents": [],
+   "items": [
+    "2.02",
+    "9.01"
+   ],
+   "events": [
+    "earnings",
+    "financial_exhibits"
+   ]
+  }
+ ]
+}

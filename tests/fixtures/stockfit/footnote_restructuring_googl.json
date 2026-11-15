@@ -1,0 +1,45 @@
+{
+ "programs": [],
+ "costTypes": [
+  {
+   "member": "us-gaap:EmployeeSeveranceMember",
+   "name": "Employee Severance",
+   "currency": null,
+   "history": [
+    {
+     "period": "2023-12-31",
+     "fiscalYear": 2023,
+     "fiscalPeriod": "FY",
+     "currency": "USD",
+     "dateFiled": "2024-01-31",
+     "charges": 2100000000,
+     "cashPayments": 1579000000,
+     "reserve": 77000000
+    },
+    {
+     "period": "2022-12-31",
+     "fiscalYear": 2022,
+     "fiscalPeriod": "FY",
+     "currency": "USD",
+     "dateFiled": "2024-01-31",
+     "reserve": 0
+    }
+   ]
+  },
+  {
+   "member": "us-gaap:FacilityClosingMember",
+   "name": "Facility Closing",
+   "currency": null,
+   "history": [
+    {
+     "period": "2023-12-31",
+     "fiscalYear": 2023,
+     "fiscalPeriod": "FY",
+     "currency": "USD",
+     "dateFiled": "2024-01-31",
+     "charges": 1845000000
+    }
+   ]
+  }
+ ]
+}

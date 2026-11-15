@@ -1,0 +1,122 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "classes": [
+   {
+    "member": "goog:DepreciablePropertyPlantAndEquipmentMember",
+    "name": "Depreciable Property Plant And Equipment",
+    "currency": "USD",
+    "gross": 266490000000
+   },
+   {
+    "member": "goog:TechnicalInfrastructureMember",
+    "name": "Technical Infrastructure",
+    "currency": "USD",
+    "gross": 203679000000
+   },
+   {
+    "member": "us-gaap:AssetUnderConstructionMember",
+    "name": "Asset Under Construction",
+    "currency": "USD",
+    "gross": 78592000000
+   },
+   {
+    "member": "goog:OfficeSpaceMember",
+    "name": "Office Space",
+    "currency": "USD",
+    "gross": 48348000000
+   },
+   {
+    "member": "goog:CorporateAndOtherAssetsMember",
+    "name": "Corporate And Other Assets",
+    "currency": "USD",
+    "gross": 14463000000
+   }
+  ],
+  "geography": {
+   "concept": "us-gaap:NoncurrentAssets",
+   "currency": "USD",
+   "countries": [
+    {
+     "code": "US",
+     "name": "United States",
+     "continent": "Americas",
+     "value": 195337000000
+    }
+   ],
+   "usStates": [],
+   "regions": [
+    {
+     "member": "us-gaap:NonUsMember",
+     "name": "Non-US",
+     "continent": null,
+     "value": 66481000000
+    }
+   ],
+   "residuals": []
+  },
+  "dateFiled": "2026-10-29"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "classes": [
+   {
+    "member": "goog:DepreciablePropertyPlantAndEquipmentMember",
+    "name": "Depreciable Property Plant And Equipment",
+    "currency": "USD",
+    "gross": 199829000000
+   },
+   {
+    "member": "goog:TechnicalInfrastructureMember",
+    "name": "Technical Infrastructure",
+    "currency": "USD",
+    "gross": 139596000000
+   },
+   {
+    "member": "us-gaap:AssetUnderConstructionMember",
+    "name": "Asset Under Construction",
+    "currency": "USD",
+    "gross": 50597000000
+   },
+   {
+    "member": "goog:OfficeSpaceMember",
+    "name": "Office Space",
+    "currency": "USD",
+    "gross": 43714000000
+   },
+   {
+    "member": "goog:CorporateAndOtherAssetsMember",
+    "name": "Corporate And Other Assets",
+    "currency": "USD",
+    "gross": 16519000000
+   }
+  ],
+  "geography": {
+   "concept": "us-gaap:NoncurrentAssets",
+   "currency": "USD",
+   "countries": [
+    {
+     "code": "US",
+     "name": "United States",
+     "continent": "Americas",
+     "value": 138993000000
+    }
+   ],
+   "usStates": [],
+   "regions": [
+    {
+     "member": "us-gaap:NonUsMember",
+     "name": "Non-US",
+     "continent": null,
+     "value": 45631000000
+    }
+   ],
+   "residuals": []
+  },
+  "dateFiled": "2026-02-05"
+ }
+]

@@ -1,0 +1,160 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 1482,
+ "totalResults": 7408,
+ "data": [
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "10X CAPITAL VENTURE ACQUISITION CORP. III",
+   "cik": 1848948,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Financials",
+   "industry": "SPACs & Blank-Check",
+   "industryGroup": "Pharma & Biotech",
+   "compositeFigi": null,
+   "ein": null,
+   "formerNames": [],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "VCXB",
+     "exchange": "NYSE",
+     "lastSeen": "2022-12-31"
+    },
+    {
+     "symbol": "VCXB.U",
+     "exchange": "NYSE",
+     "lastSeen": "2022-09-30"
+    },
+    {
+     "symbol": "VCXB WS",
+     "exchange": "NYSE",
+     "lastSeen": "2022-09-30"
+    }
+   ]
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "12 Retech Corp",
+   "cik": 1627611,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Information Technology",
+   "industry": "E-Commerce & Retail Software",
+   "industryGroup": "Software & SaaS",
+   "compositeFigi": null,
+   "ein": 383954047,
+   "formerNames": [
+    "Devago, Inc."
+   ],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "RETC",
+     "exchange": "Unknown",
+     "lastSeen": "2021-09-30"
+    },
+    {
+     "symbol": "DVGGD",
+     "exchange": "Unknown",
+     "lastSeen": "2017-05-31"
+    },
+    {
+     "symbol": "DVGG",
+     "exchange": "Unknown",
+     "lastSeen": "2017-02-28"
+    }
+   ]
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "1895 Bancorp of Wisconsin, Inc.",
+   "cik": 1751692,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Financials",
+   "industry": "Thrifts & Mortgage Finance",
+   "industryGroup": null,
+   "compositeFigi": null,
+   "ein": null,
+   "formerNames": [],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "BCOW",
+     "exchange": "Nasdaq",
+     "lastSeen": "2021-03-31"
+    }
+   ]
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "1919 Financial Services Fund",
+   "cik": 1261788,
+   "seriesId": 46891,
+   "type": "mf",
+   "sector": null,
+   "industry": null,
+   "industryGroup": null,
+   "compositeFigi": null,
+   "ein": null,
+   "formerNames": [],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "LMRIX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    },
+    {
+     "symbol": "SBFAX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    },
+    {
+     "symbol": "SFSLX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    }
+   ]
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "1919 Maryland Tax-Free Income Fund",
+   "cik": 1261788,
+   "seriesId": 46893,
+   "type": "mf",
+   "sector": null,
+   "industry": null,
+   "industryGroup": null,
+   "compositeFigi": null,
+   "ein": null,
+   "formerNames": [],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "LMMCX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    },
+    {
+     "symbol": "LMMDX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    },
+    {
+     "symbol": "LMMIX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    }
+   ]
+  }
+ ]
+}

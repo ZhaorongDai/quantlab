@@ -1,0 +1,44 @@
+[
+ {
+  "period": "2015-12-31",
+  "fiscalYear": 2015,
+  "fiscalPeriod": "FY",
+  "subsidiaries": [
+   {
+    "member": "us-gaap:SubsidiariesMember",
+    "name": "Subsidiaries",
+    "currency": "USD",
+    "revenue": 74989000000,
+    "operatingIncome": 19360000000,
+    "netIncome": 16348000000,
+    "incomeTax": 3303000000,
+    "operatingCashFlow": 26024000000,
+    "assets": 147461000000,
+    "equity": 120331000000,
+    "cash": 16549000000
+   }
+  ],
+  "dateFiled": "2016-02-11"
+ },
+ {
+  "period": "2014-12-31",
+  "fiscalYear": 2014,
+  "fiscalPeriod": "FY",
+  "subsidiaries": [
+   {
+    "member": "us-gaap:SubsidiariesMember",
+    "name": "Subsidiaries",
+    "currency": "USD",
+    "revenue": 66001000000,
+    "operatingIncome": 16496000000,
+    "netIncome": 14136000000,
+    "incomeTax": 3639000000,
+    "operatingCashFlow": 22376000000,
+    "assets": 129187000000,
+    "equity": 103860000000,
+    "cash": 18347000000
+   }
+  ],
+  "dateFiled": "2016-02-11"
+ }
+]

@@ -1,0 +1,186 @@
+[
+ {
+  "period": "2022-06-30",
+  "fiscalYear": 2022,
+  "fiscalPeriod": "Q2",
+  "dateFiled": "2022-07-26",
+  "acceptedAt": "2022-07-26T20:32:11Z",
+  "facts": {
+   "netIncome": -270007000,
+   "amortization": 8600000,
+   "stockBasedCompensation": 282190000,
+   "endCash": 2680596000,
+   "beginningCash": 2283308000,
+   "netChangeInCashIncludingFx": 397288000
+  },
+  "sources": {
+   "0001418091-22-000147": {
+    "type": "10-Q",
+    "dateFiled": "2022-07-26",
+    "acceptedAt": "2022-07-26T20:32:11Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "endCash": {}
+    }
+   }
+  },
+  "derived": [
+   "beginningCash",
+   "netChangeInCashIncludingFx"
+  ]
+ },
+ {
+  "period": "2022-03-31",
+  "fiscalYear": 2022,
+  "fiscalPeriod": "Q1",
+  "dateFiled": "2022-05-02",
+  "acceptedAt": "2022-05-02T20:17:43Z",
+  "facts": {
+   "operatingCashFlow": 126091000,
+   "netIncome": 513286000,
+   "depreciationAndAmortization": 160283000,
+   "amortization": 9600000,
+   "stockBasedCompensation": 177263000,
+   "impairments": 0,
+   "otherNonCashItems": -5992000,
+   "changeInAccountsReceivable": -190737000,
+   "changeInPrepaidAssets": 48836000,
+   "changeInPayablesAndAccruedExpenses": -35610000,
+   "changeInAccountsPayable": -35610000,
+   "investingCashFlow": 1064901000,
+   "purchasesOfInvestments": 1100837000,
+   "netOtherInvestingChanges": 2482000,
+   "financingCashFlow": -1093153000,
+   "commonStockRepurchased": 2077759000,
+   "changeInCash": 97839000,
+   "effectOfExchangeRateChanges": -814000,
+   "capitalExpenditure": 163174000,
+   "issuanceOfLongTermDebt": 1000000000,
+   "acquisitionsNet": 0,
+   "proceedsFromSaleOfInvestments": 590593000,
+   "taxWithholdingShareBasedComp": 4190000,
+   "endCash": 2283308000,
+   "issuanceOfDebt": 1000000000,
+   "netCommonStockIssuance": -2077759000,
+   "netIssuancePaymentsOfDebt": 1000000000,
+   "beginningCash": 3473865000,
+   "depreciation": 150683000,
+   "changeInWorkingCapital": -718749000,
+   "netChangeInCashIncludingFx": -1190557000,
+   "freeCashFlow": -37083000
+  },
+  "sources": {
+   "0001418091-22-000075": {
+    "type": "10-Q",
+    "dateFiled": "2022-05-02",
+    "acceptedAt": "2022-05-02T20:17:43Z",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "depreciationAndAmortization": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "impairments": {},
+     "otherNonCashItems": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "investingCashFlow": {},
+     "purchasesOfInvestments": {},
+     "netOtherInvestingChanges": {},
+     "financingCashFlow": {},
+     "commonStockRepurchased": {},
+     "changeInCash": {},
+     "effectOfExchangeRateChanges": {},
+     "capitalExpenditure": {},
+     "issuanceOfLongTermDebt": {},
+     "acquisitionsNet": {},
+     "proceedsFromSaleOfInvestments": {},
+     "taxWithholdingShareBasedComp": {},
+     "endCash": {}
+    }
+   }
+  },
+  "derived": [
+   "issuanceOfDebt",
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciation",
+   "changeInWorkingCapital",
+   "netChangeInCashIncludingFx",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2021-09-30",
+  "fiscalYear": 2021,
+  "fiscalPeriod": "Q3",
+  "dateFiled": "2021-10-27",
+  "acceptedAt": "2021-10-27T21:00:25Z",
+  "facts": {
+   "netIncome": -536757000,
+   "amortization": 10800000,
+   "stockBasedCompensation": 164295000,
+   "endCash": 3473865000,
+   "beginningCash": 4125595000,
+   "netChangeInCashIncludingFx": -651730000
+  },
+  "sources": {
+   "0001418091-21-000209": {
+    "type": "10-Q",
+    "dateFiled": "2021-10-27",
+    "acceptedAt": "2021-10-27T21:00:25Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "endCash": {}
+    }
+   }
+  },
+  "derived": [
+   "beginningCash",
+   "netChangeInCashIncludingFx"
+  ]
+ },
+ {
+  "period": "2021-06-30",
+  "fiscalYear": 2021,
+  "fiscalPeriod": "Q2",
+  "dateFiled": "2021-07-27",
+  "acceptedAt": "2021-07-27T20:44:05Z",
+  "facts": {
+   "netIncome": 65649000,
+   "amortization": 11700000,
+   "stockBasedCompensation": 178202000,
+   "endCash": 4125595000,
+   "beginningCash": 4248702000,
+   "netChangeInCashIncludingFx": -123107000
+  },
+  "sources": {
+   "0001418091-21-000155": {
+    "type": "10-Q",
+    "dateFiled": "2021-07-27",
+    "acceptedAt": "2021-07-27T20:44:05Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "endCash": {}
+    }
+   }
+  },
+  "derived": [
+   "beginningCash",
+   "netChangeInCashIncludingFx"
+  ]
+ }
+]

@@ -1,0 +1,228 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "plans": [
+   {
+    "type": "pension",
+    "location": null,
+    "typeMembers": [
+     "us-gaap:PensionPlansDefinedBenefitMember"
+    ],
+    "locationMembers": [],
+    "currency": "USD",
+    "benefitObligation": 51425000000,
+    "planAssets": {
+     "total": 47147000000,
+     "byCategory": [
+      {
+       "member": "us-gaap:DebtSecuritiesMember",
+       "name": "Debt Securities",
+       "currency": null,
+       "targetAllocation": 0.59,
+       "allocation": 0.59
+      },
+      {
+       "member": "us-gaap:EquitySecuritiesMember",
+       "name": "Equity Securities",
+       "currency": null,
+       "allocation": 0.2,
+       "targetAllocation": 0.2
+      },
+      {
+       "member": "us-gaap:PrivateEquityFundsMember",
+       "name": "Private Equity Funds",
+       "currency": null,
+       "allocation": 0.09,
+       "targetAllocation": 0.07
+      },
+      {
+       "member": "us-gaap:HedgeFundsMember",
+       "name": "Hedge Funds",
+       "currency": null,
+       "targetAllocation": 0.07,
+       "allocation": 0.05
+      },
+      {
+       "member": "ba:RealEstateAndRealAssetsMember",
+       "name": "Real Estate And Real Assets",
+       "currency": null,
+       "allocation": 0.07,
+       "targetAllocation": 0.07
+      }
+     ]
+    },
+    "netPeriodicCost": -167000000,
+    "actualReturn": 4562000000,
+    "cost": {
+     "service": 9000000,
+     "interest": 2676000000,
+     "expectedReturn": 3078000000,
+     "lossAmortization": -299000000,
+     "priorServiceAmortization": -73000000
+    },
+    "assumptions": {
+     "discountRateBenefitObligation": 0.053
+    },
+    "fundedStatus": -4278000000,
+    "fundedStatusDerived": true
+   },
+   {
+    "type": "postretirement",
+    "location": null,
+    "typeMembers": [
+     "us-gaap:OtherPostretirementBenefitPlansDefinedBenefitMember"
+    ],
+    "locationMembers": [],
+    "currency": "USD",
+    "benefitObligation": 2527000000,
+    "planAssets": {
+     "total": 206000000,
+     "byCategory": [
+      {
+       "member": "us-gaap:EquitySecuritiesMember",
+       "name": "Equity Securities",
+       "currency": null,
+       "allocation": 0.6
+      },
+      {
+       "member": "us-gaap:DebtSecuritiesMember",
+       "name": "Debt Securities",
+       "currency": null,
+       "allocation": 0.4
+      }
+     ]
+    },
+    "netPeriodicCost": 32000000,
+    "actualReturn": 24000000,
+    "cost": {
+     "service": 51000000,
+     "interest": 135000000,
+     "expectedReturn": 11000000,
+     "lossAmortization": 141000000,
+     "priorServiceAmortization": -2000000
+    },
+    "assumptions": {
+     "discountRateBenefitObligation": 0.05
+    },
+    "fundedStatus": -2321000000,
+    "fundedStatusDerived": true
+   }
+  ],
+  "dateFiled": "2026-01-30"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "plans": [
+   {
+    "type": "pension",
+    "location": null,
+    "typeMembers": [
+     "us-gaap:PensionPlansDefinedBenefitMember"
+    ],
+    "locationMembers": [],
+    "currency": "USD",
+    "benefitObligation": 50421000000,
+    "planAssets": {
+     "total": 45574000000,
+     "byCategory": [
+      {
+       "member": "us-gaap:DebtSecuritiesMember",
+       "name": "Debt Securities",
+       "currency": null,
+       "allocation": 0.59,
+       "targetAllocation": 0.59
+      },
+      {
+       "member": "us-gaap:EquitySecuritiesMember",
+       "name": "Equity Securities",
+       "currency": null,
+       "targetAllocation": 0.2,
+       "allocation": 0.19
+      },
+      {
+       "member": "us-gaap:PrivateEquityFundsMember",
+       "name": "Private Equity Funds",
+       "currency": null,
+       "allocation": 0.09,
+       "targetAllocation": 0.07
+      },
+      {
+       "member": "ba:RealEstateAndRealAssetsMember",
+       "name": "Real Estate And Real Assets",
+       "currency": null,
+       "allocation": 0.07,
+       "targetAllocation": 0.07
+      },
+      {
+       "member": "us-gaap:HedgeFundsMember",
+       "name": "Hedge Funds",
+       "currency": null,
+       "targetAllocation": 0.07,
+       "allocation": 0.06
+      }
+     ]
+    },
+    "netPeriodicCost": -471000000,
+    "actualReturn": 738000000,
+    "cost": {
+     "service": 5000000,
+     "interest": 2635000000,
+     "expectedReturn": 3311000000,
+     "lossAmortization": -281000000,
+     "priorServiceAmortization": -81000000
+    },
+    "assumptions": {
+     "discountRateBenefitObligation": 0.056
+    },
+    "fundedStatus": -4847000000,
+    "fundedStatusDerived": true
+   },
+   {
+    "type": "postretirement",
+    "location": null,
+    "typeMembers": [
+     "us-gaap:OtherPostretirementBenefitPlansDefinedBenefitMember"
+    ],
+    "locationMembers": [],
+    "currency": "USD",
+    "benefitObligation": 2651000000,
+    "planAssets": {
+     "total": 183000000,
+     "byCategory": [
+      {
+       "member": "us-gaap:EquitySecuritiesMember",
+       "name": "Equity Securities",
+       "currency": null,
+       "allocation": 0.6
+      },
+      {
+       "member": "us-gaap:DebtSecuritiesMember",
+       "name": "Debt Securities",
+       "currency": null,
+       "allocation": 0.4
+      }
+     ]
+    },
+    "netPeriodicCost": -22000000,
+    "actualReturn": 22000000,
+    "cost": {
+     "service": 51000000,
+     "interest": 124000000,
+     "expectedReturn": 10000000,
+     "lossAmortization": 176000000,
+     "priorServiceAmortization": -11000000
+    },
+    "assumptions": {
+     "discountRateBenefitObligation": 0.054
+    },
+    "fundedStatus": -2468000000,
+    "fundedStatusDerived": true
+   }
+  ],
+  "dateFiled": "2026-01-30"
+ }
+]

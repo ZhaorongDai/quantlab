@@ -1,0 +1,69 @@
+{
+ "periods": [
+  {
+   "period": "2025-12-31",
+   "fiscalYear": 2025,
+   "fiscalPeriod": "FY",
+   "currency": "USD",
+   "accruedCompensation": 17546000000,
+   "dateFiled": "2026-02-05"
+  },
+  {
+   "period": "2024-12-31",
+   "fiscalYear": 2024,
+   "fiscalPeriod": "FY",
+   "currency": "USD",
+   "accruedCompensation": 15069000000,
+   "dateFiled": "2025-02-05"
+  }
+ ],
+ "perSegment": [
+  {
+   "member": "goog:GoogleServicesMember",
+   "name": "Google Services",
+   "history": [
+    {
+     "period": "2025-12-31",
+     "fiscalYear": 2025,
+     "fiscalPeriod": "FY",
+     "value": 45124000000,
+     "currency": "USD",
+     "dateFiled": "2026-02-05"
+    },
+    {
+     "period": "2024-12-31",
+     "fiscalYear": 2024,
+     "fiscalPeriod": "FY",
+     "value": 44560000000,
+     "currency": "USD",
+     "dateFiled": "2026-02-05"
+    }
+   ],
+   "role": "segment"
+  },
+  {
+   "member": "goog:GoogleCloudMember",
+   "name": "Google Cloud",
+   "history": [
+    {
+     "period": "2025-12-31",
+     "fiscalYear": 2025,
+     "fiscalPeriod": "FY",
+     "value": 22078000000,
+     "currency": "USD",
+     "dateFiled": "2026-02-05"
+    },
+    {
+     "period": "2024-12-31",
+     "fiscalYear": 2024,
+     "fiscalPeriod": "FY",
+     "value": 20519000000,
+     "currency": "USD",
+     "dateFiled": "2026-02-05"
+    }
+   ],
+   "role": "segment"
+  }
+ ],
+ "byExpenseCaption": []
+}

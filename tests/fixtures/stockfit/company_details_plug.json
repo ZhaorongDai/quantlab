@@ -1,0 +1,29 @@
+{
+ "name": "PLUG POWER INC",
+ "cik": 1093691,
+ "description": "## Business Overview\nPlug Power, Inc. provides an integrated **hydrogen and fuel cell** platform spanning **PEM electrolyzers (GenEco)**, **liquid hydrogen supply**, **fuel cell systems (e.g., GenDrive for material handling)**, and **hydrogen fueling infrastructure**, sold primarily to large enterprise customers. Revenue is generated through a mix of **equipment/system sales** and **recurring hydrogen fuel and services** tied to deployed sites.\n\n## Market Position\nPlug positions itself as a vertically integrated provider across hydrogen production and distribution plus on-site fueling and fuel cell deployments, and it has disclosed deployments of **70,000+ fuel cell systems** and **250+ fueling stations**. Key differentiators are ecosystem breadth (molecule + equipment + services) and operational experience running hydrogen-fueled sites at enterprise scale.",
+ "sic": "3620",
+ "sector": "Energy",
+ "industry": "Clean Energy & Fuel Cells",
+ "industryGroup": null,
+ "fiscalYearEndMonth": 12,
+ "fiscalYearEndDay": 31,
+ "exchanges": [
+  "Nasdaq"
+ ],
+ "symbols": [
+  "PLUG"
+ ],
+ "address": "125 VISTA BOULEVARD",
+ "city": "SLINGERLANDS",
+ "state": "NY",
+ "zip": "12159",
+ "country": "United States",
+ "phone": "5187827700",
+ "webUrl": "https://www.plugpower.com",
+ "investorRelationsUrl": "https://www.ir.plugpower.com/",
+ "logoUrl": null,
+ "type": "stock",
+ "status": "operating",
+ "ipoDate": "2013-02-13"
+}

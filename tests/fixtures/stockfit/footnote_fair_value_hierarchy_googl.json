@@ -1,0 +1,60 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "measures": [
+   {
+    "measure": "assets",
+    "concept": "us-gaap:AssetsFairValueDisclosure",
+    "currency": "USD",
+    "level2": 95787000000,
+    "level1": 15751000000
+   },
+   {
+    "measure": "cashEquivalents",
+    "concept": "us-gaap:CashAndCashEquivalentsFairValueDisclosure",
+    "currency": "USD",
+    "level1": 11349000000,
+    "level2": 4054000000
+   },
+   {
+    "measure": "investments",
+    "concept": "us-gaap:InvestmentsFairValueDisclosure",
+    "currency": "USD",
+    "level2": 91733000000,
+    "level1": 4402000000
+   }
+  ],
+  "dateFiled": "2026-10-29"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "measures": [
+   {
+    "measure": "assets",
+    "concept": "us-gaap:AssetsFairValueDisclosure",
+    "currency": "USD",
+    "level2": 70388000000,
+    "level1": 12862000000
+   },
+   {
+    "measure": "cashEquivalents",
+    "concept": "us-gaap:CashAndCashEquivalentsFairValueDisclosure",
+    "currency": "USD",
+    "level1": 8154000000,
+    "level2": 2905000000
+   },
+   {
+    "measure": "investments",
+    "concept": "us-gaap:InvestmentsFairValueDisclosure",
+    "currency": "USD",
+    "level2": 67483000000,
+    "level1": 4708000000
+   }
+  ],
+  "dateFiled": "2026-02-05"
+ }
+]

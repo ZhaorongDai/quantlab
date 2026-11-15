@@ -1,0 +1,94 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "unit": "USD",
+  "geography": {
+   "countries": [
+    {
+     "code": "US",
+     "name": "United States",
+     "continent": "Americas",
+     "value": 194229000000
+    }
+   ],
+   "usStates": [],
+   "regions": [
+    {
+     "member": "goog:AmericasExcludingUnitedStatesMember",
+     "name": "Americas Excluding United States",
+     "continent": "Americas",
+     "value": 23902000000,
+     "explainedByCountries": 0,
+     "other": 23902000000
+    },
+    {
+     "member": "srt:AsiaPacificMember",
+     "name": "Asia-Pacific",
+     "continent": "Asia",
+     "value": 67680000000,
+     "explainedByCountries": 0,
+     "other": 67680000000
+    },
+    {
+     "member": "us-gaap:EMEAMember",
+     "name": "EMEA",
+     "continent": null,
+     "value": 117152000000,
+     "explainedByCountries": 0,
+     "other": 117152000000
+    }
+   ],
+   "residuals": []
+  },
+  "product": [],
+  "dateFiled": "2026-02-05"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "unit": "USD",
+  "geography": {
+   "countries": [
+    {
+     "code": "US",
+     "name": "United States",
+     "continent": "Americas",
+     "value": 170447000000
+    }
+   ],
+   "usStates": [],
+   "regions": [
+    {
+     "member": "goog:AmericasExcludingUnitedStatesMember",
+     "name": "Americas Excluding United States",
+     "continent": "Americas",
+     "value": 20418000000,
+     "explainedByCountries": 0,
+     "other": 20418000000
+    },
+    {
+     "member": "srt:AsiaPacificMember",
+     "name": "Asia-Pacific",
+     "continent": "Asia",
+     "value": 56815000000,
+     "explainedByCountries": 0,
+     "other": 56815000000
+    },
+    {
+     "member": "us-gaap:EMEAMember",
+     "name": "EMEA",
+     "continent": null,
+     "value": 102127000000,
+     "explainedByCountries": 0,
+     "other": 102127000000
+    }
+   ],
+   "residuals": []
+  },
+  "product": [],
+  "dateFiled": "2026-02-05"
+ }
+]
