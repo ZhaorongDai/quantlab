@@ -19,13 +19,14 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements']
+['reference', 'statements', 'corporate_events', 'declared_events']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
+from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset, StockFitDeclaredEventsDataset
 
 #: The plan the endpoints need.
 _ENTITLEMENT = "StockFit Professional (api.stockfit.io)"
@@ -42,6 +43,16 @@ STOCKFIT_SOURCE = register_source(
             Capability(market="us_equity", frequency="1d", data_type="reference", entitlement=_ENTITLEMENT),
             # The income, balance-sheet and cash-flow statements per CIK, annual, quarterly and TTM: raw only.
             Capability(market="us_equity", frequency="1d", data_type="statements", entitlement=_ENTITLEMENT),
+            # XBRL splits at their first disclosure and successions at their effective day, per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="corporate_events",
+                dataset_cls=StockFitCorporateEventsDataset, entitlement=_ENTITLEMENT,
+            ),
+            # The declared splits and dividends of the coming days, accumulated from snapshots, per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="declared_events",
+                dataset_cls=StockFitDeclaredEventsDataset, entitlement=_ENTITLEMENT,
+            ),
         ),
         # A literal, checked against the client's constant by a test.
         required_env=("STOCKFIT_API_KEY",),

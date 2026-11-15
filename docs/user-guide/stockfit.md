@@ -69,7 +69,8 @@ print(result.summary())
 
 It pulls the company lists (operating and delisted companies) and then, for every company, the
 income statement, balance sheet and cash-flow statement, annual, quarterly and TTM, with as many
-periods as StockFit serves. Pass `endpoints=` to
+periods as StockFit serves. It then pulls each company's profile and its XBRL split history, plus
+a snapshot of the declared split and dividend calendars. Pass `endpoints=` to
 {py:func}`quantlab.acquisition.stockfit.refresh.refresh_raw_tier` to pull some endpoints only, and
 `ciks=` to pull some companies only.
 
@@ -81,6 +82,59 @@ cap. A 404 means StockFit holds nothing for that entity; nothing is published.
 
 A part that fails (an endpoint the plan does not include, the daily cap, an entity whose request
 kept failing) is listed in `result.failed` and the other endpoints still run.
+
+## Corporate event panels
+
+Two panels in {py:mod}`quantlab.dataset.stockfit.events` turn StockFit's corporate events into
+daily panels on NYSE's trading calendar, one column per company CIK. **None of these events is
+used to adjust a price**, and quantlab takes no price from StockFit. A split ratio here is a
+feature, not an adjustment factor. Price adjustment comes from the price vendor.
+
+{py:class}`~quantlab.dataset.stockfit.events.StockFitCorporateEventsDataset` shows each event on
+the day it became public and NaN on every other day:
+
+| Variable | Source endpoint | Shown on |
+|---|---|---|
+| `split_ratio`, `split_date` | `/api/company/stock-splits` (XBRL split history) | the trading day of `firstDisclosedAt` |
+| `predecessor_cik`, `successor_cik` | `/api/company/details` (`predecessors`, `successors`; Form 8-K12B) | the trading day of `effectiveDate` |
+
+A historical split is placed at `firstDisclosedAt`, the acceptance day of the first 10-Q or 10-K
+that tagged it in XBRL, never at its split `date`. Filers tag a split weeks to a year after it
+happens, so a split dated 1 March and first tagged on 30 April shows on 30 April. Before that, a
+backtest could not have read it from EDGAR. `split_date` carries the split's own date, as the
+filer tagged it (usually the ex-date, sometimes the record or announcement date). Several splits
+first tagged on one day are multiplied. The history covers XBRL filings only, so it starts around
+2010. A succession shows the other company's CIK on both companies' columns, on its effective day.
+StockFit lists few successions, so expect this part to be sparse.
+
+{py:class}`~quantlab.dataset.stockfit.events.StockFitDeclaredEventsDataset` shows the splits and
+dividends that companies have declared but not yet executed. It reads the forward calendars
+`/api/company/upcoming-stock-splits` and `/api/earnings/upcoming-dividends`, which look 28 days
+ahead. The refresh snapshots them every time it runs. On each trading day, a company shows the
+soonest declared split (`declared_split_ratio`, `declared_split_date`) and the soonest declared
+dividend (`declared_dividend` in USD per share, summed over the dividends going ex that day,
+`declared_dividend_annual`, `declared_dividend_ex_date`). These come from the newest snapshot
+available that day, and an event stays shown through its own date. A snapshot counts on the day
+it was pulled if it was pulled before that session's close (13:00 New York time on a half day).
+Otherwise it counts on the next trading day. Calendar rows name tickers, not CIKs, so each row is
+matched to a CIK through the operating company list the raw tier held when the snapshot was
+pulled. A row whose tickers name no company, or name more than one, is left out. StockFit keeps
+no archive of past declarations, so this panel has a history only from the first snapshot on.
+
+Both panels are built through the last day every endpoint they read was pulled:
+
+```python
+from quantlab.dataset.config import StockFitCorporateEventsConfig
+from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset
+
+config = StockFitCorporateEventsConfig(
+    zarr_file_path="/data/stores/stockfit_corporate_events_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    start_date="2010-01-04",
+)
+panel = StockFitCorporateEventsDataset(config).update().panel("2020-01-02", "2024-12-31")
+panel["split_ratio"].sel(symbol=1652044).dropna("timestamp")
+```
 
 ## Adding an endpoint
 

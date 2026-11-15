@@ -45,12 +45,24 @@ from quantlab.dataset.stockfit.raw import (
     WHOLE_LIST,
     company_ciks,
 )
+from quantlab.dataset.stockfit.raw import (
+    COMPANY_DETAILS,
+    STOCK_SPLITS,
+    UPCOMING_DIVIDENDS,
+    UPCOMING_STOCK_SPLITS,
+)
 
 #: The most periods one statement request returns.
 STATEMENT_LIMIT = 80
 
 #: The largest page ``/api/symbols`` and ``/api/company/delisted`` serve.
 LIST_PAGE_SIZE = 1000
+
+#: The days ahead the declared split and dividend calendars are asked for (the most served).
+FORWARD_DAYS = 28
+
+#: The largest page the declared split and dividend calendars serve.
+FORWARD_PAGE_SIZE = 500
 
 
 class Outcome(Enum):
@@ -214,4 +226,13 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     MarketList(COMPANY_DELISTED, "/api/company/delisted", page_size=LIST_PAGE_SIZE),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
+    # Corporate events: each company's profile (its successions), its XBRL
+    # split history, and the declared splits and dividends of the next
+    # FORWARD_DAYS days, a forward snapshot kept on every refresh.
+    PerCompany(COMPANY_DETAILS, "/api/company/details"),
+    PerCompany(STOCK_SPLITS, "/api/company/stock-splits"),
+    MarketList(UPCOMING_STOCK_SPLITS, "/api/company/upcoming-stock-splits", {"days": FORWARD_DAYS},
+               page_size=FORWARD_PAGE_SIZE),
+    MarketList(UPCOMING_DIVIDENDS, "/api/earnings/upcoming-dividends", {"days": FORWARD_DAYS},
+               page_size=FORWARD_PAGE_SIZE),
 )}
