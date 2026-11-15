@@ -87,12 +87,14 @@ def _nyse_sessions():
     return xcals.get_calendar(XnysSessionCalendar.EXCHANGE, start=NYSE_FIRST_DAY)
 
 
-def axis_symbols(symbols: Iterable) -> list:
+def axis_symbols(symbols: Iterable, text: bool = False) -> list:
     """Return ``symbols`` as the labels of a panel's symbol axis: ints when every one is integral, else text.
 
     An integer, or a string of digits, is integral (a permaticker, a CIK);
     anything else (a Composite FIGI, a fund series ``<cik>-<series id>``)
-    makes the whole axis text. Order is kept.
+    makes the whole axis text. With ``text`` the axis is text whatever the
+    labels: a CUSIP can be all digits (``037833100``) and keeps its leading
+    zero. Order is kept.
 
     Examples
     --------
@@ -100,8 +102,12 @@ def axis_symbols(symbols: Iterable) -> list:
     [101, 202]
     >>> axis_symbols(["BBG000B9XRY4", "0000036405-S000002277"])
     ['BBG000B9XRY4', '0000036405-S000002277']
+    >>> axis_symbols(["037833100"], text=True)
+    ['037833100']
     """
     labels = list(symbols)
+    if text:
+        return [str(s) for s in labels]
     integral = all(
         not isinstance(s, bool) and (isinstance(s, (int, np.integer)) or (isinstance(s, str) and s.isdigit()))
         for s in labels
@@ -323,14 +329,14 @@ def shown_symbols(rows: pl.DataFrame, days: pl.Series) -> list:
     return sort_symbol_axis(rows.get_column("symbol").unique().to_list())
 
 
-def on_grid(days: pl.Series, symbols: list) -> pl.DataFrame:
+def on_grid(days: pl.Series, symbols: list, *, text: bool = False) -> pl.DataFrame:
     """Return every ``(timestamp, symbol)`` cell, day by day, with its row and column index.
 
     Returns
     -------
     pl.DataFrame
         ``timestamp``, ``_day``, ``symbol`` (int64, or text for a text axis;
-        ``axis_symbols``) and ``_column``, sorted by ``_day`` then
+        ``axis_symbols``, whose ``text`` this passes on) and ``_column``, sorted by ``_day`` then
         ``_column``: the order ``to_panel`` reshapes.
 
     Examples
@@ -340,8 +346,8 @@ def on_grid(days: pl.Series, symbols: list) -> pl.DataFrame:
     >>> on_grid(days, [101, 202]).get_column("symbol").to_list()
     [101, 202, 101, 202]
     """
-    symbols = axis_symbols(symbols)
-    dtype = pl.String if _is_text(symbols) else pl.Int64
+    symbols = axis_symbols(symbols, text)
+    dtype = pl.String if text or _is_text(symbols) else pl.Int64
     return (
         days.to_frame()
         .with_row_index("_day")
@@ -354,7 +360,12 @@ def on_grid(days: pl.Series, symbols: list) -> pl.DataFrame:
 
 
 def to_panel(
-    cells: pl.DataFrame, days: pl.Series, symbols: list, variables: Mapping[str, Mapping]
+    cells: pl.DataFrame,
+    days: pl.Series,
+    symbols: list,
+    variables: Mapping[str, Mapping],
+    *,
+    text: bool = False,
 ) -> xr.Dataset:
     """Shape grid-ordered cells into a ``(timestamp, symbol)`` panel.
 
@@ -366,6 +377,8 @@ def to_panel(
         The axes the cells were built on.
     variables : Mapping[str, Mapping]
         Each variable to take and its attributes (copied), in panel order.
+    text : bool, default False
+        Make the symbol axis text whatever the labels (``axis_symbols``).
 
     Examples
     --------
@@ -375,7 +388,7 @@ def to_panel(
     >>> to_panel(cells, days, [101], {"value": {"unit": "USD"}})["value"].values.tolist()
     [[1.0], [2.0]]
     """
-    symbols = axis_symbols(symbols)
+    symbols = axis_symbols(symbols, text)
     shape = (days.len(), len(symbols))
     return xr.Dataset(
         {
@@ -384,12 +397,14 @@ def to_panel(
         },
         coords={
             "timestamp": pd.DatetimeIndex(days.to_list()),
-            "symbol": np.asarray(symbols, dtype=object if _is_text(symbols) else np.int64),
+            "symbol": np.asarray(symbols, dtype=object if text or _is_text(symbols) else np.int64),
         },
     )
 
 
-def as_of(rows: pl.DataFrame, days: pl.Series, symbols: list, spec: ReleaseSpec) -> xr.Dataset:
+def as_of(
+    rows: pl.DataFrame, days: pl.Series, symbols: list, spec: ReleaseSpec, *, text: bool = False
+) -> xr.Dataset:
     """Return the point-in-time panel: per day and symbol, the latest row available by then.
 
     A cell shows the symbol's row with the latest ``available`` on or before
@@ -409,6 +424,8 @@ def as_of(rows: pl.DataFrame, days: pl.Series, symbols: list, spec: ReleaseSpec)
         The panel's symbols, in axis order (``axis_symbols``).
     spec : ReleaseSpec
         The variables and the staleness rule.
+    text : bool, default False
+        Make the symbol axis text whatever the labels (``axis_symbols``).
 
     Examples
     --------
@@ -421,9 +438,9 @@ def as_of(rows: pl.DataFrame, days: pl.Series, symbols: list, spec: ReleaseSpec)
     >>> as_of(rows, days, [101], spec)["value"].values.ravel().tolist()
     [5.0, 5.0, nan]
     """
-    symbols = axis_symbols(symbols)
+    symbols = axis_symbols(symbols, text)
     cells = (
-        on_grid(days, symbols)
+        on_grid(days, symbols, text=text)
         .join_asof(
             rows.filter(pl.col("symbol").is_in(symbols)),
             left_on="timestamp",
@@ -442,7 +459,7 @@ def as_of(rows: pl.DataFrame, days: pl.Series, symbols: list, spec: ReleaseSpec)
             pl.when(fresh).then(pl.col(name)).otherwise(None).alias(name)
             for name in spec.variables
         )
-    return to_panel(cells, days, symbols, spec.variables)
+    return to_panel(cells, days, symbols, spec.variables, text=text)
 
 
 class ReleasePanelDataset(RawDataset):
@@ -461,7 +478,8 @@ class ReleasePanelDataset(RawDataset):
 
     A panel whose rows are not shown as of their available date (13F
     holdings, filings) overrides ``_raw_data_to_xr_window`` and
-    ``_added_symbols_with_raw_history`` and keeps the rest.
+    ``_added_symbols_with_raw_history`` and keeps the rest. A panel whose
+    symbols are text even when all digits (a CUSIP) sets ``TEXT_SYMBOLS``.
 
     Examples
     --------
@@ -470,6 +488,9 @@ class ReleasePanelDataset(RawDataset):
 
         SharadarFundamentalsDataset(config).panel("2024-01-02", "2024-01-05")["revenue"]
     """
+
+    #: Whether the symbol axis is text whatever the labels (``axis_symbols``).
+    TEXT_SYMBOLS: bool = False
 
     def _on_config_installed(self) -> None:
         """Drop what was cached for the previous config."""
@@ -540,7 +561,7 @@ class ReleasePanelDataset(RawDataset):
         days = self._trading_calendar().days_in(start_date, end_date)
         if symbols is None:
             symbols = shown_symbols(self._released_rows(), days)
-        return days, axis_symbols(symbols)
+        return days, axis_symbols(symbols, self.TEXT_SYMBOLS)
 
     def _raw_data_to_xr_window(
         self, start_date, end_date, symbols: list | None = None
@@ -556,7 +577,7 @@ class ReleasePanelDataset(RawDataset):
             the window's end.
         """
         days, symbols = self._window_axes(start_date, end_date, symbols)
-        return as_of(self._released_rows(), days, symbols, self._release_spec())
+        return as_of(self._released_rows(), days, symbols, self._release_spec(), text=self.TEXT_SYMBOLS)
 
     def _raw_data_to_xr(self) -> xr.Dataset:
         """Return the panel for the whole configured window."""
@@ -575,7 +596,7 @@ class ReleasePanelDataset(RawDataset):
         """
         if not added:
             return {}
-        window = self._raw_data_to_xr_window(start, end, symbols=axis_symbols(added))
+        window = self._raw_data_to_xr_window(start, end, symbols=axis_symbols(added, self.TEXT_SYMBOLS))
         counts = window.notnull().to_dataarray().any("variable").sum("timestamp")
         return {
             str(symbol): int(count)
@@ -651,7 +672,7 @@ class FilingPanelDataset(ReleasePanelDataset):
         """
         days, symbols = self._window_axes(start_date, end_date, symbols)
         cells = (
-            on_grid(days, symbols)
+            on_grid(days, symbols, text=self.TEXT_SYMBOLS)
             .join(
                 self._released_rows(),
                 left_on=["timestamp", "symbol"],
@@ -661,7 +682,7 @@ class FilingPanelDataset(ReleasePanelDataset):
             .sort("_day", "_column")
             .with_columns(pl.col(name).fill_null(value) for name, value in self._empty().items())
         )
-        return to_panel(cells, days, symbols, self._spec().variables)
+        return to_panel(cells, days, symbols, self._spec().variables, text=self.TEXT_SYMBOLS)
 
     def _added_symbols_with_raw_history(self, added: list, start, end) -> dict[str, int]:
         """Count each added symbol's filing days between ``start`` and ``end``.
@@ -674,7 +695,7 @@ class FilingPanelDataset(ReleasePanelDataset):
         counts = (
             self._released_rows()
             .filter(
-                pl.col("symbol").is_in(axis_symbols(added))
+                pl.col("symbol").is_in(axis_symbols(added, self.TEXT_SYMBOLS))
                 & pl.col("available").is_between(
                     pl.lit(pd.Timestamp(start).to_datetime64()),
                     pl.lit(pd.Timestamp(end).to_datetime64()),

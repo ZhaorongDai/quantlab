@@ -52,9 +52,18 @@ def _client(vendor, clock, **kwargs):
     return StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now, **kwargs)
 
 
+#: The endpoints these tests are about: the company lists and the three statements.
+REFERENCE_AND_STATEMENTS = (
+    "symbols",
+    "company_delisted",
+    *(f"{name}_{period}" for period in ("annual", "quarter", "ttm") for name in STATEMENTS),
+)
+
+
 def _refresh(tmp_path, vendor, clock, **kwargs):
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
+    kwargs.setdefault("endpoints", REFERENCE_AND_STATEMENTS)
     return refresh_raw_tier(tmp_path, client=_client(vendor, clock), **kwargs)
 
 

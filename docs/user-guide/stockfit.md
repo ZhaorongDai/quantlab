@@ -82,6 +82,53 @@ cap. A 404 means StockFit holds nothing for that entity; nothing is published.
 A part that fails (an endpoint the plan does not include, the daily cap, an entity whose request
 kept failing) is listed in `result.failed` and the other endpoints still run.
 
+## 13F institutional ownership
+
+The refresh pulls 13F data last, since it is by far the largest part:
+
+- `institutional_holders`: for every company and calendar quarter since 2013, every 13F holder row
+  of the company's securities (one row per manager and CUSIP, every share class), entity
+  `<cik>_<quarter end>`, newest quarter first;
+- `manager_13f_filings`: for every manager those rows name, its 13F filings (originals and
+  amendments) with their filing date and acceptance time;
+- `manager_portfolio`: for every manager and quarter its filings report, its whole portfolio. These
+  stay raw files; no panel reads them.
+
+{py:class}`~quantlab.dataset.stockfit.holdings.StockFitHoldingsDataset` sums the holder rows by
+security and quarter into a daily panel on NYSE's trading days. Its symbol is the 9-character
+CUSIP, kept as text, so the share classes of one company are separate symbols. Only share holdings
+count (no principal amounts, no options). Variables: `holders` (managers holding the security),
+`shares_held`, `value_held` (USD, as reported for the quarter end) and `quarter_end`.
+
+Available dates:
+
+- A quarter is shown from the first trading day on or after its end + 45 days until the next
+  quarter's, the same quarter for every security. Before day 45 nothing of it is shown, and a
+  security with no row in the shown quarter shows nothing.
+- Within the shown quarter a row counts from the later of that day and its filing's available date.
+  A filing accepted before that day's NYSE close (13:00 on a half day) is available that day, one
+  accepted at or after the close on the next trading day; without an acceptance time, on its filing
+  date. A row whose filing is in no pulled filing list counts from the day after its holder rows
+  were pulled.
+
+Look-ahead caveat: StockFit merges an amendment (13F-HR/A) into the quarter it amends and gives the
+amendment's accession on the row. The original value is never shown, and a position first
+disclosed in a late amendment (a confidential stake, say) is missing from its quarter until the
+amendment's date, or entirely when that quarter is no longer shown by then.
+
+```python
+from quantlab.dataset.config import StockFitHoldingsConfig
+from quantlab.dataset.stockfit.holdings import StockFitHoldingsDataset
+
+config = StockFitHoldingsConfig(
+    zarr_file_path="/data/market/stockfit/stockfit_holdings_1d/stockfit_holdings_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+)
+StockFitHoldingsDataset(config).update()
+panel = StockFitHoldingsDataset(config).panel("2024-01-02", "2024-12-31")
+panel["holders"].sel(symbol="02079K305")  # Alphabet class A
+```
+
 ## Adding an endpoint
 
 Endpoints are data: each is a row of `quantlab.acquisition.stockfit.endpoints.ENDPOINTS`, an
@@ -90,7 +137,13 @@ instance of the class for its *pull shape*:
 - {py:class}`~quantlab.acquisition.stockfit.endpoints.MarketList`: a market-wide paged list, one
   entity per named variant of its query;
 - {py:class}`~quantlab.acquisition.stockfit.endpoints.PerCompany`: one request per company,
-  selected by `cik`.
+  selected by `cik`;
+- {py:class}`~quantlab.acquisition.stockfit.endpoints.PerCompanyQuarter`: one request per company
+  and calendar quarter (`cik` and `reportDate`), entity `<cik>_<quarter end>`;
+- {py:class}`~quantlab.acquisition.stockfit.endpoints.PerManager`: one request per 13F manager
+  named in the raw tier's holder rows;
+- {py:class}`~quantlab.acquisition.stockfit.endpoints.PerManagerQuarter`: one request per 13F
+  manager and quarter its 13F filings report.
 
 An endpoint of an existing shape is one row: a name (its directory), the path and the fixed query
 parameters. A new shape is a subclass of

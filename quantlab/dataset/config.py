@@ -1554,3 +1554,29 @@ class MassiveNewsConfig(MassiveRestPanelConfig):
     >>> cfg.vendor, cfg.table
     ('massive', 'sep')
     """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitHoldingsConfig(DatasetConfig):
+    """Config of the StockFit 13F panel: per-security quarterly totals on the CUSIP axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier, ``<download-dir>/stockfit``:
+    the 13F holder rows of each company and quarter and the 13F filings of
+    each manager they name. ``symbols``, when set, keeps only those CUSIPs.
+
+    Examples
+    --------
+    >>> cfg = StockFitHoldingsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_holdings_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.vendor, cfg.market, cfg.frequency
+    ('stockfit', 'us_equity', '1d')
+    """
+
+    #: 13F holdings are of US-listed securities.
+    market: Market = "us_equity"
+    #: A daily panel on NYSE's trading days.
+    frequency: Frequency = "1d"
+    #: Always StockFit.
+    vendor: Vendor | None = "stockfit"
