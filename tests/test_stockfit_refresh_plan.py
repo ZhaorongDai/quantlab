@@ -154,6 +154,19 @@ def test_running_out_of_the_days_requests_defers_the_rest_without_failing(env, t
     assert raw.company_ciks(tmp_path / "stockfit") == [TSM, PLUG, TWTR]
 
 
+def test_the_endpoint_table_lists_the_market_lists_first_then_the_backfill_order():
+    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS, MarketList
+
+    names = list(ENDPOINTS)
+    lists = [isinstance(endpoint, MarketList) for endpoint in ENDPOINTS.values()]
+    # every company list, feed and forward list before the per-entity endpoints (the funds' own lists aside)
+    assert lists.index(False) == names.index("company_details")
+    backfill = ["company_details", "income_statement_annual", "footnote_leases_annual", "as_reported_annual",
+                "growth_quarter", "insider_transactions", "beneficial_owners_history", "executives_compensation",
+                "filings", "fund_profile", "institutional_holders"]
+    assert [names.index(name) for name in backfill] == sorted(names.index(name) for name in backfill)
+
+
 @pytest.mark.parametrize("form", ["10-K/A", "10-Q/A", "40-F"])
 def test_an_amendment_or_a_40f_re_pulls_the_filers_statements(env, tmp_path, clock, form):
     vendor = FakeVendor(clock)

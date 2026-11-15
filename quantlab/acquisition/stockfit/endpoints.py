@@ -53,7 +53,7 @@ Examples
 >>> ENDPOINTS["income_statement_quarter"].query("1093691")
 {'period': 'quarter', 'limit': 80, 'cik': 1093691}
 >>> list(ENDPOINTS)[:4]
-['symbols', 'company_delisted', 'filings_latest', 'income_statement_annual']
+['symbols', 'company_delisted', 'symbol_sectors', 'symbol_industries']
 """
 
 from __future__ import annotations
@@ -944,17 +944,21 @@ def _statements() -> list[Endpoint]:
     ]
 
 
-def _as_reported_and_derived() -> list[Endpoint]:
-    """The as-reported facts, the derived metrics, the share classes, the scores and the trends."""
+def _as_reported() -> list[Endpoint]:
+    """The as-reported facts, annual and quarterly, re-pulled on a new report only."""
+    return [
+        PerCompany(
+            f"as_reported_{period}", "/api/financials/as-reported",
+            {"period": period, "limit": STATEMENT_LIMIT}, triggers=REPORT_FORMS,
+        )
+        for period in ("annual", "quarter")
+    ]
+
+
+def _derived() -> list[Endpoint]:
+    """The derived metrics, the share classes, the scores and the trends."""
     on_report = {"triggers": REPORT_FORMS, "repull_days": None}  # re-pulled on a new report only
     return [
-        *(
-            PerCompany(
-                f"as_reported_{period}", "/api/financials/as-reported",
-                {"period": period, "limit": STATEMENT_LIMIT}, **on_report,
-            )
-            for period in ("annual", "quarter")
-        ),
         PerCompany("growth_quarter", "/api/financials/growth", {"period": "quarter", "limit": STATEMENT_LIMIT}, **on_report),
         PerCompany(
             "key_metrics_quarter", "/api/financials/key-metrics", {"period": "quarter", "limit": STATEMENT_LIMIT},
@@ -987,9 +991,15 @@ def _footnotes() -> list[Endpoint]:
     ]
 
 
-#: Every endpoint the refresh pulls, by name, in pull order: the company
-#: lists first, since the per-company endpoints take their CIKs from them.
+#: Every endpoint the refresh pulls, by name, in the backfill order. The
+#: market-wide lists come first (each run pulls every one of them before the
+#: planner runs, and the per-company endpoints take their CIKs from the company
+#: lists); then the per-entity endpoints: reference, statements, footnotes and
+#: as-reported facts, derived metrics, insiders, 13D/13G and executives,
+#: filings and per-company events, the per-company snapshots, funds, and 13F
+#: last (the largest).
 ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
+    # -- market-wide lists, pulled on every run ----------------------------------
     # Every company, operating and delisted: the CIKs of the per-company pulls.
     MarketList(
         SYMBOLS, "/api/symbols", {"type": "stock"}, page_size=LIST_PAGE_SIZE,
@@ -1006,27 +1016,37 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
         FILINGS_LATEST, "/api/filings/latest", page_size=FEED_PAGE_SIZE,
         variants={entity: {"type": form} for entity, form in FEED_FORMS.items()},
     ),
-    # The three statements, annual and quarterly, as many periods as served.
-    *_statements(),
-    # The 17 footnote tables, annual and quarterly, as many periods as served; re-pulled on a new report.
-    *_footnotes(),
-    # As-reported facts, derived metrics, share classes, scores and trends.
-    *_as_reported_and_derived(),
-    # Corporate events: each company's profile (its successions), its XBRL
-    # split history, and the declared splits and dividends of the next
-    # FORWARD_DAYS days, a forward snapshot kept on every refresh.
-    # The profile follows any filing (an 8-K12B succession among them); the split history follows
-    # the reports that tag a split. Both are re-pulled weekly too (the feed does not follow 8-Ks).
-    PerCompany(COMPANY_DETAILS, "/api/company/details", triggers=frozenset(FEED_FORMS.values()), repull_days=7),
-    PerCompany(STOCK_SPLITS, "/api/company/stock-splits", triggers=SPLIT_FORMS, repull_days=7),
+    # The declared splits and dividends of the next FORWARD_DAYS days, a forward snapshot.
     MarketList(UPCOMING_STOCK_SPLITS, "/api/company/upcoming-stock-splits", {"days": FORWARD_DAYS},
                page_size=FORWARD_PAGE_SIZE),
     MarketList(UPCOMING_DIVIDENDS, "/api/earnings/upcoming-dividends", {"days": FORWARD_DAYS},
                page_size=FORWARD_PAGE_SIZE),
+    # Forward snapshots the vendor keeps no history of.
+    # Companies reporting in the next 28 days, with consensus EPS (keyed by ticker).
+    MarketList(EARNINGS_UPCOMING, "/api/earnings/upcoming", {"days": 28}, page_size=500),
+    # IPO deals, one entity per stage.
+    MarketList(
+        IPO_CALENDAR, "/api/company/ipo-calendar", page_size=500,
+        variants={stage: {"status": stage} for stage in ("filed", "upcoming", "priced", "withdrawn")},
+    ),
+    # Each company's latest S-1/S-1A of the last year.
+    MarketList(RECENT_OFFERINGS, "/api/filings/recent-offerings", {"days": 365}, page_size=100),
     # Congress members' periodic transaction reports, House and Senate, by filing day.
     SinceFeed(CONGRESS_HOUSE_TRADES, "/api/congress/house/trades/recent", page_size=CONGRESS_PAGE_SIZE),
     SinceFeed(CONGRESS_SENATE_TRADES, "/api/congress/senate/trades/recent", page_size=CONGRESS_PAGE_SIZE),
-    # Insiders, 13D/13G stakes and proxy (DEF 14A) executive data, per company.
+    # -- per company, in the backfill order --------------------------------------
+    # Each company's profile (its successions): follows any filing (an 8-K12B succession among
+    # them), and weekly.
+    PerCompany(COMPANY_DETAILS, "/api/company/details", triggers=frozenset(FEED_FORMS.values()), repull_days=7),
+    # The three statements, annual and quarterly, as many periods as served.
+    *_statements(),
+    # The 17 footnote tables, annual and quarterly, as many periods as served; re-pulled on a new report.
+    *_footnotes(),
+    # As-reported facts.
+    *_as_reported(),
+    # Derived metrics, share classes, scores and trends.
+    *_derived(),
+    # Insiders, 13D/13G stakes and proxy (DEF 14A) executive data.
     # Every insider transaction of officers and directors (Forms 4 and 5), re-pulled on a new Form 4.
     PerCompany(
         INSIDER_TRANSACTIONS, "/api/insider-transactions", page_size=INSIDER_PAGE_SIZE, triggers=frozenset({"4"}),
@@ -1050,25 +1070,19 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
         FILINGS, "/api/filings", page_size=FILINGS_PAGE_SIZE,
         triggers=frozenset(FEED_FORMS.values()), repull_days=7,
     ),
-    # Fund series: lists, N-PORT, N-1A, N-CSR, N-CEN and daily holdings.
-    *_funds(),
-    # Forward snapshots: the vendor keeps no history of these, so every refresh pulls them.
-    # Companies reporting in the next 28 days, with consensus EPS (keyed by ticker).
-    MarketList(EARNINGS_UPCOMING, "/api/earnings/upcoming", {"days": 28}, page_size=500),
-    # IPO deals, one entity per stage.
-    MarketList(
-        IPO_CALENDAR, "/api/company/ipo-calendar", page_size=500,
-        variants={stage: {"status": stage} for stage in ("filed", "upcoming", "priced", "withdrawn")},
-    ),
-    # Each company's latest S-1/S-1A of the last year.
-    MarketList(RECENT_OFFERINGS, "/api/filings/recent-offerings", {"days": 365}, page_size=100),
-    # Per operating company: the predicted next 10-K, 10-Q and DEF 14A, and the latest 50 headlines.
+    # Each company's XBRL split history: follows the reports that tag a split, and weekly (the feed
+    # does not follow 8-Ks).
+    PerCompany(STOCK_SPLITS, "/api/company/stock-splits", triggers=SPLIT_FORMS, repull_days=7),
+    # Per operating company, a daily snapshot: the predicted next 10-K, 10-Q and DEF 14A, and the
+    # latest 50 headlines.
     CompanySnapshot(FILINGS_CALENDAR, "/api/filings/calendar"),
     CompanySnapshot(NEWS, "/api/lookup/news", {"limit": 50}),
-    # 13F, last: the holder rows of each company per quarter (every share
-    # class, by CUSIP), then the filings of each manager they name (the
-    # filing date of each row's accession), then each manager's portfolio
-    # per quarter it reported (raw only, the largest pull).
+    # -- fund series: lists, N-PORT, N-1A, N-CSR, N-CEN and daily holdings --------
+    *_funds(),
+    # -- 13F, last ---------------------------------------------------------------
+    # The holder rows of each company per quarter (every share class, by CUSIP), then the filings
+    # of each manager they name (the filing date of each row's accession), then each manager's
+    # portfolio per quarter it reported (raw only, the largest pull).
     PerCompanyQuarter(
         INSTITUTIONAL_HOLDERS, "/api/ownership/institutional-holders",
         page_size=THIRTEEN_F_PAGE_SIZE, triggers=THIRTEEN_F_FORMS,
