@@ -124,6 +124,9 @@ DIVIDEND_HISTORY_LIMIT = 40
 #: Days after which a company's scores and trends (snapshots without history) are re-pulled.
 SNAPSHOT_REPULL_DAYS = 30
 
+#: Days after which a company's current officer list is re-pulled without a filing.
+OFFICERS_REPULL_DAYS = 30
+
 #: The largest page ``/api/symbols`` and ``/api/company/delisted`` serve.
 LIST_PAGE_SIZE = 1000
 
@@ -990,6 +993,10 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     ),
     # The delisted companies with their delisting day.
     MarketList(COMPANY_DELISTED, "/api/company/delisted", page_size=LIST_PAGE_SIZE),
+    # Data dictionaries (raw only): StockFit's SFIC sectors and industries and its exchange names.
+    MarketList("symbol_sectors", "/api/symbols/sectors"),
+    MarketList("symbol_industries", "/api/symbols/industries"),
+    MarketList("symbol_exchanges", "/api/symbols/exchanges"),
     # The filings of the last 30 days per form type: whose new filing re-pulls what.
     LatestFilings(
         FILINGS_LATEST, "/api/filings/latest", page_size=FEED_PAGE_SIZE,
@@ -1027,6 +1034,11 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     PerCompany(EXECUTIVES_GOVERNANCE, "/api/executives/governance", triggers=frozenset({"DEF 14A"})),
     PerCompany(
         EXECUTIVES_PERFORMANCE_MEASURES, "/api/executives/performance-measures", triggers=frozenset({"DEF 14A"}),
+    ),
+    # The current officer list (raw only): re-pulled on a new proxy or report, and monthly.
+    PerCompany(
+        "executives_officers", "/api/executives/officers", triggers=REPORT_FORMS | {"DEF 14A"},
+        repull_days=OFFICERS_REPULL_DAYS,
     ),
     # Each company's SEC filing list, every form, newest first: the filing panel and accession lookups.
     # Re-pulled when the company files any form the feed follows, and weekly.

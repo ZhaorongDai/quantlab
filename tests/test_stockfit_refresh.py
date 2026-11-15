@@ -226,3 +226,23 @@ def test_the_key_appears_in_no_file_url_query_or_log_line(env, tmp_path, clock, 
     assert log_lines and all(KEY not in line for line in log_lines)
     files = [path for path in (tmp_path / "stockfit").rglob("*") if path.is_file()]
     assert files and all(KEY not in path.read_text() for path in files)
+
+
+def test_the_data_dictionaries_land_raw_and_an_unchanged_list_is_dropped(env, tmp_path, clock):
+    from quantlab.dataset.stockfit import raw
+
+    vendor = FakeVendor(clock, companies=[company_row(GOOGL, "Alphabet Inc.")])
+    names = ["symbols", "symbol_sectors", "symbol_industries", "symbol_exchanges", "executives_officers"]
+    assert not _refresh(tmp_path, vendor, clock, endpoints=names).failed
+    clock.advance(days=1)
+    assert not _refresh(tmp_path, vendor, clock, endpoints=names).failed
+
+    root = tmp_path / "stockfit"
+    assert raw.read_pull(root, "symbol_sectors", "all") == fixture("symbols_sectors")
+    assert raw.read_pull(root, "symbol_industries", "all") == fixture("symbols_industries")
+    assert raw.read_pull(root, "symbol_exchanges", "all") == fixture("symbols_exchanges")
+    assert raw.read_pull(root, "executives_officers", str(GOOGL)) == fixture("executives_officers_googl")
+    # the lists are pulled on every run, the unchanged second pull dropped; the officers wait 30 days
+    assert len(raw.pulls(root, "symbol_sectors", "all")) == 1
+    assert raw.read_watermark(root, "symbol_sectors", "all") == clock.now().date()
+    assert len(vendor.requested("/api/executives/officers")) == 1
