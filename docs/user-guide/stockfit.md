@@ -69,19 +69,21 @@ print(result.summary())
 
 The same call does the first backfill and every later update; run it once a day. Each run:
 
-1. pulls the market-wide lists: the company lists (operating and delisted companies) and the
-   feed of the last 30 days' filings (`/api/filings/latest`, one entity per form type: 10-K,
-   10-Q, 20-F, Form 4, 13F-HR, N-PORT, 13D, 13G, DEF 14A), and the House and Senate trade feeds,
-   each from its last pull's day;
+1. pulls the market-wide lists: the company and fund lists (operating and delisted), the funds
+   with daily holdings, the feed of the last 30 days' filings (`/api/filings/latest`, one entity
+   per form type: 10-K, 10-Q, 20-F, Form 4, 13F-HR, N-PORT, 13D, 13G, DEF 14A), and the House and
+   Senate trade feeds, each from its last pull's day;
 2. plans the per-entity pulls due, in this order, within the requests left today:
    - the entities a filing made since their last pull touches: a new 10-K, 10-Q or 20-F re-pulls
-     that company's statements, and a new filing of any form the feed follows re-pulls its filing
-     list;
+     that company's statements, a new filing of any form the feed follows re-pulls its filing
+     list, and a trust's new N-PORT re-pulls the N-PORT summary and flows of each of its series;
    - the entities never pulled, in the table's order, which is the backfill order (for the
      statements: income statement, balance sheet and cash-flow statement, annual, quarterly and
      TTM, with as many periods as StockFit serves);
-   - the periodic re-pulls: every company's statements and filing list once a week, which catches a filing the
-     feed missed.
+   - the periodic re-pulls, which catch a filing the feed missed or does not follow: every
+     company's statements and filing list once a week; each fund series' N-PORT, fee and
+     performance endpoints every 30 days, its N-CEN endpoints and the adviser lookup every 90
+     days, and its daily holdings once a day.
 
 The pulls that do not fit in the day's requests are deferred, and the next run plans them again
 from what is on disk, so a backfill that needs weeks of requests resumes where it stopped. Pass
@@ -109,6 +111,11 @@ instance of the class for its *pull shape*:
   selected by `cik`;
 - {py:class}`~quantlab.acquisition.stockfit.endpoints.LatestFilings`: the recent-filings feed, one
   entity per form type;
+- {py:class}`~quantlab.acquisition.stockfit.endpoints.PerFundSeries`: one request per fund series,
+  selected by its ticker or Composite FIGI;
+  {py:class}`~quantlab.acquisition.stockfit.endpoints.PerFundQuarter`: one per series and quarter,
+  each asked once; {py:class}`~quantlab.acquisition.stockfit.endpoints.PerAdviser`: one per
+  adviser CRD;
 - {py:class}`~quantlab.acquisition.stockfit.endpoints.SinceFeed`: a market-wide feed asked for
   everything filed since a day: the whole archive on the first pull, then from the last pull's day
   less `overlap_days` (30), so each pull holds only its window. It is a market-wide list, pulled on
@@ -121,6 +128,89 @@ of its `triggers` form types is made for the entity, and, with `repull_days`, on
 that many days old. A new shape is a subclass of
 {py:class}`~quantlab.acquisition.stockfit.endpoints.Endpoint` that says which entities it is
 pulled for and what query selects one.
+
+## Fund series
+
+StockFit's fund data (N-PORT, N-1A, N-CSR, N-CEN and the issuers' daily ETF holdings) is keyed by
+the *fund series*: one series of a fund trust, named by the trust's CIK and the series id,
+`<cik>-<series id>` (the Vanguard 500 Index Fund is `36405-2839`). A trust files for many series,
+so two series of one trust are two symbols; an ETF's share class is a security, not a series.
+
+The refresh first pulls the fund lists (`fund_symbols`: `/api/symbols` for each fund kind, `etf`,
+`mf`, `cef` and `fund`, operating and delisted). StockFit's fund endpoints take a security selector,
+not a series id, so each series is asked for by its first ticker, or by its Composite FIGI when it
+has no ticker; a series with neither is not pulled. Then, per series:
+
+| Endpoint (raw-tier name) | StockFit path | Kept as |
+|---|---|---|
+| `fund_profile` | `/api/fund/profile` (N-PORT summary) | panel |
+| `fund_flows` | `/api/fund/flows` (N-PORT monthly flows) | panel |
+| `fund_fees` | `/api/fund/fees` (N-1A prospectus fee table) | panel |
+| `fund_health`, `fund_fee_analysis` | `/api/fund/fund-health`, `/api/fund/fee-analysis` (N-CEN) | panel of the per-period fields |
+| `fund_performance` | `/api/fund/performance` (N-CSR, per share class) | raw only |
+| `fund_holdings` | `/api/fund/holdings` (N-PORT holdings) | raw only, one entity per series and quarter (`<series>_<YYYY-MM-DD>`) |
+| `fund_holdings_daily` | `/api/fund/holdings/daily` (issuer websites) | raw only, a snapshot a day |
+| `fund_service_providers` | `/api/fund/service-providers` (N-CEN, up to 40 years) | raw only |
+| `fund_by_adviser` | `/api/fund/by-adviser` | raw only, one entity per adviser CRD |
+
+N-PORT holdings are asked for each quarter the series' N-PORT summary lists, once: a quarter
+already asked for is not asked again. Daily holdings are pulled for the series with a ticker in
+StockFit's supported list (`fund_daily_supported`); StockFit keeps only about 45 days of them, so
+the history is the raw tier's own: an unchanged day publishes nothing, a changed one adds a pull.
+The adviser lookup is pulled for the CRD numbers of the advisers in the series' service providers.
+Pass `fund_series=` to the refresh to pull some series only.
+
+```python
+from quantlab.dataset.stockfit import raw
+
+root = "/data/downloads/stockfit"
+raw.fund_series(root)[:3]
+for at in raw.pulls(root, "fund_holdings_daily", "36405-2839"):
+    snapshot = raw.read_pull(root, "fund_holdings_daily", "36405-2839", at)
+```
+
+### Fund panels
+
+Four datasets in {py:mod}`quantlab.dataset.stockfit.funds` turn the newest pull of every series
+into a daily panel on NYSE's sessions, the fund series as symbols, each built from a
+{py:class}`~quantlab.dataset.config.StockFitFundConfig` whose `raw_data_dir_path` is the StockFit
+raw tier:
+
+| Dataset | Variables | Available from |
+|---|---|---|
+| {py:class}`~quantlab.dataset.stockfit.funds.StockFitFundProfileDataset` | total assets, liabilities, net assets, three monthly returns, sales, redemptions, holding count | quarter end + 60 days |
+| {py:class}`~quantlab.dataset.stockfit.funds.StockFitFundFlowsDataset` | sales, reinvestments and redemptions of each month of the quarter, monthly returns, net and total assets | quarter end + 60 days |
+| {py:class}`~quantlab.dataset.stockfit.funds.StockFitFundFeesDataset` | management, 12b-1 and other fees, total and net expense ratio, waiver, sales charges, redemption fee | the filing date |
+| {py:class}`~quantlab.dataset.stockfit.funds.StockFitFundNcenDataset` | index tracking, securities lending, red flags, expense limits, commissions, in-kind creation (yes/no as 1.0/0.0) | reporting period end + 75 days |
+
+Each day shows the series' latest row available by then, and the row's own date (`report_date`
+or `filed_date`). A date that falls on a non-session rolls to the next session. The days run to
+the day before the panel's endpoints were last pulled.
+
+```python
+from quantlab.dataset.config import StockFitFundConfig
+from quantlab.dataset.stockfit.funds import StockFitFundProfileDataset
+
+config = StockFitFundConfig(
+    zarr_file_path="/data/market/stockfit/stockfit_fund_profile_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    start_date="2019-01-02",
+)
+panel = StockFitFundProfileDataset(config).update().panel("2024-01-02", "2024-12-31")
+panel["net_assets"].sel(symbol="36405-2839")
+```
+
+What the panels are safe for:
+
+- **N-PORT and N-CEN are placed at their deadlines.** StockFit serves no filing date for them, so
+  a quarter shows from quarter end + 60 days (N-PORT) or period end + 75 days (N-CEN), the SEC
+  deadlines. Funds often file earlier, so a value can appear some days after it was public, never
+  before.
+- **Amendments replace the original.** Values are as StockFit served them on the pull day: a
+  backfilled quarter shows an amended N-PORT or N-CEN from the original's deadline. From the first
+  pull on, a changed value is a new pull, so the raw tier keeps every version seen.
+- **Fees are one share class's.** The fee table is that of the share class whose ticker the series
+  was asked for by.
 
 ## Congress trades
 

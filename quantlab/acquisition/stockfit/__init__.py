@@ -19,7 +19,7 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'congress_trades', 'filings']
+['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'congress_trades', 'filings']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
@@ -28,6 +28,12 @@ from quantlab.acquisition.base import Capability, SourceDescriptor, register_sou
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
 from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
+from quantlab.dataset.stockfit.funds import (
+    StockFitFundFeesDataset,
+    StockFitFundFlowsDataset,
+    StockFitFundNcenDataset,
+    StockFitFundProfileDataset,
+)
 
 #: The plan the endpoints need.
 _ENTITLEMENT = "StockFit Professional (api.stockfit.io)"
@@ -44,6 +50,17 @@ STOCKFIT_SOURCE = register_source(
             Capability(market="us_equity", frequency="1d", data_type="reference", entitlement=_ENTITLEMENT),
             # The income, balance-sheet and cash-flow statements per CIK, annual, quarterly and TTM: raw only.
             Capability(market="us_equity", frequency="1d", data_type="statements", entitlement=_ENTITLEMENT),
+            # Fund series (<cik>-<series id>): N-PORT summary and monthly flows, N-1A fees, N-CEN fields.
+            Capability(market="us_equity", frequency="1d", data_type="fund_profile",
+                       dataset_cls=StockFitFundProfileDataset, entitlement=_ENTITLEMENT),
+            Capability(market="us_equity", frequency="1d", data_type="fund_flows",
+                       dataset_cls=StockFitFundFlowsDataset, entitlement=_ENTITLEMENT),
+            Capability(market="us_equity", frequency="1d", data_type="fund_fees",
+                       dataset_cls=StockFitFundFeesDataset, entitlement=_ENTITLEMENT),
+            Capability(market="us_equity", frequency="1d", data_type="fund_ncen",
+                       dataset_cls=StockFitFundNcenDataset, entitlement=_ENTITLEMENT),
+            # N-CSR performance, N-PORT holdings, daily ETF holdings, N-CEN providers, advisers: raw only.
+            Capability(market="us_equity", frequency="1d", data_type="fund_holdings", entitlement=_ENTITLEMENT),
             # House and Senate members' trade reports, placed on the CIK of the trade-date ticker holder.
             Capability(
                 market="us_equity", frequency="1d", data_type="congress_trades",

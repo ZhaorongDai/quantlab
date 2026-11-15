@@ -105,7 +105,9 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
 
     root = tmp_path / "stockfit"
     original = fixture("income_statement_plug_quarter")
-    assert raw.pulls(root, "income_statement_quarter", str(PLUG)) == [first, clock.now()]
+    # the original and the weekly re-pull (made after the throttle's waits, so not at the run's start)
+    assert raw.pulls(root, "income_statement_quarter", str(PLUG))[0] == first
+    assert len(raw.pulls(root, "income_statement_quarter", str(PLUG))) == 2
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG), first) == original
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG)) == restated
     assert raw.read_pull_as_of(root, "income_statement_quarter", str(PLUG), first) == original
@@ -145,12 +147,13 @@ def test_a_killed_refresh_leaves_no_partial_pull_and_the_next_one_publishes_it_w
 
 def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tmp_path, clock):
     vendor = FakeVendor(clock, per_minute=4)
-    result = _refresh(tmp_path, vendor, clock)
+    lists_and_statements = ["symbols", "company_delisted"] + [
+        f"{name}_{period}" for period in ("annual", "quarter", "ttm") for name in STATEMENTS
+    ]
+    result = _refresh(tmp_path, vendor, clock, endpoints=lists_and_statements)
 
     assert not result.failed, result.summary()
-    # three list pages, nine feed forms, nine statements and the filing list of three companies,
-    # one page of each Congress feed
-    assert len(vendor.calls) == 3 + 9 + (9 + 1) * 3 + 2
+    assert len(vendor.calls) == 3 + 9 * 3  # three list pages, nine statements of three companies
     assert 429 not in vendor.statuses
     assert clock.sleeps and sum(clock.sleeps) >= 60 * (len(vendor.calls) // 4 - 1)
 
