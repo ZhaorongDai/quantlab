@@ -228,7 +228,24 @@ class StockFitClient:
 
     @property
     def remaining_day(self) -> int | None:
-        """Requests left today as the vendor last said; ``None`` before the day's first response."""
+        """Requests left today as the vendor last said; ``None`` before the day's first response.
+
+        Read from the ``X-RateLimit-Remaining-Day`` header of the latest
+        response, so it follows the key's own daily limit; a response of an
+        earlier UTC day does not count.
+
+        Examples
+        --------
+        >>> from quantlab.acquisition._support.http import HttpResponse
+        >>> def vendor(url, *, params, headers):
+        ...     return HttpResponse(200, b"[]", {"X-RateLimit-Remaining-Day": "24999"})
+        >>> client = StockFitClient(credentials=StockFitCredentials("k"), http_get=vendor)
+        >>> client.remaining_day is None  # nothing asked yet today
+        True
+        >>> _ = client.get_json("/api/symbols/exchanges", {})
+        >>> client.remaining_day
+        24999
+        """
         if self._day is None or self._day[0] != self.now().astimezone(UTC).date():
             return None
         return self._day[1]

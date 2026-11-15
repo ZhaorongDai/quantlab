@@ -261,15 +261,34 @@ class Endpoint(ABC):
 
     @abstractmethod
     def entities(self, context: PullContext) -> list[str]:
-        """Return the entities to pull, by directory name, in pull order."""
+        """Return the entities to pull, by directory name, in pull order.
+
+        Examples
+        --------
+        >>> ENDPOINTS["income_statement_quarter"].entities(PullContext(Path("/d/stockfit"), ciks=(1093691, 1046179)))
+        ['1093691', '1046179']
+        """
 
     @abstractmethod
     def query(self, entity: str) -> dict:
-        """Return the query of one entity's pull, without paging."""
+        """Return the query of one entity's pull, without paging.
+
+        Examples
+        --------
+        >>> ENDPOINTS["symbols"].query("delisted")
+        {'type': 'stock', 'status': 'delisted'}
+        """
 
     def query_now(self, vendor_root: Path, entity: str) -> dict:
-        """Return the query of the entity's next pull, which may depend on the raw tier; ``query`` by default."""
+        """Return the query of the entity's next pull, which may depend on the raw tier; ``query`` by default.
+
+        Examples
+        --------
+        >>> ENDPOINTS["income_statement_quarter"].query_now(Path("/nonexistent/stockfit"), "1093691")
+        {'period': 'quarter', 'limit': 80, 'cik': 1093691}
+        """
         return self.query(entity)
+
     def filer_entities(self, ciks: Iterable[int], context: PullContext) -> dict[int, list[str]]:
         """Return, per filer CIK, the entities its filing of ``triggers`` touches; none by default.
 
@@ -301,6 +320,15 @@ class Endpoint(ABC):
         Exception
             The client's errors, from the request that failed; nothing is
             published and the watermark stays.
+
+        Examples
+        --------
+        Needs ``STOCKFIT_API_KEY`` and the network; one company's quarterly income statements::
+
+            from quantlab.acquisition.stockfit.client import StockFitClient
+
+            ENDPOINTS["income_statement_quarter"].pull(StockFitClient(), Path("/data/downloads/stockfit"), "1093691")
+            # <Outcome.PUBLISHED: 'published'>, or UNCHANGED when equal to the newest pull
         """
         pulled_at = client.now()
         query = self.query_now(vendor_root, entity)
