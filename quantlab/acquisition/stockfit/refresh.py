@@ -2,7 +2,7 @@
 
 Each endpoint (``quantlab.acquisition.stockfit.endpoints.ENDPOINTS``) is
 pulled for each of its entities, in table order: the company lists first,
-then each company's statements. A pull lands under
+then each company's statements and footnotes. A pull lands under
 ``<download-dir>/stockfit/<endpoint>/<entity>/<stamp>/`` by one rename, or is
 dropped when it equals the entity's newest pull; the entity's watermark moves
 either way (``quantlab.dataset.stockfit.raw``).

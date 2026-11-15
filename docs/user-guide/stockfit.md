@@ -68,8 +68,8 @@ print(result.summary())
 ```
 
 It pulls the company lists (operating and delisted companies) and then, for every company, the
-income statement, balance sheet and cash-flow statement, annual, quarterly and TTM, with as many
-periods as StockFit serves. Pass `endpoints=` to
+income statement, balance sheet and cash-flow statement, annual, quarterly and TTM, and the 17
+footnote tables, annual and quarterly, with as many periods as StockFit serves. Pass `endpoints=` to
 {py:func}`quantlab.acquisition.stockfit.refresh.refresh_raw_tier` to pull some endpoints only, and
 `ciks=` to pull some companies only.
 
@@ -81,6 +81,68 @@ cap. A 404 means StockFit holds nothing for that entity; nothing is published.
 
 A part that fails (an endpoint the plan does not include, the daily cap, an entity whose request
 kept failing) is listed in `result.failed` and the other endpoints still run.
+
+## Footnote panels
+
+StockFit parses 17 footnote tables out of 10-K, 10-Q and 20-F filings: revenue and business
+segmentation, debt structure, credit facilities, leases, stock compensation, concentration,
+retirement plans, restructuring, asset composition, buybacks, subsidiary financials, the
+fair-value hierarchy, REIT properties, backlog, supplier finance and workforce cost.
+{py:class}`~quantlab.dataset.stockfit.footnotes.StockFitFootnoteDataset` builds one daily panel
+per footnote and period type on the CIK axis:
+
+```python
+from quantlab.dataset.config import StockFitFootnoteConfig
+from quantlab.dataset.stockfit.footnotes import StockFitFootnoteDataset
+
+config = StockFitFootnoteConfig(
+    zarr_file_path="/data/factors/stockfit_leases_quarter.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    footnote="leases",      # a key of FOOTNOTES
+    period="quarter",       # or "annual"
+)
+dataset = StockFitFootnoteDataset(config)
+dataset.update()
+dataset.panel("2024-01-01", "2024-12-31")["operating_liability_total"]
+```
+
+A panel holds the footnote's fixed fields and StockFit's own rollups (the debt totals by debt type,
+the fair-value `level3Share`, the concentration shares tagged without a named counterparty, the
+whole-plan view of stock compensation), plus `period_end`, `filing_date`, `fiscal_year` and
+`may_include_restatement`. Per-member lists (segments, tranches, facilities, counterparties,
+programs, subsidiaries, properties) stay in the raw tier, and quantlab computes no summary of them
+(member counts, largest shares, concentration indices): those are factors. Business segmentation,
+credit facilities and REIT properties have no fixed field, so their panels say only which period is
+the latest known each day.
+
+What a panel shows is data: each footnote is a
+{py:class}`~quantlab.dataset.stockfit.footnotes.FootnoteSpec` in
+`quantlab.dataset.stockfit.footnotes.FOOTNOTES`, a path per variable into the response body. A
+step is a key, a key with a selector (`measures[measure=assets]` picks the first element whose
+fields match; `null` matches a missing field) or `[]`, the list of periods. Adding a field is one
+line:
+
+```python
+"backlog": FootnoteSpec(
+    "/api/footnotes/backlog",
+    {
+        "remaining_performance_obligation": "[].remainingPerformanceObligation",
+        "expected_share_in_window": "[].expectedShareInWindow",
+    },
+),
+```
+
+**Point in time.** A period's values are shown from its `dateFiled` (the newest filing that
+reported it, on that day; footnotes carry no acceptance time) until a newer period replaces them,
+on NYSE's trading calendar; a restated older period never replaces a newer one, and a period
+released more than `stale_after_days` (400 by default) before the day is not shown. StockFit keeps
+no restatement history for footnotes: it serves each period's latest values. **Values backfilled
+from a company's first pull may therefore include restatements made after the filing date they are
+placed at**; the panel flags them with `may_include_restatement = 1`. From the first pull on, each
+pull is compared with the one before: a period that is new or changed is shown from its filing date
+when that filing came after the previous pull, and from the pull otherwise (a pull made at or after
+the session's close counts from the next trading day), with the flag at 0. That part of the history
+is truly point in time, and it grows with every refresh.
 
 ## Adding an endpoint
 

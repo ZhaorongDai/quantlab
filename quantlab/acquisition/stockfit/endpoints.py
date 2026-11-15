@@ -45,6 +45,7 @@ from quantlab.dataset.stockfit.raw import (
     WHOLE_LIST,
     company_ciks,
 )
+from quantlab.dataset.stockfit.footnotes import FOOTNOTES, PERIODS, footnote_endpoint
 
 #: The most periods one statement request returns.
 STATEMENT_LIMIT = 80
@@ -202,6 +203,14 @@ def _statements() -> list[Endpoint]:
     ]
 
 
+def _footnotes() -> list[Endpoint]:
+    return [
+        PerCompany(footnote_endpoint(name, period), spec.path, {"period": period, "limit": STATEMENT_LIMIT})
+        for period in PERIODS
+        for name, spec in FOOTNOTES.items()
+    ]
+
+
 #: Every endpoint the refresh pulls, by name, in pull order: the company
 #: lists first, since the per-company endpoints take their CIKs from them.
 ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
@@ -214,4 +223,6 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     MarketList(COMPANY_DELISTED, "/api/company/delisted", page_size=LIST_PAGE_SIZE),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
+    # The 17 footnote tables, annual and quarterly, as many periods as served.
+    *_footnotes(),
 )}

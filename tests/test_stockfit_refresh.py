@@ -94,7 +94,7 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
 
     vendor = FakeVendor(clock)
     _refresh(tmp_path, vendor, clock)
-    first = clock.now()
+    (first,) = raw.pulls(tmp_path / "stockfit", "income_statement_quarter", str(PLUG))
     restated = fixture("income_statement_plug_quarter")
     restated[0]["facts"]["revenue"] += 1  # SYNTHETIC restatement
     key = ("/api/financials/income-statement", frozenset({("cik", str(PLUG)), ("period", "quarter")}))
@@ -105,7 +105,8 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
 
     root = tmp_path / "stockfit"
     original = fixture("income_statement_plug_quarter")
-    assert raw.pulls(root, "income_statement_quarter", str(PLUG)) == [first, clock.now()]
+    second = raw.pulls(root, "income_statement_quarter", str(PLUG))[-1]
+    assert raw.pulls(root, "income_statement_quarter", str(PLUG)) == [first, second] and first < second
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG), first) == original
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG)) == restated
     assert raw.read_pull_as_of(root, "income_statement_quarter", str(PLUG), first) == original
@@ -148,7 +149,7 @@ def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tm
     result = _refresh(tmp_path, vendor, clock)
 
     assert not result.failed, result.summary()
-    assert len(vendor.calls) == 3 + 9 * 3  # three list pages, nine statements of three companies
+    assert len(vendor.calls) == 3 + (9 + 34) * 3  # three list pages; nine statements and 34 footnotes of three companies
     assert 429 not in vendor.statuses
     assert clock.sleeps and sum(clock.sleeps) >= 60 * (len(vendor.calls) // 4 - 1)
 
