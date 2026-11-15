@@ -1,0 +1,24 @@
+{
+ "symbols": [],
+ "exchanges": [],
+ "name": "Twitter, Inc.",
+ "cik": 1418091,
+ "seriesId": 0,
+ "type": "stock",
+ "sector": "Communication Services",
+ "industry": "Interactive Media & Internet",
+ "industryGroup": "Software & SaaS",
+ "compositeFigi": "BBG006TLWYS8",
+ "ein": 208913779,
+ "formerNames": [
+  "Twitter Inc"
+ ],
+ "status": "delisted",
+ "priorTickers": [
+  {
+   "symbol": "TWTR",
+   "exchange": "NYSE",
+   "lastSeen": "2022-06-30"
+  }
+ ]
+}

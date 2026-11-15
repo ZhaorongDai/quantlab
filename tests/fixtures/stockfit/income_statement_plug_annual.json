@@ -1,0 +1,1201 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2026-03-02",
+  "acceptedAt": "2026-03-02T21:30:29Z",
+  "facts": {
+   "revenue": 709919000,
+   "costOfRevenue": 951959000,
+   "grossProfit": -242040000,
+   "researchAndDevelopment": 57960000,
+   "sellingGeneralAndAdministrativeExpenses": 379570000,
+   "otherExpenses": 7609000,
+   "impairments": 785444000,
+   "operatingExpenses": 1225345000,
+   "interestIncome": 19429000,
+   "interestExpense": 65127000,
+   "depreciation": 37610000,
+   "amortization": 6950000,
+   "operatingIncome": -1467385000,
+   "incomeBeforeTax": -1693312000,
+   "incomeTaxExpense": 356000,
+   "netIncome": -1631594000,
+   "netIncomeCommonStockholders": -1631594000,
+   "netIncomeCommonStockholdersDiluted": -1631594000,
+   "weightedAverageSharesOutstanding": 1146691189,
+   "weightedAverageSharesOutstandingDiluted": 1146691189,
+   "eps": -1.42,
+   "epsDiluted": -1.42,
+   "gainLossOnDebtExtinguishment": -31501000,
+   "interestIncomeNet": -45698000,
+   "generalAndAdministrativeExpenses": 379570000,
+   "costAndExpenses": 2177304000,
+   "nonOperatingIncome": -225927000,
+   "depreciationAndAmortization": 44560000,
+   "ebit": -1628185000,
+   "ebitda": -1583625000,
+   "unusualItemsNet": -816945000,
+   "unusualItemsExcludingGoodwill": -816945000
+  },
+  "sources": {
+   "0001104659-26-022286": {
+    "type": "10-K",
+    "dateFiled": "2026-03-02",
+    "acceptedAt": "2026-03-02T21:30:29Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {},
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "otherExpenses": {},
+     "impairments": {},
+     "operatingExpenses": {},
+     "interestIncome": {},
+     "interestExpense": {},
+     "depreciation": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "gainLossOnDebtExtinguishment": {}
+    }
+   }
+  },
+  "derived": [
+   "interestIncomeNet",
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "nonOperatingIncome",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2025-03-03",
+  "acceptedAt": "2025-03-03T21:48:02Z",
+  "facts": {
+   "revenue": 628814000,
+   "costOfRevenue": 1253701000,
+   "grossProfit": -624887000,
+   "researchAndDevelopment": 77226000,
+   "sellingGeneralAndAdministrativeExpenses": 376110000,
+   "otherExpenses": -19963000,
+   "impairments": 949315000,
+   "operatingExpenses": 1394957000,
+   "interestIncome": 30717000,
+   "interestExpense": 46622000,
+   "depreciation": 61115000,
+   "amortization": 23441000,
+   "operatingIncome": -2019844000,
+   "incomeBeforeTax": -2107591000,
+   "incomeTaxExpense": -2686000,
+   "netIncome": -2104701000,
+   "netIncomeCommonStockholders": -2104701000,
+   "netIncomeCommonStockholdersDiluted": -2104701000,
+   "weightedAverageSharesOutstanding": 785024373,
+   "weightedAverageSharesOutstandingDiluted": 785024373,
+   "eps": -2.68,
+   "epsDiluted": -2.68,
+   "gainLossOnDisposition": -2885000,
+   "gainLossOnDebtExtinguishment": -16278000,
+   "interestIncomeNet": -15905000,
+   "generalAndAdministrativeExpenses": 376110000,
+   "costAndExpenses": 2648658000,
+   "nonOperatingIncome": -87747000,
+   "depreciationAndAmortization": 84556000,
+   "ebit": -2060969000,
+   "ebitda": -1976413000,
+   "unusualItemsNet": -968478000,
+   "unusualItemsExcludingGoodwill": -968478000
+  },
+  "sources": {
+   "0001558370-25-002049": {
+    "type": "10-K",
+    "dateFiled": "2025-03-03",
+    "acceptedAt": "2025-03-03T21:48:02Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {},
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "otherExpenses": {},
+     "operatingExpenses": {},
+     "interestExpense": {},
+     "depreciation": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "gainLossOnDisposition": {},
+     "gainLossOnDebtExtinguishment": {},
+     "impairments": {}
+    }
+   },
+   "0001104659-25-042552": {
+    "type": "10-K",
+    "dateFiled": "2025-04-30",
+    "acceptedAt": "2025-04-30T20:22:54Z",
+    "amendment": true,
+    "facts": {}
+   },
+   "0001104659-26-022286": {
+    "type": "10-K",
+    "dateFiled": "2026-03-02",
+    "acceptedAt": "2026-03-02T21:30:29Z",
+    "amendment": false,
+    "facts": {
+     "impairments": {
+      "before": 949300000
+     },
+     "interestIncome": {}
+    }
+   }
+  },
+  "derived": [
+   "interestIncomeNet",
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "nonOperatingIncome",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ },
+ {
+  "period": "2023-12-31",
+  "fiscalYear": 2023,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2024-02-29",
+  "acceptedAt": "2024-02-29T21:02:16Z",
+  "facts": {
+   "revenue": 891340000,
+   "costOfRevenue": 1399131000,
+   "grossProfit": -507791000,
+   "researchAndDevelopment": 113745000,
+   "sellingGeneralAndAdministrativeExpenses": 422469000,
+   "otherExpenses": -131000,
+   "impairments": 269494000,
+   "operatingExpenses": 835732000,
+   "interestIncome": 55829000,
+   "interestExpense": 45201000,
+   "depreciation": 51986000,
+   "amortization": 19097000,
+   "operatingIncome": -1343523000,
+   "incomeBeforeTax": -1376197000,
+   "incomeTaxExpense": -7364000,
+   "netIncome": -1368833000,
+   "netIncomeCommonStockholders": -1368833000,
+   "netIncomeCommonStockholdersDiluted": -1368833000,
+   "weightedAverageSharesOutstanding": 595468419,
+   "weightedAverageSharesOutstandingDiluted": 595468419,
+   "eps": -2.3,
+   "epsDiluted": -2.3,
+   "goodwillImpairmentLoss": 249500000,
+   "interestIncomeNet": 10628000,
+   "generalAndAdministrativeExpenses": 422469000,
+   "costAndExpenses": 2234863000,
+   "nonOperatingIncome": -32674000,
+   "depreciationAndAmortization": 71083000,
+   "ebit": -1330996000,
+   "ebitda": -1259913000,
+   "unusualItemsNet": -269494000,
+   "unusualItemsExcludingGoodwill": -19994000
+  },
+  "sources": {
+   "0001558370-24-002178": {
+    "type": "10-K",
+    "dateFiled": "2024-02-29",
+    "acceptedAt": "2024-02-29T21:02:16Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {},
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "otherExpenses": {},
+     "operatingExpenses": {},
+     "interestExpense": {},
+     "depreciation": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "impairments": {},
+     "goodwillImpairmentLoss": {}
+    }
+   },
+   "0001558370-25-002049": {
+    "type": "10-K",
+    "dateFiled": "2025-03-03",
+    "acceptedAt": "2025-03-03T21:48:02Z",
+    "amendment": false,
+    "facts": {
+     "goodwillImpairmentLoss": {
+      "before": 249480000
+     },
+     "impairments": {
+      "before": 3100000
+     }
+    }
+   },
+   "0001104659-26-022286": {
+    "type": "10-K",
+    "dateFiled": "2026-03-02",
+    "acceptedAt": "2026-03-02T21:30:29Z",
+    "amendment": false,
+    "facts": {
+     "impairments": {
+      "before": 269500000
+     },
+     "interestIncome": {}
+    }
+   }
+  },
+  "derived": [
+   "interestIncomeNet",
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "nonOperatingIncome",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ },
+ {
+  "period": "2022-12-31",
+  "fiscalYear": 2022,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2023-03-01",
+  "acceptedAt": "2023-03-01T21:44:19Z",
+  "facts": {
+   "revenue": 701440000,
+   "costOfRevenue": 895796000,
+   "grossProfit": -194356000,
+   "researchAndDevelopment": 99579000,
+   "sellingGeneralAndAdministrativeExpenses": 363929000,
+   "otherExpenses": -1135000,
+   "impairments": 800000,
+   "operatingExpenses": 485194000,
+   "interestExpense": 39037000,
+   "depreciation": 30402000,
+   "amortization": 21195000,
+   "operatingIncome": -679550000,
+   "incomeBeforeTax": -723169000,
+   "incomeTaxExpense": 839000,
+   "netIncome": -724008000,
+   "netIncomeCommonStockholders": -724000000,
+   "netIncomeCommonStockholdersDiluted": -724000000,
+   "weightedAverageSharesOutstanding": 579716708,
+   "weightedAverageSharesOutstandingDiluted": 579716708,
+   "eps": -1.25,
+   "epsDiluted": -1.25,
+   "gainLossOnDisposition": -268000,
+   "gainLossOnDebtExtinguishment": -986000,
+   "goodwillImpairmentLoss": 0,
+   "generalAndAdministrativeExpenses": 363929000,
+   "costAndExpenses": 1380990000,
+   "nonOperatingIncome": -43619000,
+   "depreciationAndAmortization": 51597000,
+   "ebit": -684132000,
+   "ebitda": -632535000,
+   "unusualItemsNet": -2054000,
+   "unusualItemsExcludingGoodwill": -2054000
+  },
+  "sources": {
+   "0001558370-23-002599": {
+    "type": "10-K",
+    "dateFiled": "2023-03-01",
+    "acceptedAt": "2023-03-01T21:44:19Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {},
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "impairments": {},
+     "operatingExpenses": {},
+     "interestExpense": {},
+     "depreciation": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "gainLossOnDisposition": {},
+     "gainLossOnDebtExtinguishment": {},
+     "goodwillImpairmentLoss": {},
+     "otherExpenses": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {}
+    }
+   },
+   "0001104659-23-054310": {
+    "type": "10-K",
+    "dateFiled": "2023-05-01",
+    "acceptedAt": "2023-05-01T20:00:30Z",
+    "amendment": true,
+    "facts": {}
+   },
+   "0001558370-23-018601": {
+    "type": "10-Q",
+    "dateFiled": "2023-11-09",
+    "acceptedAt": "2023-11-09T21:30:48Z",
+    "amendment": false,
+    "facts": {
+     "netIncomeCommonStockholders": {
+      "before": -724008000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -724008000
+     },
+     "netIncome": {
+      "before": -724008000
+     }
+    }
+   },
+   "0001558370-24-002178": {
+    "type": "10-K",
+    "dateFiled": "2024-02-29",
+    "acceptedAt": "2024-02-29T21:02:16Z",
+    "amendment": false,
+    "facts": {
+     "otherExpenses": {
+      "before": -2303000
+     }
+    }
+   }
+  },
+  "derived": [
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "nonOperatingIncome",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ },
+ {
+  "period": "2021-12-31",
+  "fiscalYear": 2021,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2022-03-01",
+  "acceptedAt": "2022-03-01T22:23:11Z",
+  "facts": {
+   "revenue": 502342000,
+   "costOfRevenue": 673652000,
+   "grossProfit": -171310000,
+   "researchAndDevelopment": 64762000,
+   "sellingGeneralAndAdministrativeExpenses": 179852000,
+   "otherExpenses": -606000,
+   "impairments": 0,
+   "operatingExpenses": 266014000,
+   "interestExpense": 43225000,
+   "depreciation": 20900000,
+   "amortization": 2469000,
+   "operatingIncome": -437324000,
+   "incomeBeforeTax": -476162000,
+   "incomeTaxExpense": -16197000,
+   "netIncome": -459965000,
+   "netIncomeCommonStockholders": -460000000,
+   "netIncomeCommonStockholdersDiluted": -460000000,
+   "weightedAverageSharesOutstanding": 558182177,
+   "weightedAverageSharesOutstandingDiluted": 558182177,
+   "eps": -0.82,
+   "epsDiluted": -0.82,
+   "provisionForCreditLosses": 71988000,
+   "goodwillImpairmentLoss": 0,
+   "generalAndAdministrativeExpenses": 179852000,
+   "costAndExpenses": 939666000,
+   "nonOperatingIncome": -38838000,
+   "depreciationAndAmortization": 23369000,
+   "ebit": -432937000,
+   "ebitda": -409568000,
+   "unusualItemsNet": 0,
+   "unusualItemsExcludingGoodwill": 0
+  },
+  "sources": {
+   "0001558370-22-002620": {
+    "type": "10-K",
+    "dateFiled": "2022-03-01",
+    "acceptedAt": "2022-03-01T22:23:11Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {},
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "operatingExpenses": {},
+     "interestExpense": {},
+     "depreciation": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "provisionForCreditLosses": {},
+     "goodwillImpairmentLoss": {},
+     "impairments": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {}
+    }
+   },
+   "0001558370-23-002599": {
+    "type": "10-K",
+    "dateFiled": "2023-03-01",
+    "acceptedAt": "2023-03-01T21:44:19Z",
+    "amendment": false,
+    "facts": {
+     "impairments": {
+      "before": 10224000
+     },
+     "otherExpenses": {}
+    }
+   },
+   "0001558370-23-018601": {
+    "type": "10-Q",
+    "dateFiled": "2023-11-09",
+    "acceptedAt": "2023-11-09T21:30:48Z",
+    "amendment": false,
+    "facts": {
+     "netIncomeCommonStockholders": {
+      "before": -459965000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -459965000
+     },
+     "netIncome": {
+      "before": -459965000
+     }
+    }
+   },
+   "0001558370-24-002178": {
+    "type": "10-K",
+    "dateFiled": "2024-02-29",
+    "acceptedAt": "2024-02-29T21:02:16Z",
+    "amendment": false,
+    "facts": {
+     "otherExpenses": {
+      "before": -765000
+     }
+    }
+   }
+  },
+  "derived": [
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "nonOperatingIncome",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ },
+ {
+  "period": "2020-12-31",
+  "fiscalYear": 2020,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2021-05-14",
+  "acceptedAt": "2021-05-14T10:20:25Z",
+  "facts": {
+   "revenue": -93237000,
+   "costOfRevenue": 376179000,
+   "grossProfit": -469416000,
+   "researchAndDevelopment": 27848000,
+   "sellingGeneralAndAdministrativeExpenses": 79348000,
+   "otherExpenses": -739000,
+   "impairments": 6430000,
+   "operatingExpenses": 114786000,
+   "interestExpense": 60510000,
+   "depreciation": 14434000,
+   "amortization": 1135000,
+   "operatingIncome": -584202000,
+   "nonOperatingIncome": -60484000,
+   "incomeBeforeTax": -627000000,
+   "incomeTaxExpense": -30845000,
+   "netIncome": -596155000,
+   "netIncomeCommonStockholders": -596200000,
+   "netIncomeCommonStockholdersDiluted": -596200000,
+   "weightedAverageSharesOutstanding": 354790106,
+   "weightedAverageSharesOutstandingDiluted": 354790106,
+   "eps": -1.68,
+   "epsDiluted": -1.68,
+   "gainLossOnDebtExtinguishment": 17686000,
+   "goodwillImpairmentLoss": 0,
+   "generalAndAdministrativeExpenses": 79348000,
+   "costAndExpenses": 490965000,
+   "depreciationAndAmortization": 15569000,
+   "ebit": -566490000,
+   "ebitda": -550921000,
+   "unusualItemsNet": 11256000,
+   "unusualItemsExcludingGoodwill": 11256000
+  },
+  "sources": {
+   "0001558370-21-007147": {
+    "type": "10-K",
+    "dateFiled": "2021-05-14",
+    "acceptedAt": "2021-05-14T10:20:25Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "impairments": {},
+     "operatingExpenses": {},
+     "depreciation": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "nonOperatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "gainLossOnDebtExtinguishment": {},
+     "goodwillImpairmentLoss": {},
+     "costOfRevenue": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {}
+    }
+   },
+   "0001558370-22-002620": {
+    "type": "10-K",
+    "dateFiled": "2022-03-01",
+    "acceptedAt": "2022-03-01T22:23:11Z",
+    "amendment": false,
+    "facts": {
+     "costOfRevenue": {},
+     "interestExpense": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {}
+    }
+   },
+   "0001558370-22-003577": {
+    "type": "10-K",
+    "dateFiled": "2022-03-14",
+    "acceptedAt": "2022-03-14T21:30:04Z",
+    "amendment": true,
+    "facts": {}
+   },
+   "0001558370-23-002599": {
+    "type": "10-K",
+    "dateFiled": "2023-03-01",
+    "acceptedAt": "2023-03-01T21:44:19Z",
+    "amendment": false,
+    "facts": {
+     "otherExpenses": {},
+     "netIncomeCommonStockholders": {
+      "before": -596181000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -596181000
+     }
+    }
+   },
+   "0001558370-23-018601": {
+    "type": "10-Q",
+    "dateFiled": "2023-11-09",
+    "acceptedAt": "2023-11-09T21:30:48Z",
+    "amendment": false,
+    "facts": {
+     "netIncomeCommonStockholders": {
+      "before": -596155000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -596155000
+     },
+     "netIncome": {
+      "before": -596155000
+     }
+    }
+   }
+  },
+  "derived": [
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ },
+ {
+  "period": "2019-12-31",
+  "fiscalYear": 2019,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2020-03-10",
+  "acceptedAt": "2020-03-10T01:56:15Z",
+  "facts": {
+   "revenue": 229975000,
+   "costOfRevenue": 219327000,
+   "grossProfit": 10648000,
+   "researchAndDevelopment": 15059000,
+   "sellingGeneralAndAdministrativeExpenses": 43202000,
+   "impairments": 0,
+   "operatingExpenses": 58261000,
+   "interestExpense": 37033000,
+   "depreciation": 11938000,
+   "amortization": 698000,
+   "operatingIncome": -47613000,
+   "nonOperatingIncome": -35691000,
+   "incomeBeforeTax": -83743000,
+   "netIncome": -83743000,
+   "netIncomeCommonStockholders": -85555000,
+   "netIncomeCommonStockholdersDiluted": -85555000,
+   "weightedAverageSharesOutstanding": 237152780,
+   "weightedAverageSharesOutstandingDiluted": 237152780,
+   "eps": -0.36,
+   "epsDiluted": -0.36,
+   "provisionForCreditLosses": -394000,
+   "gainLossOnDisposition": -212000,
+   "gainLossOnDebtExtinguishment": -518000,
+   "goodwillImpairmentLoss": 0,
+   "generalAndAdministrativeExpenses": 43202000,
+   "costAndExpenses": 277588000,
+   "depreciationAndAmortization": 12636000,
+   "ebit": -46710000,
+   "ebitda": -34074000,
+   "unusualItemsNet": -730000,
+   "unusualItemsExcludingGoodwill": -730000
+  },
+  "sources": {
+   "0001558370-20-002267": {
+    "type": "10-K",
+    "dateFiled": "2020-03-10",
+    "acceptedAt": "2020-03-10T01:56:15Z",
+    "amendment": false,
+    "facts": {
+     "amortization": {},
+     "revenue": {},
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "operatingExpenses": {},
+     "depreciation": {},
+     "operatingIncome": {},
+     "nonOperatingIncome": {},
+     "incomeBeforeTax": {},
+     "netIncome": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {}
+    }
+   },
+   "0001558370-21-007147": {
+    "type": "10-K",
+    "dateFiled": "2021-05-14",
+    "acceptedAt": "2021-05-14T10:20:25Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {
+      "before": 230239000
+     },
+     "grossProfit": {
+      "before": 27966000
+     },
+     "researchAndDevelopment": {
+      "before": 33675000
+     },
+     "sellingGeneralAndAdministrativeExpenses": {
+      "before": 44333000
+     },
+     "impairments": {},
+     "operatingExpenses": {
+      "before": 78008000
+     },
+     "depreciation": {
+      "before": 11989000
+     },
+     "operatingIncome": {
+      "before": -50042000
+     },
+     "nonOperatingIncome": {
+      "before": -35502000
+     },
+     "incomeBeforeTax": {
+      "before": -85465000
+     },
+     "netIncome": {
+      "before": -85465000
+     },
+     "netIncomeCommonStockholders": {
+      "before": -85465000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -85465000
+     },
+     "gainLossOnDisposition": {},
+     "gainLossOnDebtExtinguishment": {},
+     "goodwillImpairmentLoss": {},
+     "costOfRevenue": {
+      "before": 202273000
+     }
+    }
+   },
+   "0001558370-22-002620": {
+    "type": "10-K",
+    "dateFiled": "2022-03-01",
+    "acceptedAt": "2022-03-01T22:23:11Z",
+    "amendment": false,
+    "facts": {
+     "costOfRevenue": {},
+     "interestExpense": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "provisionForCreditLosses": {}
+    }
+   }
+  },
+  "derived": [
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ },
+ {
+  "period": "2018-12-31",
+  "fiscalYear": 2018,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2019-03-13",
+  "acceptedAt": "2019-03-13T20:42:08Z",
+  "facts": {
+   "revenue": 174215000,
+   "costOfRevenue": 200219000,
+   "grossProfit": -26004000,
+   "researchAndDevelopment": 12750000,
+   "sellingGeneralAndAdministrativeExpenses": 37685000,
+   "operatingExpenses": 50435000,
+   "depreciationAndAmortization": 300000,
+   "depreciation": 11832000,
+   "amortization": 693000,
+   "operatingIncome": -76439000,
+   "nonOperatingIncome": -22750000,
+   "incomeBeforeTax": -94903000,
+   "incomeTaxExpense": -9295000,
+   "netIncome": -85608000,
+   "netIncomeCommonStockholders": -85660000,
+   "netIncomeCommonStockholdersDiluted": -85660000,
+   "weightedAverageSharesOutstanding": 218882337,
+   "weightedAverageSharesOutstandingDiluted": 218882337,
+   "eps": -0.39,
+   "epsDiluted": -0.39,
+   "generalAndAdministrativeExpenses": 37685000,
+   "costAndExpenses": 250654000,
+   "ebit": -76439000,
+   "ebitda": -76139000
+  },
+  "sources": {
+   "0001558370-19-001929": {
+    "type": "10-K",
+    "dateFiled": "2019-03-13",
+    "acceptedAt": "2019-03-13T20:42:08Z",
+    "amendment": false,
+    "facts": {
+     "amortization": {},
+     "revenue": {},
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "operatingExpenses": {},
+     "depreciationAndAmortization": {},
+     "operatingIncome": {},
+     "nonOperatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {}
+    }
+   },
+   "0001558370-20-002267": {
+    "type": "10-K",
+    "dateFiled": "2020-03-10",
+    "acceptedAt": "2020-03-10T01:56:15Z",
+    "amendment": false,
+    "facts": {
+     "depreciationAndAmortization": {
+      "before": 11014000
+     },
+     "depreciation": {}
+    }
+   },
+   "0001558370-21-007147": {
+    "type": "10-K",
+    "dateFiled": "2021-05-14",
+    "acceptedAt": "2021-05-14T10:20:25Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {
+      "before": 174632000
+     },
+     "costOfRevenue": {
+      "before": 172010000
+     },
+     "grossProfit": {
+      "before": 2622000
+     },
+     "researchAndDevelopment": {
+      "before": 33907000
+     },
+     "sellingGeneralAndAdministrativeExpenses": {
+      "before": 38198000
+     },
+     "operatingExpenses": {
+      "before": 72105000
+     },
+     "depreciation": {
+      "before": 11014000
+     },
+     "operatingIncome": {
+      "before": -69483000
+     },
+     "nonOperatingIncome": {
+      "before": -22135000
+     },
+     "incomeBeforeTax": {
+      "before": -87332000
+     },
+     "incomeTaxExpense": {
+      "before": -9217000
+     },
+     "netIncome": {
+      "before": -78115000
+     },
+     "netIncomeCommonStockholders": {
+      "before": -78115000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -78115000
+     },
+     "eps": {
+      "before": -0.36
+     },
+     "epsDiluted": {
+      "before": -0.36
+     }
+    }
+   },
+   "0001558370-22-003577": {
+    "type": "10-K",
+    "dateFiled": "2022-03-14",
+    "acceptedAt": "2022-03-14T21:30:04Z",
+    "amendment": true,
+    "facts": {
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {}
+    }
+   }
+  },
+  "derived": [
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "ebit",
+   "ebitda"
+  ]
+ },
+ {
+  "period": "2017-12-31",
+  "fiscalYear": 2017,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2018-03-12",
+  "acceptedAt": "2018-03-09T23:26:57Z",
+  "facts": {
+   "revenue": 100153000,
+   "costOfRevenue": 131351000,
+   "grossProfit": -28089000,
+   "researchAndDevelopment": 28693000,
+   "sellingGeneralAndAdministrativeExpenses": 45010000,
+   "operatingExpenses": 73703000,
+   "depreciationAndAmortization": 300000,
+   "depreciation": 9190000,
+   "amortization": 593000,
+   "operatingIncome": -101792000,
+   "nonOperatingIncome": -10100000,
+   "incomeBeforeTax": -127080000,
+   "netIncome": -127080000,
+   "netIncomeCommonStockholders": 130200000,
+   "netIncomeCommonStockholdersDiluted": 130200000,
+   "weightedAverageSharesOutstanding": 216343985,
+   "weightedAverageSharesOutstandingDiluted": 216343985,
+   "eps": -0.6,
+   "epsDiluted": -0.6,
+   "generalAndAdministrativeExpenses": 45010000,
+   "costAndExpenses": 205054000,
+   "ebit": -101792000,
+   "ebitda": -101492000
+  },
+  "sources": {
+   "0001558370-18-001828": {
+    "type": "10-K",
+    "dateFiled": "2018-03-12",
+    "acceptedAt": "2018-03-09T23:26:57Z",
+    "amendment": false,
+    "facts": {
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "operatingExpenses": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "nonOperatingIncome": {},
+     "incomeBeforeTax": {},
+     "netIncome": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "revenue": {},
+     "depreciation": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {}
+    }
+   },
+   "0001558370-18-004683": {
+    "type": "10-Q",
+    "dateFiled": "2018-05-10",
+    "acceptedAt": "2018-05-10T21:16:13Z",
+    "amendment": false,
+    "facts": {
+     "netIncomeCommonStockholders": {
+      "before": -127080000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -127080000
+     },
+     "netIncome": {
+      "before": -127080000
+     }
+    }
+   },
+   "0001558370-19-001929": {
+    "type": "10-K",
+    "dateFiled": "2019-03-13",
+    "acceptedAt": "2019-03-13T20:42:08Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {
+      "before": 132929000
+     },
+     "depreciationAndAmortization": {},
+     "costOfRevenue": {
+      "before": 131351000
+     }
+    }
+   },
+   "0001558370-20-002267": {
+    "type": "10-K",
+    "dateFiled": "2020-03-10",
+    "acceptedAt": "2020-03-10T01:56:15Z",
+    "amendment": false,
+    "facts": {
+     "depreciation": {
+      "before": 1900000
+     }
+    }
+   }
+  },
+  "derived": [
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "ebit",
+   "ebitda"
+  ]
+ },
+ {
+  "period": "2016-12-31",
+  "fiscalYear": 2016,
+  "fiscalPeriod": "FY",
+  "dateFiled": "2017-03-10",
+  "acceptedAt": "2017-03-10T22:28:32Z",
+  "facts": {
+   "revenue": 82819000,
+   "costOfRevenue": 81982000,
+   "grossProfit": 3946000,
+   "researchAndDevelopment": 21177000,
+   "sellingGeneralAndAdministrativeExpenses": 34288000,
+   "operatingExpenses": 55465000,
+   "depreciationAndAmortization": 4650000,
+   "depreciation": 1800000,
+   "amortization": 590000,
+   "operatingIncome": -51519000,
+   "nonOperatingIncome": -10704000,
+   "incomeBeforeTax": -57879000,
+   "incomeTaxExpense": -392000,
+   "netIncome": -57487000,
+   "netIncomeCommonStockholders": 57600000,
+   "netIncomeCommonStockholdersDiluted": 57600000,
+   "weightedAverageSharesOutstanding": 180619860,
+   "weightedAverageSharesOutstandingDiluted": 180619860,
+   "eps": -0.32,
+   "epsDiluted": -0.32,
+   "gainLossOnDisposition": -41000,
+   "generalAndAdministrativeExpenses": 34288000,
+   "costAndExpenses": 137447000,
+   "ebit": -51519000,
+   "ebitda": -46869000,
+   "unusualItemsNet": -41000,
+   "unusualItemsExcludingGoodwill": -41000
+  },
+  "sources": {
+   "0001558370-17-001631": {
+    "type": "10-K",
+    "dateFiled": "2017-03-10",
+    "acceptedAt": "2017-03-10T22:28:32Z",
+    "amendment": false,
+    "facts": {
+     "costOfRevenue": {},
+     "grossProfit": {},
+     "researchAndDevelopment": {},
+     "sellingGeneralAndAdministrativeExpenses": {},
+     "operatingExpenses": {},
+     "depreciation": {},
+     "amortization": {},
+     "operatingIncome": {},
+     "nonOperatingIncome": {},
+     "incomeBeforeTax": {},
+     "incomeTaxExpense": {},
+     "netIncome": {},
+     "weightedAverageSharesOutstanding": {},
+     "weightedAverageSharesOutstandingDiluted": {},
+     "eps": {},
+     "epsDiluted": {},
+     "gainLossOnDisposition": {},
+     "revenue": {},
+     "netIncomeCommonStockholders": {},
+     "netIncomeCommonStockholdersDiluted": {}
+    }
+   },
+   "0001558370-17-004026": {
+    "type": "10-Q",
+    "dateFiled": "2017-05-09",
+    "acceptedAt": "2017-05-09T21:23:00Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {
+      "before": -57487000
+     },
+     "netIncomeCommonStockholders": {
+      "before": -57591000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -57591000
+     }
+    }
+   },
+   "0001558370-18-004683": {
+    "type": "10-Q",
+    "dateFiled": "2018-05-10",
+    "acceptedAt": "2018-05-10T21:16:13Z",
+    "amendment": false,
+    "facts": {
+     "netIncomeCommonStockholders": {
+      "before": -57600000
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "before": -57600000
+     },
+     "netIncome": {
+      "before": -57600000
+     }
+    }
+   },
+   "0001558370-19-001929": {
+    "type": "10-K",
+    "dateFiled": "2019-03-13",
+    "acceptedAt": "2019-03-13T20:42:08Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {
+      "before": 85928000
+     },
+     "depreciationAndAmortization": {},
+     "costOfRevenue": {
+      "before": 81982000
+     }
+    }
+   }
+  },
+  "derived": [
+   "generalAndAdministrativeExpenses",
+   "costAndExpenses",
+   "ebit",
+   "ebitda",
+   "unusualItemsNet",
+   "unusualItemsExcludingGoodwill"
+  ]
+ }
+]

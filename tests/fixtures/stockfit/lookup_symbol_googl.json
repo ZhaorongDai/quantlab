@@ -1,0 +1,37 @@
+{
+ "symbols": [
+  "GOOGL",
+  "GOOG",
+  "GOOGM",
+  "GOOGN"
+ ],
+ "exchanges": [
+  "Nasdaq",
+  "Nasdaq",
+  "Nasdaq",
+  "Nasdaq"
+ ],
+ "name": "Alphabet Inc.",
+ "cik": 1652044,
+ "seriesId": 0,
+ "type": "stock",
+ "sector": "Communication Services",
+ "industry": "Interactive Media & Internet",
+ "industryGroup": "Software & SaaS",
+ "compositeFigi": "BBG009DVP7F8",
+ "ein": 611767919,
+ "formerNames": [],
+ "status": "operating",
+ "priorTickers": [
+  {
+   "symbol": "GGLAP",
+   "exchange": "OTC",
+   "lastSeen": "2026-06-27"
+  },
+  {
+   "symbol": "GGLBP",
+   "exchange": "OTC",
+   "lastSeen": "2026-06-27"
+  }
+ ]
+}

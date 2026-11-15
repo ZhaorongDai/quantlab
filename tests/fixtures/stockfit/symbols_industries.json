@@ -1,0 +1,1518 @@
+[
+ {
+  "industry": "Other / Unclassified",
+  "symbolCount": 847
+ },
+ {
+  "industry": "Pharmaceuticals",
+  "symbolCount": 482
+ },
+ {
+  "industry": "SPACs & Blank-Check",
+  "symbolCount": 440
+ },
+ {
+  "industry": "Banks",
+  "symbolCount": 350
+ },
+ {
+  "industry": "Biotechnology",
+  "symbolCount": 190
+ },
+ {
+  "industry": "Precious Metals Mining",
+  "symbolCount": 134
+ },
+ {
+  "industry": "Software & SaaS",
+  "symbolCount": 112
+ },
+ {
+  "industry": "Oil & Gas Exploration & Production",
+  "symbolCount": 103
+ },
+ {
+  "industry": "Electric Utilities",
+  "symbolCount": 102
+ },
+ {
+  "industry": "Thrifts & Mortgage Finance",
+  "symbolCount": 81
+ },
+ {
+  "industry": "Specialty & Commercial-Stage Pharma",
+  "symbolCount": 73
+ },
+ {
+  "industry": "Property & Casualty Insurance",
+  "symbolCount": 61
+ },
+ {
+  "industry": "IT Services & Consulting",
+  "symbolCount": 59
+ },
+ {
+  "industry": "Metals & Mining",
+  "symbolCount": 51
+ },
+ {
+  "industry": "Cybersecurity Software",
+  "symbolCount": 50
+ },
+ {
+  "industry": "Diversified & Consumer Finance",
+  "symbolCount": 48
+ },
+ {
+  "industry": "Advertising Technology",
+  "symbolCount": 46
+ },
+ {
+  "industry": "Telecommunication Services",
+  "symbolCount": 46
+ },
+ {
+  "industry": "Mortgage REITs",
+  "symbolCount": 46
+ },
+ {
+  "industry": "Interactive Media & Internet",
+  "symbolCount": 45
+ },
+ {
+  "industry": "Cannabis",
+  "symbolCount": 43
+ },
+ {
+  "industry": "Retail & Net-Lease REITs",
+  "symbolCount": 43
+ },
+ {
+  "industry": "Diagnostics & Lab Testing",
+  "symbolCount": 42
+ },
+ {
+  "industry": "Packaged Foods & Agriculture",
+  "symbolCount": 41
+ },
+ {
+  "industry": "Quick-Service & Fast-Casual Restaurants",
+  "symbolCount": 40
+ },
+ {
+  "industry": "Oil & Gas Storage & Transportation",
+  "symbolCount": 39
+ },
+ {
+  "industry": "Homebuilders",
+  "symbolCount": 39
+ },
+ {
+  "industry": "Insurance Brokers",
+  "symbolCount": 38
+ },
+ {
+  "industry": "Non-Alcoholic Beverages",
+  "symbolCount": 38
+ },
+ {
+  "industry": "Apparel Brands & Manufacturing",
+  "symbolCount": 38
+ },
+ {
+  "industry": "Crypto Mining & Digital Infrastructure",
+  "symbolCount": 37
+ },
+ {
+  "industry": "Automobiles",
+  "symbolCount": 36
+ },
+ {
+  "industry": "Apparel & Accessories Retail",
+  "symbolCount": 36
+ },
+ {
+  "industry": "Household & Personal Products",
+  "symbolCount": 36
+ },
+ {
+  "industry": "Industrial Instruments & Test Equipment",
+  "symbolCount": 35
+ },
+ {
+  "industry": "Life Sciences Tools & Diagnostics",
+  "symbolCount": 35
+ },
+ {
+  "industry": "Semiconductor Equipment & Materials",
+  "symbolCount": 35
+ },
+ {
+  "industry": "Transaction & Payment Processing",
+  "symbolCount": 34
+ },
+ {
+  "industry": "Asset Management",
+  "symbolCount": 33
+ },
+ {
+  "industry": "Digital Asset Treasury Companies",
+  "symbolCount": 33
+ },
+ {
+  "industry": "Health Care Providers & Services",
+  "symbolCount": 33
+ },
+ {
+  "industry": "Residential REITs",
+  "symbolCount": 32
+ },
+ {
+  "industry": "Life & Health Insurance",
+  "symbolCount": 32
+ },
+ {
+  "industry": "Communications & Collaboration Software",
+  "symbolCount": 32
+ },
+ {
+  "industry": "Steel & Primary Metals",
+  "symbolCount": 32
+ },
+ {
+  "industry": "Internet & Direct Retail",
+  "symbolCount": 31
+ },
+ {
+  "industry": "Agriculture, Forestry & Fishing",
+  "symbolCount": 31
+ },
+ {
+  "industry": "Office REITs",
+  "symbolCount": 31
+ },
+ {
+  "industry": "Batteries & Energy Storage",
+  "symbolCount": 31
+ },
+ {
+  "industry": "Internet Platforms & Marketplaces",
+  "symbolCount": 29
+ },
+ {
+  "industry": "Recreational Vehicles & Marine",
+  "symbolCount": 29
+ },
+ {
+  "industry": "Consumer Health, OTC & Supplements",
+  "symbolCount": 29
+ },
+ {
+  "industry": "Transportation Services",
+  "symbolCount": 28
+ },
+ {
+  "industry": "Cardiovascular Devices",
+  "symbolCount": 28
+ },
+ {
+  "industry": "Parcel, Trucking & Logistics",
+  "symbolCount": 28
+ },
+ {
+  "industry": "Agricultural Inputs & Fertilizers",
+  "symbolCount": 28
+ },
+ {
+  "industry": "Staffing & HR Services",
+  "symbolCount": 26
+ },
+ {
+  "industry": "Digital Lending & Neobanks",
+  "symbolCount": 26
+ },
+ {
+  "industry": "Integrated Oil, Refining & Marketing",
+  "symbolCount": 26
+ },
+ {
+  "industry": "Funds & Exchange-Traded Products",
+  "symbolCount": 26
+ },
+ {
+  "industry": "Lithium & Battery Minerals",
+  "symbolCount": 26
+ },
+ {
+  "industry": "Interactive Entertainment & Games",
+  "symbolCount": 26
+ },
+ {
+  "industry": "Rare Earths & Critical Minerals",
+  "symbolCount": 26
+ },
+ {
+  "industry": "Consulting & Professional Services",
+  "symbolCount": 25
+ },
+ {
+  "industry": "Diversified REITs",
+  "symbolCount": 25
+ },
+ {
+  "industry": "Private Equity & Alternative Asset Managers",
+  "symbolCount": 25
+ },
+ {
+  "industry": "Education Services",
+  "symbolCount": 25
+ },
+ {
+  "industry": "Advertising & Marketing",
+  "symbolCount": 25
+ },
+ {
+  "industry": "Full-Service & Casual Dining Restaurants",
+  "symbolCount": 25
+ },
+ {
+  "industry": "Construction & Engineering",
+  "symbolCount": 24
+ },
+ {
+  "industry": "Live Entertainment & Events",
+  "symbolCount": 24
+ },
+ {
+  "industry": "Real Estate Services & Brokerage",
+  "symbolCount": 24
+ },
+ {
+  "industry": "Retail & Online Brokerage",
+  "symbolCount": 24
+ },
+ {
+  "industry": "Metal Fabrication & Components",
+  "symbolCount": 24
+ },
+ {
+  "industry": "Financial Data & Analytics",
+  "symbolCount": 24
+ },
+ {
+  "industry": "Oil & Gas Royalties & Minerals",
+  "symbolCount": 24
+ },
+ {
+  "industry": "Aerospace Components & Aftermarket",
+  "symbolCount": 23
+ },
+ {
+  "industry": "Specialty Retail",
+  "symbolCount": 23
+ },
+ {
+  "industry": "Freight Forwarding & Logistics",
+  "symbolCount": 23
+ },
+ {
+  "industry": "Construction & Agricultural Machinery",
+  "symbolCount": 23
+ },
+ {
+  "industry": "Specialty Chemicals",
+  "symbolCount": 23
+ },
+ {
+  "industry": "Health Care REITs",
+  "symbolCount": 22
+ },
+ {
+  "industry": "Cloud & Data Center Infrastructure",
+  "symbolCount": 22
+ },
+ {
+  "industry": "Hotel & Lodging REITs",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Aerospace & Defense",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Fuel Distribution & Marketing",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Industrial & MRO Distribution",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Hotels, Resorts & Leisure",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Real Estate Mgmt & Development",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Commodity & Petrochemicals",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Tanker Shipping",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Auto Components",
+  "symbolCount": 21
+ },
+ {
+  "industry": "Corporate Services & Listing Advisory",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Orthopedic & Spine Devices",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Digital Assets & Crypto",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Artificial Intelligence Software",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Copper Mining",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Airlines",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Medical Devices & Equipment",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Automotive Retail",
+  "symbolCount": 20
+ },
+ {
+  "industry": "Mortgage Finance & Servicing",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Drones & Unmanned Systems",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Casinos & Gaming",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Investment Banking & Advisory",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Hotels & Lodging",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Large-Cap Pharmaceuticals",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Machinery & Industrial Equipment",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Multiline & General Retail",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Technology Distribution",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Broadcasting (TV & Radio)",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Pumps, Valves & Fluid Control",
+  "symbolCount": 19
+ },
+ {
+  "industry": "Leisure & Sporting Products",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Brewers, Distillers & Wineries",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Furniture & Furnishings",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Industrial & Logistics REITs",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Dry Bulk Shipping",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Neurology & Neuromodulation Devices",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Renewable Power Producers",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Analog, Mixed-Signal & Microcontrollers",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Wound Care & Tissue Regeneration",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Satellite & Space-Based Services",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Trading, Wholesale & Distribution",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Uranium & Nuclear Fuel",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Intellectual Property & Licensing",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Oil & Gas Equipment & Services",
+  "symbolCount": 18
+ },
+ {
+  "industry": "Consumer Electronics & Audio",
+  "symbolCount": 17
+ },
+ {
+  "industry": "Biofuels & Renewable Fuels",
+  "symbolCount": 17
+ },
+ {
+  "industry": "Crypto Exchanges, Brokers & Financial Services",
+  "symbolCount": 17
+ },
+ {
+  "industry": "Consumer Finance",
+  "symbolCount": 17
+ },
+ {
+  "industry": "Processors, Logic & Digital ICs",
+  "symbolCount": 17
+ },
+ {
+  "industry": "Food & Staples Distribution",
+  "symbolCount": 17
+ },
+ {
+  "industry": "Defense Electronics & Systems",
+  "symbolCount": 17
+ },
+ {
+  "industry": "Drug Delivery & Formulation Technology",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Medical Imaging & Radiation Therapy",
+  "symbolCount": 16
+ },
+ {
+  "industry": "CRM, Marketing & CX Software",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Electrical Equipment & Instruments",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Higher Education & Career Colleges",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Building Products Distribution",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Tobacco",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Diversified Holding Companies",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Commercial & Professional Services",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Electronics Manufacturing Services",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Surgical Instruments & Robotics",
+  "symbolCount": 16
+ },
+ {
+  "industry": "E-Commerce & Retail Software",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Water Utilities",
+  "symbolCount": 16
+ },
+ {
+  "industry": "Facility & Building Services",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Real Estate Operating Companies",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Agricultural Products & Commodities",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Vision & Eye Care",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Healthcare Distribution",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Building Products & Construction",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Online Travel & Booking",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Education Technology & Online Learning",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Photonics, Lasers & Optical Components",
+  "symbolCount": 15
+ },
+ {
+  "industry": "HVAC & Building Systems",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Robotics & Automation",
+  "symbolCount": 15
+ },
+ {
+  "industry": "Space Systems & Launch",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Semiconductors",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Oilfield Equipment Manufacturing",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Publishing",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Clean Energy & Fuel Cells",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Cable & Satellite",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Telehealth & Digital Health",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Heavy Trucks, Buses & Commercial Vehicles",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Consumer & Personal Services",
+  "symbolCount": 14
+ },
+ {
+  "industry": "EV Charging Infrastructure",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Quantum Computing",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Managed Health Care & Insurance",
+  "symbolCount": 14
+ },
+ {
+  "industry": "Physical Security & Surveillance Equipment",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Firearms & Public Safety Products",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Genomics & Proteomics Tools",
+  "symbolCount": 13
+ },
+ {
+  "industry": "In-Vitro Diagnostics & Test Kits",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Cement & Aggregates",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Nuclear Power & SMR",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Food Retail & Grocery",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Cannabis Ancillary Products & Services",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Physician Practices & Ambulatory Surgery",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Coal Mining",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Wireless Network & Radio Equipment",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Advanced & Battery Materials",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Ride-Hailing & Delivery",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Film & TV Production Studios",
+  "symbolCount": 13
+ },
+ {
+  "industry": "Respiratory & Sleep Devices",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Footwear",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Streaming & Digital Video Platforms",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Automotive Services & Repair",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Paper & Packaging",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Leasing & Equipment Finance",
+  "symbolCount": 12
+ },
+ {
+  "industry": "RF & Wireless Semiconductors",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Power Generation Equipment",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Security & Protective Services",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Gas Utilities",
+  "symbolCount": 12
+ },
+ {
+  "industry": "IoT Devices & Telematics",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Government IT & Defense Services",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Drug Delivery & Infusion Devices",
+  "symbolCount": 12
+ },
+ {
+  "industry": "Land Development & Master-Planned",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Mechanical, Electrical & Plumbing Contractors",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Engineering & Design Software",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Healthcare IT & Clinical Software",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Hospitals & Health Systems",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Media & Entertainment",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Solar Energy",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Displays & Display Materials",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Utility & Telecom Infrastructure Services",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Music & Audio Entertainment",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Home Health & Hospice",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Online Gambling & Sports Betting",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Household Appliances",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Meat & Protein Processing",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Power Semiconductors & Discretes",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Marketing & Sales Services",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Snacks, Bakery & Confectionery",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Infrastructure & Heavy Civil",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Non-Traded Real Estate Programs & LPs",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Infrastructure & Systems Software",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Business Process & CX Outsourcing",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Chemicals",
+  "symbolCount": 11
+ },
+ {
+  "industry": "Diabetes Care Devices",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Pharma Services & CROs",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Advanced Air Mobility (eVTOL)",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Recycling & Resource Recovery",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Waste & Environmental Services",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Animal Health & Veterinary",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Hand Tools & Hardware",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Tutoring & Test Preparation",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Marine Shipping",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Independent & Merchant Power",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Water & Wastewater Treatment",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Home Furnishings Retail",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Generic & Biosimilar Pharmaceuticals",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Hemp & CBD Consumer Products",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Autonomous Vehicles & Self-Driving Tech",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Contract Drilling (Land & Offshore)",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Online Labor & Recruitment",
+  "symbolCount": 10
+ },
+ {
+  "industry": "Telecom Resellers & Wholesale Voice",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Electronic Connectors & Interconnect",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Data, Analytics & Database Software",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Equipment Rental & Leasing",
+  "symbolCount": 9
+ },
+ {
+  "industry": "DevOps, IT Ops & Developer Tools",
+  "symbolCount": 9
+ },
+ {
+  "industry": "LNG & LPG Shipping",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Consumer Durables & Leisure Products",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Cosmetics & Personal Care Products",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Solar Inverters, Trackers & Components",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Communications Equipment",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Luxury Goods, Handbags & Watches",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Cross-Border Payments & Remittance",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Commercial Printing & Documents",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Networking & Datacenter Equipment",
+  "symbolCount": 9
+ },
+ {
+  "industry": "Medical Supplies & Consumables",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Water Treatment & Hygiene Chemicals",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Workflow Automation & Low-Code Software",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Rural, Regional & Broadband Access Carriers",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Self-Storage REITs",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Exchanges & Trading Venues",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Gaming Equipment & Technology",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Aesthetic & Dermatology Devices",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Payroll, PEO & HR Outsourcing",
+  "symbolCount": 8
+ },
+ {
+  "industry": "LiDAR & Perception Sensors",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Technology Hardware & Storage",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Pulp, Paper & Specialty Fiber",
+  "symbolCount": 8
+ },
+ {
+  "industry": "ATM & Payment Terminals",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Rehabilitation & Mobility Devices",
+  "symbolCount": 8
+ },
+ {
+  "industry": "ERP, Finance & Procurement Software",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Specialty REITs",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Aluminum",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Amusement Parks & Resorts",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Reinsurance",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Telecom & Broadband Network Equipment",
+  "symbolCount": 8
+ },
+ {
+  "industry": "LNG & Liquefied Gas",
+  "symbolCount": 8
+ },
+ {
+  "industry": "Capital Markets & Brokerage",
+  "symbolCount": 8
+ },
+ {
+  "industry": "HR & Payroll Software",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Banking & Financial Software",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Solar Installation & Residential Solar",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Prepaid Cards & Card Issuing",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Mortgage & Financial Guaranty Insurance",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Dialysis & Blood Purification",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Memory & Storage Semiconductors",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Value-Based Care & Provider Enablement",
+  "symbolCount": 7
+ },
+ {
+  "industry": "3D Printing & Additive Manufacturing",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Metal & Glass Containers",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Electronic Components & Equipment",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Auto Powertrain & Drivetrain",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Plastic & Flexible Packaging",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Auto Parts Retail",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Legal, Contract & Compliance Software",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Long-Term & Post-Acute Care",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Toys & Games",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Lighting & LED Products",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Container Shipping & Leasing",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Data Storage & Systems",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Engineering & Design Services",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Filtration & Air Quality Equipment",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Railroads",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Dental Equipment & Supplies",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Out-of-Home Advertising",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Railroad & Transit Equipment",
+  "symbolCount": 7
+ },
+ {
+  "industry": "Auto Interiors & Seating",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Private Aviation & Air Charter",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Auto Aftermarket Parts",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Offshore Support & Subsea Services",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Specialty Trade Contractors",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Jewelry & Watch Retail",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Flooring & Interior Surfaces",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Life Sciences & Clinical Trial Software",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Timberland & Farmland REITs",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Healthcare Data & Analytics",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Cruise Lines",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Engines & Powertrain",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Title Insurance & Settlement",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Dairy & Infant Nutrition",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Testing, Inspection & Certification",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Government & Public-Sector Software",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Pawn, Rent-to-Own & Alternative Consumer Finance",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Office & Imaging Equipment",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Pressure Pumping & Completion",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Data Center REITs",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Flavors, Fragrances & Specialty Ingredients",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Paints & Coatings",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Fleet Telematics & Connected Vehicle",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Doors, Windows & Glazing",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Tower & Digital Infrastructure REITs",
+  "symbolCount": 6
+ },
+ {
+  "industry": "IT Infrastructure & Managed Services",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Bearings & Power Transmission",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Roofing, Siding & Insulation",
+  "symbolCount": 6
+ },
+ {
+  "industry": "Pet & Pet-Care Retail",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Pharmacies & Drugstores",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Passive Components & Frequency Control",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Captive & Manufacturer Finance",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Vehicle & Equipment Auctions",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Medical Device Contract Mfg",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Fitness & Recreation Clubs",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Foodservice & Food-Processing Equipment",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Plastics & Resins",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Environmental Remediation & Consulting",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Home Improvement & Building-Materials Retail",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Semiconductor & Chip Design IP",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Movie Theaters & Cinemas",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Online Auto Marketplaces",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Corporate Training & Professional Development",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Metals Distribution & Service Centers",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Market Making & Institutional Brokerage",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Construction & Real Estate Software",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Servers & Enterprise Systems",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Wire & Cable",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Real Estate Development",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Pharmaceutical Royalties & Licensing",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Beauty & Personal Care Retail",
+  "symbolCount": 5
+ },
+ {
+  "industry": "Sporting Goods & Outdoor Retail",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Convenience Stores & Fuel Retail",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Hazardous & Medical Waste Services",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Weight Management & Nutrition Programs",
+  "symbolCount": 4
+ },
+ {
+  "industry": "K-12 Schools & Early Childhood",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Patient Monitoring & Vital Signs",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Seismic & Subsurface Data",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Wealth Management & Financial Advisory",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Market Research & Measurement",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Supply Chain & Logistics Software",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Vertical SMB & Field-Service Software",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Behavioral Health & Addiction Treatment",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Gaming & Experiential REITs",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Textiles & Fabrics",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Insurance Software",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Death Care & Funeral Services",
+  "symbolCount": 4
+ },
+ {
+  "industry": "Debt Buyers & Collection",
+  "symbolCount": 3
+ },
+ {
+  "industry": "Revenue Cycle & Healthcare Payments",
+  "symbolCount": 3
+ },
+ {
+  "industry": "Timeshare & Vacation Ownership",
+  "symbolCount": 3
+ },
+ {
+  "industry": "Consumer Electronics Retail",
+  "symbolCount": 3
+ },
+ {
+  "industry": "Well-Site Services & Rental Tools",
+  "symbolCount": 3
+ },
+ {
+  "industry": "Vehicle Rental & Car Sharing",
+  "symbolCount": 3
+ },
+ {
+  "industry": "Enterprise Telephony & Video Systems",
+  "symbolCount": 3
+ },
+ {
+  "industry": "Industrial Gases",
+  "symbolCount": 2
+ },
+ {
+  "industry": "Fiber & Bandwidth Infrastructure",
+  "symbolCount": 2
+ },
+ {
+  "industry": "Housewares & Kitchen Products",
+  "symbolCount": 2
+ },
+ {
+  "industry": "EHR & Clinical Practice Software",
+  "symbolCount": 2
+ },
+ {
+  "industry": "Oilfield Water Management",
+  "symbolCount": 2
+ },
+ {
+  "industry": "Frac Sand & Proppants",
+  "symbolCount": 2
+ },
+ {
+  "industry": "Craft, Party & Hobby Retail",
+  "symbolCount": 2
+ },
+ {
+  "industry": "Real Estate Investment Trusts",
+  "symbolCount": 1
+ },
+ {
+  "industry": "Books & Office Products Retail",
+  "symbolCount": 1
+ }
+]

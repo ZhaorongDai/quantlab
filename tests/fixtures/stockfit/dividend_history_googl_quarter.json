@@ -1,0 +1,42 @@
+[
+ {
+  "period": "2026-09-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q3",
+  "dividendPerShare": null,
+  "totalDividendsPaid": null,
+  "payoutRatio": null,
+  "dividendCoverage": null,
+  "dividendGrowth": null
+ },
+ {
+  "period": "2026-06-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q2",
+  "dividendPerShare": null,
+  "totalDividendsPaid": null,
+  "payoutRatio": null,
+  "dividendCoverage": null,
+  "dividendGrowth": null
+ },
+ {
+  "period": "2026-03-31",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q1",
+  "dividendPerShare": 0.21,
+  "totalDividendsPaid": 2542000000,
+  "payoutRatio": 0.0406,
+  "dividendCoverage": 18.0134,
+  "dividendGrowth": 0.0005
+ },
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q4",
+  "dividendPerShare": 0.21,
+  "totalDividendsPaid": 2536000000,
+  "payoutRatio": 0.0736,
+  "dividendCoverage": 20.6632,
+  "dividendGrowth": 0.001
+ }
+]

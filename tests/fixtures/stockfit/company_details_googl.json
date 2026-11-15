@@ -1,0 +1,35 @@
+{
+ "name": "Alphabet Inc.",
+ "cik": 1652044,
+ "description": "## Business Overview\nAlphabet Inc. is a holding company whose largest subsidiary is **Google**, generating most revenue from **advertising** sold across **Google Search** and **YouTube**, plus **subscription** and **cloud** revenue (e.g., **Google Cloud**).\n\n## Market Position\nGoogle is a leading global consumer internet and advertising platform with strong distribution via **Android** and **Chrome**, and a large creator/video ecosystem in **YouTube**, supporting broad reach and data-driven ad targeting.\n\n## Key Segments\nAlphabet reports results primarily through **Google Services** (Search, YouTube, Android, Chrome, hardware, and consumer subscriptions), **Google Cloud** (cloud infrastructure and productivity tools), and **Other Bets** (early-stage businesses such as **Waymo**).",
+ "sic": "7370",
+ "sector": "Communication Services",
+ "industry": "Interactive Media & Internet",
+ "industryGroup": "Software & SaaS",
+ "fiscalYearEndMonth": 12,
+ "fiscalYearEndDay": 31,
+ "exchanges": [
+  "Nasdaq",
+  "Nasdaq",
+  "Nasdaq",
+  "Nasdaq"
+ ],
+ "symbols": [
+  "GOOGL",
+  "GOOG",
+  "GOOGM",
+  "GOOGN"
+ ],
+ "address": "1600 AMPHITHEATRE PARKWAY",
+ "city": "MOUNTAIN VIEW",
+ "state": "CA",
+ "zip": "94043",
+ "country": "United States",
+ "phone": "650-253-0000",
+ "webUrl": "https://abc.xyz/",
+ "investorRelationsUrl": "https://abc.xyz/investor/",
+ "logoUrl": "https://upload.wikimedia.org/wikipedia/commons/7/7a/Alphabet_Inc_Logo_2015.svg",
+ "type": "stock",
+ "status": "operating",
+ "ipoDate": "2015-10-02"
+}

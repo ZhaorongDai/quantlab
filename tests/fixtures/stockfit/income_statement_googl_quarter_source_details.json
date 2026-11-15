@@ -1,0 +1,290 @@
+[
+ {
+  "period": "2026-09-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q3",
+  "dateFiled": "2026-10-29",
+  "acceptedAt": "2026-10-29T00:29:06Z",
+  "facts": {
+   "revenue": 127577000000,
+   "costOfRevenue": 51419000000,
+   "researchAndDevelopment": 20640000000,
+   "generalAndAdministrativeExpenses": 6138000000,
+   "sellingAndMarketingExpenses": 8804000000,
+   "otherExpenses": 146000000,
+   "costAndExpenses": 87001000000,
+   "interestExpense": 967000000,
+   "depreciation": 8369000000,
+   "amortization": 375000000,
+   "operatingIncome": 40576000000,
+   "nonOperatingIncome": -8221000000,
+   "incomeBeforeTax": 32355000000,
+   "incomeTaxExpense": 5887000000,
+   "netIncome": 26468000000,
+   "netIncomeCommonStockholders": 26170000000,
+   "netIncomeCommonStockholdersDiluted": 26170000000,
+   "weightedAverageSharesOutstanding": 12256000000,
+   "weightedAverageSharesOutstandingDiluted": 12368000000,
+   "eps": 2.14,
+   "epsDiluted": 2.12,
+   "grossProfit": 76158000000,
+   "sellingGeneralAndAdministrativeExpenses": 14942000000,
+   "operatingExpenses": 35582000000,
+   "depreciationAndAmortization": 8744000000,
+   "ebit": 33322000000,
+   "ebitda": 42066000000
+  },
+  "sources": {
+   "0001652044-26-000084": {
+    "type": "10-Q",
+    "dateFiled": "2026-10-29",
+    "acceptedAt": "2026-10-29T00:29:06Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {
+      "concept": "us-gaap:Revenues",
+      "unit": "USD"
+     },
+     "costOfRevenue": {
+      "concept": "us-gaap:CostOfRevenue",
+      "unit": "USD"
+     },
+     "researchAndDevelopment": {
+      "concept": "us-gaap:ResearchAndDevelopmentExpense",
+      "unit": "USD"
+     },
+     "generalAndAdministrativeExpenses": {
+      "concept": "us-gaap:GeneralAndAdministrativeExpense",
+      "unit": "USD"
+     },
+     "sellingAndMarketingExpenses": {
+      "concept": "us-gaap:SellingAndMarketingExpense",
+      "unit": "USD"
+     },
+     "otherExpenses": {
+      "concept": "us-gaap:OtherNonoperatingIncomeExpense",
+      "unit": "USD"
+     },
+     "costAndExpenses": {
+      "concept": "us-gaap:CostsAndExpenses",
+      "unit": "USD"
+     },
+     "interestExpense": {
+      "concept": "us-gaap:InterestExpenseNonoperating",
+      "unit": "USD"
+     },
+     "amortization": {
+      "concept": "us-gaap:AmortizationOfIntangibleAssets",
+      "unit": "USD"
+     },
+     "operatingIncome": {
+      "concept": "us-gaap:OperatingIncomeLoss",
+      "unit": "USD"
+     },
+     "nonOperatingIncome": {
+      "concept": "us-gaap:NonoperatingIncomeExpense",
+      "unit": "USD"
+     },
+     "incomeBeforeTax": {
+      "concept": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+      "unit": "USD"
+     },
+     "incomeTaxExpense": {
+      "concept": "us-gaap:IncomeTaxExpenseBenefit",
+      "unit": "USD"
+     },
+     "netIncome": {
+      "concept": "us-gaap:NetIncomeLoss",
+      "unit": "USD"
+     },
+     "netIncomeCommonStockholders": {
+      "concept": "us-gaap:NetIncomeLossAvailableToCommonStockholdersBasic",
+      "unit": "USD"
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "concept": "us-gaap:NetIncomeLossAvailableToCommonStockholdersDiluted",
+      "unit": "USD"
+     },
+     "weightedAverageSharesOutstanding": {
+      "concept": "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
+      "unit": "shares"
+     },
+     "weightedAverageSharesOutstandingDiluted": {
+      "concept": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+      "unit": "shares"
+     },
+     "eps": {
+      "concept": "us-gaap:EarningsPerShareBasic",
+      "unit": "USD/shares"
+     },
+     "epsDiluted": {
+      "concept": "us-gaap:EarningsPerShareDiluted",
+      "unit": "USD/shares"
+     }
+    }
+   },
+   "Q3-Recon-9M-H1": {
+    "type": "Q3-Recon",
+    "amendment": false,
+    "facts": {
+     "depreciation": {
+      "concept": "us-gaap:Depreciation",
+      "unit": "USD"
+     }
+    }
+   }
+  },
+  "derived": [
+   "grossProfit",
+   "sellingGeneralAndAdministrativeExpenses",
+   "operatingExpenses",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda"
+  ]
+ },
+ {
+  "period": "2026-06-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q2",
+  "dateFiled": "2026-07-23",
+  "acceptedAt": "2026-07-23T01:15:54Z",
+  "facts": {
+   "revenue": 119796000000,
+   "costOfRevenue": 45943000000,
+   "researchAndDevelopment": 18219000000,
+   "generalAndAdministrativeExpenses": 6461000000,
+   "sellingAndMarketingExpenses": 8403000000,
+   "otherExpenses": -973000000,
+   "costAndExpenses": 79026000000,
+   "interestExpense": 1278000000,
+   "depreciation": 7104000000,
+   "amortization": 367000000,
+   "operatingIncome": 40770000000,
+   "nonOperatingIncome": 97983000000,
+   "incomeBeforeTax": 138753000000,
+   "incomeTaxExpense": 26560000000,
+   "netIncome": 112193000000,
+   "netIncomeCommonStockholders": 112107000000,
+   "netIncomeCommonStockholdersDiluted": 112107000000,
+   "weightedAverageSharesOutstanding": 12151000000,
+   "weightedAverageSharesOutstandingDiluted": 12309000000,
+   "eps": 9.23,
+   "epsDiluted": 9.11,
+   "grossProfit": 73853000000,
+   "sellingGeneralAndAdministrativeExpenses": 14864000000,
+   "operatingExpenses": 33083000000,
+   "depreciationAndAmortization": 7471000000,
+   "ebit": 140031000000,
+   "ebitda": 147502000000
+  },
+  "sources": {
+   "0001652044-26-000071": {
+    "type": "10-Q",
+    "dateFiled": "2026-07-23",
+    "acceptedAt": "2026-07-23T01:15:54Z",
+    "amendment": false,
+    "facts": {
+     "revenue": {
+      "concept": "us-gaap:Revenues",
+      "unit": "USD"
+     },
+     "costOfRevenue": {
+      "concept": "us-gaap:CostOfRevenue",
+      "unit": "USD"
+     },
+     "researchAndDevelopment": {
+      "concept": "us-gaap:ResearchAndDevelopmentExpense",
+      "unit": "USD"
+     },
+     "generalAndAdministrativeExpenses": {
+      "concept": "us-gaap:GeneralAndAdministrativeExpense",
+      "unit": "USD"
+     },
+     "sellingAndMarketingExpenses": {
+      "concept": "us-gaap:SellingAndMarketingExpense",
+      "unit": "USD"
+     },
+     "otherExpenses": {
+      "concept": "us-gaap:OtherNonoperatingIncomeExpense",
+      "unit": "USD"
+     },
+     "costAndExpenses": {
+      "concept": "us-gaap:CostsAndExpenses",
+      "unit": "USD"
+     },
+     "interestExpense": {
+      "concept": "us-gaap:InterestExpenseNonoperating",
+      "unit": "USD"
+     },
+     "amortization": {
+      "concept": "us-gaap:AmortizationOfIntangibleAssets",
+      "unit": "USD"
+     },
+     "operatingIncome": {
+      "concept": "us-gaap:OperatingIncomeLoss",
+      "unit": "USD"
+     },
+     "nonOperatingIncome": {
+      "concept": "us-gaap:NonoperatingIncomeExpense",
+      "unit": "USD"
+     },
+     "incomeBeforeTax": {
+      "concept": "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+      "unit": "USD"
+     },
+     "incomeTaxExpense": {
+      "concept": "us-gaap:IncomeTaxExpenseBenefit",
+      "unit": "USD"
+     },
+     "netIncome": {
+      "concept": "us-gaap:NetIncomeLoss",
+      "unit": "USD"
+     },
+     "netIncomeCommonStockholders": {
+      "concept": "us-gaap:NetIncomeLossAvailableToCommonStockholdersBasic",
+      "unit": "USD"
+     },
+     "netIncomeCommonStockholdersDiluted": {
+      "concept": "us-gaap:NetIncomeLossAvailableToCommonStockholdersBasic",
+      "unit": "USD"
+     },
+     "weightedAverageSharesOutstanding": {
+      "concept": "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
+      "unit": "shares"
+     },
+     "weightedAverageSharesOutstandingDiluted": {
+      "concept": "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+      "unit": "shares"
+     },
+     "eps": {
+      "concept": "us-gaap:EarningsPerShareBasic",
+      "unit": "USD/shares"
+     },
+     "epsDiluted": {
+      "concept": "us-gaap:EarningsPerShareDiluted",
+      "unit": "USD/shares"
+     }
+    }
+   },
+   "Q2-Recon-H1-Q1": {
+    "type": "Q2-Recon",
+    "amendment": false,
+    "facts": {
+     "depreciation": {
+      "concept": "us-gaap:Depreciation",
+      "unit": "USD"
+     }
+    }
+   }
+  },
+  "derived": [
+   "grossProfit",
+   "sellingGeneralAndAdministrativeExpenses",
+   "operatingExpenses",
+   "depreciationAndAmortization",
+   "ebit",
+   "ebitda"
+  ]
+ }
+]

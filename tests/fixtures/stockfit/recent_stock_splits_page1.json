@@ -1,0 +1,58 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 4,
+ "totalResults": 20,
+ "data": [
+  {
+   "symbol": "OMEX",
+   "name": "ODYSSEY MARINE EXPLORATION INC",
+   "cik": 798528,
+   "date": "2026-10-28",
+   "ratio": 0.04,
+   "type": "reverse",
+   "accession": "0001193125-26-443747",
+   "firstDisclosedAt": "2026-11-02"
+  },
+  {
+   "symbol": "GUTS",
+   "name": "FRACTYL HEALTH, INC.",
+   "cik": 1572616,
+   "date": "2026-10-02",
+   "ratio": 0.08333333333333333,
+   "type": "reverse",
+   "accession": "0001193125-26-458318",
+   "firstDisclosedAt": "2026-11-12"
+  },
+  {
+   "symbol": "WLFC",
+   "name": "WILLIS LEASE FINANCE CORP",
+   "cik": 1018164,
+   "date": "2026-09-30",
+   "ratio": 3,
+   "type": "forward",
+   "accession": "0001018164-26-000094",
+   "firstDisclosedAt": "2026-11-03"
+  },
+  {
+   "symbol": "GOSS",
+   "name": "Gossamer Bio, Inc.",
+   "cik": 1728117,
+   "date": "2026-09-30",
+   "ratio": 0.0125,
+   "type": "reverse",
+   "accession": "0001728117-26-000114",
+   "firstDisclosedAt": "2026-11-10"
+  },
+  {
+   "symbol": "MYPS",
+   "name": "PLAYSTUDIOS, Inc.",
+   "cik": 1823878,
+   "date": "2026-09-30",
+   "ratio": 0.1,
+   "type": "reverse",
+   "accession": "0001823878-26-000070",
+   "firstDisclosedAt": "2026-11-05"
+  }
+ ]
+}

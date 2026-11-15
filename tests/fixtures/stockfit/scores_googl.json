@@ -1,0 +1,19 @@
+{
+ "period": "2025-12-31",
+ "fiscalYear": 2025,
+ "fiscalPeriod": "FY",
+ "piotroskiFScore": 6,
+ "piotroskiDetails": {
+  "positiveNetIncome": true,
+  "positiveOperatingCashFlow": true,
+  "risingRoa": false,
+  "cashFlowExceedsNetIncome": true,
+  "decliningLeverage": false,
+  "risingCurrentRatio": true,
+  "noShareDilution": true,
+  "risingGrossMargin": true,
+  "risingAssetTurnover": false
+ },
+ "altmanZScore": 3.92,
+ "altmanZone": "safe"
+}

@@ -1,0 +1,120 @@
+[
+ {
+  "period": "2018-12-31",
+  "fiscalYear": 2018,
+  "fiscalPeriod": "FY",
+  "properties": [
+   {
+    "member": "o:RensselaerNY3682Member",
+    "name": "Rensselaer NY 3682",
+    "locationMember": null,
+    "locationName": null,
+    "currency": "USD",
+    "initialCost": {
+     "land": 5393842,
+     "buildings": 67289268
+    },
+    "carrying": {
+     "land": 5393842,
+     "buildings": 67431518
+    },
+    "gross": 72825360,
+    "accumulatedDepreciation": 10897099
+   },
+   {
+    "member": "o:HarrisonNy5021Member",
+    "name": "Harrison Ny 5021",
+    "locationMember": null,
+    "locationName": null,
+    "currency": "USD",
+    "initialCost": {
+     "land": 16710000,
+     "buildings": 50611800
+    },
+    "carrying": {
+     "land": 16710000,
+     "buildings": 50611800
+    },
+    "gross": 67321800,
+    "accumulatedDepreciation": 7170005
+   },
+   {
+    "member": "o:BedfordTX3846Member",
+    "name": "Bedford TX 3846",
+    "locationMember": null,
+    "locationName": null,
+    "currency": "USD",
+    "initialCost": {
+     "land": 1607524,
+     "buildings": 56219108
+    },
+    "carrying": {
+     "land": 1607524,
+     "buildings": 56219108
+    },
+    "gross": 57826632,
+    "accumulatedDepreciation": 9570634
+   }
+  ],
+  "dateFiled": "2019-03-01"
+ },
+ {
+  "period": "2017-12-31",
+  "fiscalYear": 2017,
+  "fiscalPeriod": "FY",
+  "properties": [
+   {
+    "member": "o:RensselaerNY3682Member",
+    "name": "Rensselaer NY 3682",
+    "locationMember": null,
+    "locationName": null,
+    "currency": "USD",
+    "initialCost": {
+     "land": 5393842,
+     "buildings": 67289268
+    },
+    "carrying": {
+     "land": 5393842,
+     "buildings": 67431518
+    },
+    "gross": 72825360,
+    "accumulatedDepreciation": 8963094
+   },
+   {
+    "member": "o:HarrisonNy5021Member",
+    "name": "Harrison Ny 5021",
+    "locationMember": null,
+    "locationName": null,
+    "currency": "USD",
+    "initialCost": {
+     "land": 16710000,
+     "buildings": 50611800
+    },
+    "carrying": {
+     "land": 16710000,
+     "buildings": 50611800
+    },
+    "gross": 67321800,
+    "accumulatedDepreciation": 5145533
+   },
+   {
+    "member": "o:BedfordTX3846Member",
+    "name": "Bedford TX 3846",
+    "locationMember": null,
+    "locationName": null,
+    "currency": "USD",
+    "initialCost": {
+     "land": 1607524,
+     "buildings": 56219108
+    },
+    "carrying": {
+     "land": 1607524,
+     "buildings": 56219108
+    },
+    "gross": 57826632,
+    "accumulatedDepreciation": 7964374
+   }
+  ],
+  "dateFiled": "2018-02-22"
+ }
+]

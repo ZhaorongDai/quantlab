@@ -1,0 +1,65 @@
+{
+ "page": 1,
+ "pageSize": 3,
+ "totalPages": 16,
+ "totalResults": 46,
+ "data": [
+  {
+   "type": "8-K",
+   "accessionNumber": "0001652044-26-000080",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000080/goog-20261028.htm",
+   "dateFiled": "2026-10-28",
+   "acceptedAt": "2026-10-28T20:01:33Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-10-28",
+   "documents": [],
+   "items": [
+    "2.02",
+    "9.01"
+   ],
+   "events": [
+    "earnings",
+    "financial_exhibits"
+   ]
+  },
+  {
+   "type": "8-K",
+   "accessionNumber": "0001652044-26-000066",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000066/goog-20260722.htm",
+   "dateFiled": "2026-07-22",
+   "acceptedAt": "2026-07-22T20:01:36Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-07-22",
+   "documents": [],
+   "items": [
+    "2.02",
+    "9.01"
+   ],
+   "events": [
+    "earnings",
+    "financial_exhibits"
+   ]
+  },
+  {
+   "type": "8-K",
+   "accessionNumber": "0001652044-26-000043",
+   "url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000043/goog-20260429.htm",
+   "dateFiled": "2026-04-29",
+   "acceptedAt": "2026-04-29T20:01:35Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-04-29",
+   "documents": [],
+   "items": [
+    "2.02",
+    "9.01"
+   ],
+   "events": [
+    "earnings",
+    "financial_exhibits"
+   ]
+  }
+ ]
+}

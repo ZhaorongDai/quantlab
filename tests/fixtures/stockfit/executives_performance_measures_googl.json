@@ -1,0 +1,22 @@
+[
+ {
+  "fiscalYear": 2025,
+  "measureName": "1-Year TSR Relative to S&P 100",
+  "measureValue": 0.95
+ },
+ {
+  "fiscalYear": 2024,
+  "measureName": "1-Year Relative TSR",
+  "measureValue": 73
+ },
+ {
+  "fiscalYear": 2023,
+  "measureName": "1-Year Relative TSR",
+  "measureValue": 87
+ },
+ {
+  "fiscalYear": 2022,
+  "measureName": "1-Year TSR Relative to S&P 100",
+  "measureValue": 14
+ }
+]

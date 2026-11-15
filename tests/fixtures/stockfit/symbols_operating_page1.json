@@ -1,0 +1,135 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 5596,
+ "totalResults": 27976,
+ "data": [
+  {
+   "symbols": [
+    "FLWS"
+   ],
+   "exchanges": [
+    "Nasdaq"
+   ],
+   "name": "1 800 FLOWERS COM INC",
+   "cik": 1084869,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Consumer Discretionary",
+   "industry": "Internet & Direct Retail",
+   "industryGroup": null,
+   "compositeFigi": "BBG000BBR9P6",
+   "ein": 113117311,
+   "formerNames": [],
+   "status": "operating",
+   "priorTickers": []
+  },
+  {
+   "symbols": [
+    "TXG"
+   ],
+   "exchanges": [
+    "Nasdaq"
+   ],
+   "name": "10x Genomics, Inc.",
+   "cik": 1770787,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Health Care",
+   "industry": "Genomics & Proteomics Tools",
+   "industryGroup": null,
+   "compositeFigi": "BBG007WX14X0",
+   "ein": 455614458,
+   "formerNames": [],
+   "status": "operating",
+   "priorTickers": []
+  },
+  {
+   "symbols": [
+    "YI"
+   ],
+   "exchanges": [
+    "Nasdaq"
+   ],
+   "name": "111, Inc.",
+   "cik": 1738906,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Consumer Staples",
+   "industry": "Pharmacies & Drugstores",
+   "industryGroup": null,
+   "compositeFigi": "BBG00LQ87SL5",
+   "ein": null,
+   "formerNames": [],
+   "status": "operating",
+   "priorTickers": []
+  },
+  {
+   "symbols": [
+    "TNRAX",
+    "TNXIX",
+    "TNXRX",
+    "TNRCX"
+   ],
+   "exchanges": [
+    "Unknown",
+    "Unknown",
+    "Unknown",
+    "Unknown"
+   ],
+   "name": "1290 Avantis U.S. Large Cap Growth Fund",
+   "cik": 1605941,
+   "seriesId": 52767,
+   "type": "mf",
+   "sector": null,
+   "industry": null,
+   "industryGroup": null,
+   "compositeFigi": "BBG00CCKQ5Q7",
+   "ein": null,
+   "formerNames": [
+    "1290 Funds Trust"
+   ],
+   "status": "operating",
+   "priorTickers": []
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "1290 Convertible Securities Fund",
+   "cik": 1605941,
+   "seriesId": 49990,
+   "type": "mf",
+   "sector": null,
+   "industry": null,
+   "industryGroup": null,
+   "compositeFigi": null,
+   "ein": null,
+   "formerNames": [
+    "1290 Funds Trust"
+   ],
+   "status": "operating",
+   "priorTickers": [
+    {
+     "symbol": "TNFAX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    },
+    {
+     "symbol": "TNFCX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    },
+    {
+     "symbol": "TNFIX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    },
+    {
+     "symbol": "TNFRX",
+     "exchange": "Unknown",
+     "lastSeen": "2026-08-05"
+    }
+   ]
+  }
+ ]
+}

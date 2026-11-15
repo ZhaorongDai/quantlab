@@ -1,0 +1,12 @@
+{
+ "GOOGL": {
+  "earningsDate": "2027-02-03",
+  "filingDate": "2027-02-04",
+  "filingType": "10-K"
+ },
+ "AAPL": {
+  "earningsDate": "2027-01-28",
+  "filingDate": "2027-01-29",
+  "filingType": "10-Q"
+ }
+}

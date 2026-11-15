@@ -1,0 +1,26 @@
+[
+ {
+  "exchange": "NYSE"
+ },
+ {
+  "exchange": "Nasdaq"
+ },
+ {
+  "exchange": "NYSE Arca"
+ },
+ {
+  "exchange": "NYSE American"
+ },
+ {
+  "exchange": "IEX"
+ },
+ {
+  "exchange": "Cboe BZX"
+ },
+ {
+  "exchange": "OTC"
+ },
+ {
+  "exchange": "Unknown"
+ }
+]

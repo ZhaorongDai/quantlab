@@ -1,0 +1,1011 @@
+[
+ {
+  "period": "2026-09-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q3",
+  "dateFiled": "2026-11-09",
+  "acceptedAt": "2026-11-09T22:01:51Z",
+  "facts": {
+   "operatingCashFlow": -76420000,
+   "netIncome": 99037000,
+   "depreciation": 7526000,
+   "amortization": 900000,
+   "stockBasedCompensation": 13124000,
+   "changeInInventory": -2555000,
+   "changeInAccountsReceivable": 48004000,
+   "changeInPrepaidAssets": -5457000,
+   "changeInPayablesAndAccruedExpenses": 10293000,
+   "changeInAccountsPayable": 10293000,
+   "investingCashFlow": 25948000,
+   "netOtherInvestingChanges": 40000000,
+   "financingCashFlow": -17188000,
+   "netChangeInCashIncludingFx": -27763000,
+   "interestPaid": 7123000,
+   "capitalExpenditure": 3274000,
+   "purchaseOfPropertyPlantAndEquipment": 3274000,
+   "repaymentOfLongTermDebt": 347000,
+   "taxWithholdingShareBasedComp": 1479000,
+   "endCash": 134131000,
+   "netIssuancePaymentsOfDebt": -347000,
+   "beginningCash": 161894000,
+   "depreciationAndAmortization": 8426000,
+   "changeInWorkingCapital": -197007000,
+   "freeCashFlow": -79694000
+  },
+  "sources": {
+   "0001104659-26-124578": {
+    "type": "10-Q",
+    "dateFiled": "2026-11-09",
+    "acceptedAt": "2026-11-09T22:01:51Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "endCash": {}
+    }
+   },
+   "Q3-Recon-9M-H1": {
+    "type": "Q3-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "depreciation": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "investingCashFlow": {},
+     "netOtherInvestingChanges": {},
+     "financingCashFlow": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2026-06-30",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q2",
+  "dateFiled": "2026-08-10",
+  "acceptedAt": "2026-08-10T21:06:10Z",
+  "facts": {
+   "operatingCashFlow": -94064000,
+   "netIncome": -190102000,
+   "depreciation": 6559000,
+   "amortization": 900000,
+   "stockBasedCompensation": 12950000,
+   "impairments": 19365000,
+   "changeInInventory": -10390000,
+   "changeInAccountsReceivable": 19350000,
+   "changeInPrepaidAssets": 1852000,
+   "changeInPayablesAndAccruedExpenses": -6051000,
+   "changeInAccountsPayable": -6051000,
+   "investingCashFlow": 289000,
+   "financingCashFlow": -36178000,
+   "netChangeInCashIncludingFx": -61295000,
+   "interestPaid": 22836000,
+   "capitalExpenditure": 6304000,
+   "purchaseOfPropertyPlantAndEquipment": 6304000,
+   "repaymentOfLongTermDebt": 346000,
+   "taxWithholdingShareBasedComp": 122000,
+   "endCash": 161894000,
+   "netIssuancePaymentsOfDebt": -346000,
+   "beginningCash": 223189000,
+   "depreciationAndAmortization": 7459000,
+   "changeInWorkingCapital": 56264000,
+   "freeCashFlow": -100368000
+  },
+  "sources": {
+   "0001104659-26-093454": {
+    "type": "10-Q",
+    "dateFiled": "2026-08-10",
+    "acceptedAt": "2026-08-10T21:06:10Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "impairments": {},
+     "endCash": {}
+    }
+   },
+   "Q2-Recon-H1-Q1": {
+    "type": "Q2-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "depreciation": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2026-03-31",
+  "fiscalYear": 2026,
+  "fiscalPeriod": "Q1",
+  "dateFiled": "2026-05-11",
+  "acceptedAt": "2026-05-11T20:48:27Z",
+  "facts": {
+   "operatingCashFlow": -150041000,
+   "netIncome": -246037000,
+   "depreciation": 6312000,
+   "amortization": 908000,
+   "stockBasedCompensation": 13938000,
+   "impairments": 3856000,
+   "changeInInventory": 6860000,
+   "changeInAccountsReceivable": -25853000,
+   "changeInPrepaidAssets": 9337000,
+   "changeInPayablesAndAccruedExpenses": -43343000,
+   "changeInAccountsPayable": -43343000,
+   "investingCashFlow": -8481000,
+   "financingCashFlow": -31742000,
+   "netChangeInCashIncludingFx": -145351000,
+   "interestPaid": 8992000,
+   "capitalExpenditure": 2407000,
+   "purchaseOfPropertyPlantAndEquipment": 2407000,
+   "repaymentOfLongTermDebt": 346000,
+   "taxWithholdingShareBasedComp": 37000,
+   "endCash": 223189000,
+   "netIssuancePaymentsOfDebt": -346000,
+   "beginningCash": 368540000,
+   "depreciationAndAmortization": 7220000,
+   "changeInWorkingCapital": 70982000,
+   "freeCashFlow": -152448000
+  },
+  "sources": {
+   "0001104659-26-058712": {
+    "type": "10-Q",
+    "dateFiled": "2026-05-11",
+    "acceptedAt": "2026-05-11T20:48:27Z",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "depreciation": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "impairments": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {},
+     "endCash": {}
+    }
+   }
+  },
+  "derived": [
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q4",
+  "dateFiled": "2026-03-02",
+  "acceptedAt": "2026-03-02T21:30:29Z",
+  "facts": {
+   "operatingCashFlow": -148643000,
+   "netIncome": -904577000,
+   "depreciation": 4578000,
+   "amortization": 931000,
+   "stockBasedCompensation": 14141000,
+   "impairments": 724944000,
+   "changeInInventory": -19373000,
+   "changeInAccountsReceivable": 21221000,
+   "changeInPrepaidAssets": 6778000,
+   "changeInPayablesAndAccruedExpenses": 3028000,
+   "changeInAccountsPayable": 3028000,
+   "changeInOtherWorkingCapital": -21321000,
+   "investingCashFlow": -21300000,
+   "financingCashFlow": 316869000,
+   "netChangeInCashIncludingFx": 202645000,
+   "interestPaid": 22332000,
+   "capitalExpenditure": 4390000,
+   "purchaseOfPropertyPlantAndEquipment": 4390000,
+   "repaymentOfLongTermDebt": 252478000,
+   "taxWithholdingShareBasedComp": 2941000,
+   "endCash": 368540000,
+   "netIssuancePaymentsOfDebt": -252478000,
+   "beginningCash": 165895000,
+   "depreciationAndAmortization": 5509000,
+   "changeInWorkingCapital": 11340000,
+   "freeCashFlow": -153033000
+  },
+  "sources": {
+   "0001104659-26-022286": {
+    "type": "10-K",
+    "dateFiled": "2026-03-02",
+    "acceptedAt": "2026-03-02T21:30:29Z",
+    "amendment": false,
+    "facts": {}
+   },
+   "0001104659-26-093454": {
+    "type": "10-Q",
+    "dateFiled": "2026-08-10",
+    "acceptedAt": "2026-08-10T21:06:10Z",
+    "amendment": false,
+    "facts": {
+     "endCash": {}
+    }
+   },
+   "Q4-Recon-FY-9M": {
+    "type": "Q4-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "depreciation": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "impairments": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2025-09-30",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q3",
+  "dateFiled": "2025-11-10",
+  "acceptedAt": "2025-11-10T22:12:06Z",
+  "facts": {
+   "operatingCashFlow": -89814000,
+   "netIncome": -363505000,
+   "depreciation": 8122000,
+   "amortization": 2000000,
+   "stockBasedCompensation": 12237000,
+   "impairments": 50000000,
+   "changeInInventory": -16165000,
+   "changeInAccountsReceivable": -2041000,
+   "changeInPrepaidAssets": 10134000,
+   "changeInPayablesAndAccruedExpenses": 84727000,
+   "changeInAccountsPayable": 84727000,
+   "changeInOtherWorkingCapital": -25421000,
+   "investingCashFlow": -30392000,
+   "financingCashFlow": 87020000,
+   "proceedsFromCommonStockIssuance": 75756000,
+   "netChangeInCashIncludingFx": 25159000,
+   "interestPaid": 9307000,
+   "capitalExpenditure": 27705000,
+   "purchaseOfPropertyPlantAndEquipment": 27705000,
+   "repaymentOfLongTermDebt": 10711000,
+   "taxWithholdingShareBasedComp": 498000,
+   "endCash": 165895000,
+   "netCommonStockIssuance": 75756000,
+   "netIssuancePaymentsOfDebt": -10711000,
+   "beginningCash": 140736000,
+   "depreciationAndAmortization": 10122000,
+   "changeInWorkingCapital": 201332000,
+   "freeCashFlow": -117519000
+  },
+  "sources": {
+   "0001104659-25-109279": {
+    "type": "10-Q",
+    "dateFiled": "2025-11-10",
+    "acceptedAt": "2025-11-10T22:12:06Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "impairments": {},
+     "endCash": {}
+    }
+   },
+   "Q3-Recon-9M-H1": {
+    "type": "Q3-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "depreciation": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromCommonStockIssuance": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2025-06-30",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q2",
+  "dateFiled": "2025-08-11",
+  "acceptedAt": "2025-08-11T21:02:58Z",
+  "facts": {
+   "operatingCashFlow": -191810000,
+   "netIncome": -228727000,
+   "depreciation": 12776000,
+   "amortization": 2000000,
+   "stockBasedCompensation": 13080000,
+   "impairments": 20599000,
+   "changeInInventory": -34713000,
+   "changeInAccountsReceivable": -1578000,
+   "changeInPrepaidAssets": -1115000,
+   "changeInPayablesAndAccruedExpenses": -51655000,
+   "changeInAccountsPayable": -51655000,
+   "changeInOtherWorkingCapital": -33241000,
+   "investingCashFlow": -40743000,
+   "financingCashFlow": 32832000,
+   "proceedsFromCommonStockIssuance": 139000,
+   "netChangeInCashIncludingFx": -155108000,
+   "interestPaid": 21342000,
+   "capitalExpenditure": 38618000,
+   "purchaseOfPropertyPlantAndEquipment": 38618000,
+   "repaymentOfLongTermDebt": 344000,
+   "taxWithholdingShareBasedComp": 158000,
+   "endCash": 140736000,
+   "netCommonStockIssuance": 139000,
+   "netIssuancePaymentsOfDebt": -344000,
+   "beginningCash": 295844000,
+   "depreciationAndAmortization": 14776000,
+   "changeInWorkingCapital": -11538000,
+   "freeCashFlow": -230428000
+  },
+  "sources": {
+   "0001558370-25-011072": {
+    "type": "10-Q",
+    "dateFiled": "2025-08-11",
+    "acceptedAt": "2025-08-11T21:02:58Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "impairments": {},
+     "endCash": {}
+    }
+   },
+   "Q2-Recon-H1-Q1": {
+    "type": "Q2-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "depreciation": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromCommonStockIssuance": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2025-03-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "Q1",
+  "dateFiled": "2025-05-12",
+  "acceptedAt": "2025-05-12T20:51:17Z",
+  "facts": {
+   "operatingCashFlow": -105568000,
+   "netIncome": -196859000,
+   "depreciation": 12134000,
+   "amortization": 2007000,
+   "stockBasedCompensation": 11087000,
+   "impairments": 1064000,
+   "changeInInventory": 18357000,
+   "changeInAccountsReceivable": -12251000,
+   "changeInPrepaidAssets": -40576000,
+   "changeInPayablesAndAccruedExpenses": 47578000,
+   "changeInAccountsPayable": 47578000,
+   "changeInOtherWorkingCapital": -21697000,
+   "investingCashFlow": -46573000,
+   "financingCashFlow": 193232000,
+   "proceedsFromCommonStockIssuance": 276053000,
+   "netChangeInCashIncludingFx": 90151000,
+   "interestPaid": 6692000,
+   "capitalExpenditure": 40451000,
+   "purchaseOfPropertyPlantAndEquipment": 40451000,
+   "repaymentOfLongTermDebt": 344000,
+   "taxWithholdingShareBasedComp": 49000,
+   "endCash": 295844000,
+   "netCommonStockIssuance": 276053000,
+   "netIssuancePaymentsOfDebt": -344000,
+   "beginningCash": 205693000,
+   "depreciationAndAmortization": 14141000,
+   "changeInWorkingCapital": 64999000,
+   "freeCashFlow": -146019000
+  },
+  "sources": {
+   "0001558370-25-007412": {
+    "type": "10-Q",
+    "dateFiled": "2025-05-12",
+    "acceptedAt": "2025-05-12T20:51:17Z",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "depreciation": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromCommonStockIssuance": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {},
+     "endCash": {}
+    }
+   },
+   "0001104659-26-058712": {
+    "type": "10-Q",
+    "dateFiled": "2026-05-11",
+    "acceptedAt": "2026-05-11T20:48:27Z",
+    "amendment": false,
+    "facts": {
+     "impairments": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "Q4",
+  "dateFiled": "2025-03-03",
+  "acceptedAt": "2025-03-03T21:48:02Z",
+  "facts": {
+   "operatingCashFlow": -131241000,
+   "netIncome": -1335628000,
+   "depreciation": 9476000,
+   "amortization": 9247000,
+   "stockBasedCompensation": 18083000,
+   "impairments": 902200000,
+   "changeInInventory": -98423000,
+   "changeInAccountsReceivable": 20394000,
+   "changeInPrepaidAssets": -11660000,
+   "changeInPayablesAndAccruedExpenses": -30281000,
+   "changeInAccountsPayable": -30281000,
+   "changeInOtherWorkingCapital": 10751000,
+   "investingCashFlow": -43835000,
+   "netOtherInvestingChanges": 0,
+   "financingCashFlow": 203995000,
+   "proceedsFromCommonStockIssuance": 64623000,
+   "netChangeInCashIncludingFx": 111753000,
+   "interestPaid": 18016000,
+   "capitalExpenditure": 33950000,
+   "purchaseOfPropertyPlantAndEquipment": 33950000,
+   "issuanceOfDebt": 5871000,
+   "repaymentOfLongTermDebt": 2800000,
+   "taxWithholdingShareBasedComp": 850000,
+   "endCash": 205693000,
+   "netCommonStockIssuance": 64623000,
+   "netIssuancePaymentsOfDebt": 3071000,
+   "beginningCash": 93940000,
+   "depreciationAndAmortization": 18723000,
+   "changeInWorkingCapital": 265381000,
+   "freeCashFlow": -165191000
+  },
+  "sources": {
+   "0001558370-25-002049": {
+    "type": "10-K",
+    "dateFiled": "2025-03-03",
+    "acceptedAt": "2025-03-03T21:48:02Z",
+    "amendment": false,
+    "facts": {
+     "impairments": {}
+    }
+   },
+   "0001104659-25-042552": {
+    "type": "10-K",
+    "dateFiled": "2025-04-30",
+    "acceptedAt": "2025-04-30T20:22:54Z",
+    "amendment": true,
+    "facts": {}
+   },
+   "0001104659-26-022286": {
+    "type": "10-K",
+    "dateFiled": "2026-03-02",
+    "acceptedAt": "2026-03-02T21:30:29Z",
+    "amendment": false,
+    "facts": {
+     "endCash": {}
+    }
+   },
+   "Q4-Recon-FY-9M": {
+    "type": "Q4-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "depreciation": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "netOtherInvestingChanges": {},
+     "financingCashFlow": {},
+     "proceedsFromCommonStockIssuance": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "issuanceOfDebt": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2024-09-30",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "Q3",
+  "dateFiled": "2024-11-12",
+  "acceptedAt": "2024-11-12T21:05:47Z",
+  "facts": {
+   "operatingCashFlow": -174936000,
+   "netIncome": -211168000,
+   "depreciation": 17036000,
+   "amortization": 4800000,
+   "stockBasedCompensation": 21271000,
+   "changeInInventory": -42793000,
+   "changeInAccountsReceivable": -22786000,
+   "changeInPrepaidAssets": 21971000,
+   "changeInPayablesAndAccruedExpenses": -13365000,
+   "changeInAccountsPayable": -13365000,
+   "changeInOtherWorkingCapital": -53972000,
+   "investingCashFlow": -89871000,
+   "financingCashFlow": 252424000,
+   "proceedsFromCommonStockIssuance": 221129000,
+   "netChangeInCashIncludingFx": 31581000,
+   "interestPaid": 4351000,
+   "capitalExpenditure": 59225000,
+   "purchaseOfPropertyPlantAndEquipment": 59225000,
+   "repaymentOfLongTermDebt": 41000,
+   "taxWithholdingShareBasedComp": 1075000,
+   "endCash": 93940000,
+   "netCommonStockIssuance": 221129000,
+   "netIssuancePaymentsOfDebt": -41000,
+   "beginningCash": 62359000,
+   "depreciationAndAmortization": 21836000,
+   "changeInWorkingCapital": -6875000,
+   "freeCashFlow": -234161000
+  },
+  "sources": {
+   "0001558370-24-015312": {
+    "type": "10-Q",
+    "dateFiled": "2024-11-12",
+    "acceptedAt": "2024-11-12T21:05:47Z",
+    "amendment": false,
+    "facts": {
+     "stockBasedCompensation": {},
+     "endCash": {},
+     "netIncome": {}
+    }
+   },
+   "0001104659-25-109279": {
+    "type": "10-Q",
+    "dateFiled": "2025-11-10",
+    "acceptedAt": "2025-11-10T22:12:06Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {}
+    }
+   },
+   "Q3-Recon-9M-H1": {
+    "type": "Q3-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "depreciation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromCommonStockIssuance": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2024-06-30",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "Q2",
+  "dateFiled": "2024-08-08",
+  "acceptedAt": "2024-08-08T20:07:25Z",
+  "facts": {
+   "operatingCashFlow": -254738000,
+   "netIncome": -262333000,
+   "depreciation": 17997000,
+   "amortization": 4600000,
+   "stockBasedCompensation": 22746000,
+   "impairments": 3937000,
+   "changeInInventory": -26387000,
+   "changeInAccountsReceivable": 41175000,
+   "changeInPrepaidAssets": 6368000,
+   "changeInPayablesAndAccruedExpenses": -41573000,
+   "changeInAccountsPayable": -41573000,
+   "changeInOtherWorkingCapital": -9956000,
+   "investingCashFlow": -148074000,
+   "financingCashFlow": 243686000,
+   "proceedsFromCommonStockIssuance": 266774000,
+   "netChangeInCashIncludingFx": -110514000,
+   "interestPaid": 13484000,
+   "capitalExpenditure": 101302000,
+   "purchaseOfPropertyPlantAndEquipment": 101302000,
+   "repaymentOfLongTermDebt": 385000,
+   "taxWithholdingShareBasedComp": 324000,
+   "endCash": 62359000,
+   "netCommonStockIssuance": 266774000,
+   "netIssuancePaymentsOfDebt": -385000,
+   "beginningCash": 172873000,
+   "depreciationAndAmortization": 22597000,
+   "changeInWorkingCapital": -41685000,
+   "freeCashFlow": -356040000
+  },
+  "sources": {
+   "0001558370-24-011593": {
+    "type": "10-Q",
+    "dateFiled": "2024-08-08",
+    "acceptedAt": "2024-08-08T20:07:25Z",
+    "amendment": false,
+    "facts": {
+     "stockBasedCompensation": {},
+     "endCash": {},
+     "netIncome": {}
+    }
+   },
+   "0001558370-25-011072": {
+    "type": "10-Q",
+    "dateFiled": "2025-08-11",
+    "acceptedAt": "2025-08-11T21:02:58Z",
+    "amendment": false,
+    "facts": {
+     "netIncome": {},
+     "amortization": {},
+     "impairments": {}
+    }
+   },
+   "Q2-Recon-H1-Q1": {
+    "type": "Q2-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "depreciation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromCommonStockIssuance": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2024-03-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "Q1",
+  "dateFiled": "2024-05-09",
+  "acceptedAt": "2024-05-09T20:02:15Z",
+  "facts": {
+   "operatingCashFlow": -167728000,
+   "netIncome": -295776000,
+   "depreciation": 16606000,
+   "amortization": 4725000,
+   "stockBasedCompensation": 13704000,
+   "changeInInventory": 38312000,
+   "changeInAccountsReceivable": -96436000,
+   "changeInPrepaidAssets": 14496000,
+   "changeInPayablesAndAccruedExpenses": 25755000,
+   "changeInAccountsPayable": 25755000,
+   "changeInOtherWorkingCapital": -32500000,
+   "investingCashFlow": -120584000,
+   "financingCashFlow": 283065000,
+   "proceedsFromCommonStockIssuance": 305346000,
+   "netChangeInCashIncludingFx": 37840000,
+   "interestPaid": 9111000,
+   "capitalExpenditure": 92621000,
+   "purchaseOfPropertyPlantAndEquipment": 92621000,
+   "repaymentOfLongTermDebt": 300000,
+   "taxWithholdingShareBasedComp": 278000,
+   "endCash": 172873000,
+   "netCommonStockIssuance": 305346000,
+   "netIssuancePaymentsOfDebt": -300000,
+   "beginningCash": 135033000,
+   "depreciationAndAmortization": 21331000,
+   "changeInWorkingCapital": 93013000,
+   "freeCashFlow": -260349000
+  },
+  "sources": {
+   "0001558370-24-007592": {
+    "type": "10-Q",
+    "dateFiled": "2024-05-09",
+    "acceptedAt": "2024-05-09T20:02:15Z",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "depreciation": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "proceedsFromCommonStockIssuance": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {},
+     "endCash": {}
+    }
+   }
+  },
+  "derived": [
+   "netCommonStockIssuance",
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ },
+ {
+  "period": "2023-12-31",
+  "fiscalYear": 2023,
+  "fiscalPeriod": "Q4",
+  "dateFiled": "2024-02-29",
+  "acceptedAt": "2024-02-29T21:02:16Z",
+  "facts": {
+   "operatingCashFlow": -242651000,
+   "netIncome": -642395000,
+   "depreciation": 14176000,
+   "amortization": 4939000,
+   "stockBasedCompensation": 33834000,
+   "impairments": -8634000,
+   "changeInInventory": -3106000,
+   "changeInAccountsReceivable": 88083000,
+   "changeInPrepaidAssets": -38972000,
+   "changeInPayablesAndAccruedExpenses": 501000,
+   "changeInAccountsPayable": 501000,
+   "changeInOtherWorkingCapital": -34705000,
+   "investingCashFlow": 267564000,
+   "financingCashFlow": -8330000,
+   "netChangeInCashIncludingFx": 24224000,
+   "interestPaid": 12604000,
+   "capitalExpenditure": 181178000,
+   "purchaseOfPropertyPlantAndEquipment": 181178000,
+   "issuanceOfDebt": 13986000,
+   "repaymentOfLongTermDebt": 300000,
+   "taxWithholdingShareBasedComp": 2085000,
+   "endCash": 135033000,
+   "netIssuancePaymentsOfDebt": 13686000,
+   "beginningCash": 110809000,
+   "depreciationAndAmortization": 19115000,
+   "changeInWorkingCapital": 355429000,
+   "freeCashFlow": -423829000
+  },
+  "sources": {
+   "0001558370-24-002178": {
+    "type": "10-K",
+    "dateFiled": "2024-02-29",
+    "acceptedAt": "2024-02-29T21:02:16Z",
+    "amendment": false,
+    "facts": {}
+   },
+   "0001558370-25-002049": {
+    "type": "10-K",
+    "dateFiled": "2025-03-03",
+    "acceptedAt": "2025-03-03T21:48:02Z",
+    "amendment": false,
+    "facts": {
+     "endCash": {}
+    }
+   },
+   "Q4-Recon-FY-9M": {
+    "type": "Q4-Recon",
+    "amendment": false,
+    "facts": {
+     "operatingCashFlow": {},
+     "netIncome": {},
+     "depreciation": {},
+     "amortization": {},
+     "stockBasedCompensation": {},
+     "impairments": {},
+     "changeInInventory": {},
+     "changeInAccountsReceivable": {},
+     "changeInPrepaidAssets": {},
+     "changeInPayablesAndAccruedExpenses": {},
+     "changeInAccountsPayable": {},
+     "changeInOtherWorkingCapital": {},
+     "investingCashFlow": {},
+     "financingCashFlow": {},
+     "netChangeInCashIncludingFx": {},
+     "interestPaid": {},
+     "capitalExpenditure": {},
+     "purchaseOfPropertyPlantAndEquipment": {},
+     "issuanceOfDebt": {},
+     "repaymentOfLongTermDebt": {},
+     "taxWithholdingShareBasedComp": {}
+    }
+   }
+  },
+  "derived": [
+   "netIssuancePaymentsOfDebt",
+   "beginningCash",
+   "depreciationAndAmortization",
+   "changeInWorkingCapital",
+   "freeCashFlow"
+  ]
+ }
+]

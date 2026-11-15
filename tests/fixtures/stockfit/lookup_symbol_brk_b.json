@@ -1,0 +1,40 @@
+{
+ "symbols": [
+  "BRK-B",
+  "BRK-A"
+ ],
+ "exchanges": [
+  "NYSE",
+  "NYSE"
+ ],
+ "name": "BERKSHIRE HATHAWAY INC",
+ "cik": 1067983,
+ "seriesId": 0,
+ "type": "stock",
+ "sector": "Financials",
+ "industry": "Property & Casualty Insurance",
+ "industryGroup": null,
+ "compositeFigi": "BBG000DWCFL4",
+ "ein": 470813844,
+ "formerNames": [
+  "NBH INC"
+ ],
+ "status": "operating",
+ "priorTickers": [
+  {
+   "symbol": "BRK.A",
+   "exchange": "NYSE",
+   "lastSeen": "2026-09-30"
+  },
+  {
+   "symbol": "BRK.B",
+   "exchange": "NYSE",
+   "lastSeen": "2026-09-30"
+  },
+  {
+   "symbol": "BRKA",
+   "exchange": "Unknown",
+   "lastSeen": "2019-06-30"
+  }
+ ]
+}

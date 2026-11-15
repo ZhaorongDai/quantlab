@@ -1,0 +1,71 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 865,
+ "totalResults": 4322,
+ "data": [
+  {
+   "type": "10-Q",
+   "accessionNumber": "0002144472-26-000013",
+   "url": "https://www.sec.gov/Archives/edgar/data/2144472/000214447226000013/cars-20260930.htm",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T21:01:50Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-09-30",
+   "documents": [],
+   "companyName": "Carlyle Credit Solutions"
+  },
+  {
+   "type": "10-Q",
+   "accessionNumber": "0002102123-26-000001",
+   "url": "https://www.sec.gov/Archives/edgar/data/2102123/000210212326000001/aacpu-20260930.htm",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T22:19:58Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-09-30",
+   "documents": [],
+   "title": "QUARTERLY REPORT FOR THE PERIOD ENDED SEPTEMBER 30, 2026",
+   "symbol": "AACP",
+   "companyName": "Apogee Acquisition Corp"
+  },
+  {
+   "type": "10-Q",
+   "accessionNumber": "0002055592-26-000074",
+   "url": "https://www.sec.gov/Archives/edgar/data/2055592/000205559226000074/gemi-20260930.htm",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T00:01:16Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-09-30",
+   "documents": [],
+   "symbol": "GEMI",
+   "companyName": "Gemini Space Station, Inc."
+  },
+  {
+   "type": "10-Q",
+   "accessionNumber": "0002050260-26-000063",
+   "url": "https://www.sec.gov/Archives/edgar/data/2050260/000205026026000063/tpop-20260930.htm",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T21:29:52Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-09-30",
+   "documents": [],
+   "companyName": "TPG Private Equity Opportunities, L.P."
+  },
+  {
+   "type": "10-Q",
+   "accessionNumber": "0002045458-26-000058",
+   "url": "https://www.sec.gov/Archives/edgar/data/2045458/000204545826000058/sp-20260930.htm",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T21:18:58Z",
+   "xbrl": true,
+   "amendment": false,
+   "periodEndDate": "2026-09-30",
+   "documents": [],
+   "companyName": "Stonepeak-Plus Infrastructure Fund LP"
+  }
+ ]
+}

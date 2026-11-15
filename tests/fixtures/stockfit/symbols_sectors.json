@@ -1,0 +1,50 @@
+[
+ {
+  "sector": "Financials",
+  "symbolCount": 1471
+ },
+ {
+  "sector": "Health Care",
+  "symbolCount": 1363
+ },
+ {
+  "sector": "Industrials",
+  "symbolCount": 909
+ },
+ {
+  "sector": "Other",
+  "symbolCount": 847
+ },
+ {
+  "sector": "Information Technology",
+  "symbolCount": 839
+ },
+ {
+  "sector": "Consumer Discretionary",
+  "symbolCount": 828
+ },
+ {
+  "sector": "Materials",
+  "symbolCount": 505
+ },
+ {
+  "sector": "Energy",
+  "symbolCount": 388
+ },
+ {
+  "sector": "Communication Services",
+  "symbolCount": 366
+ },
+ {
+  "sector": "Real Estate",
+  "symbolCount": 364
+ },
+ {
+  "sector": "Consumer Staples",
+  "symbolCount": 310
+ },
+ {
+  "sector": "Utilities",
+  "symbolCount": 158
+ }
+]
