@@ -105,7 +105,8 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
 
     root = tmp_path / "stockfit"
     original = fixture("income_statement_plug_quarter")
-    assert raw.pulls(root, "income_statement_quarter", str(PLUG)) == [first, clock.now()]
+    later = raw.pulls(root, "income_statement_quarter", str(PLUG))
+    assert later[0] == first and len(later) == 2 and later[1].date() == clock.now().date()
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG), first) == original
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG)) == restated
     assert raw.read_pull_as_of(root, "income_statement_quarter", str(PLUG), first) == original
@@ -148,8 +149,9 @@ def test_the_refresh_keeps_inside_the_per_minute_limit_the_headers_state(env, tm
     result = _refresh(tmp_path, vendor, clock)
 
     assert not result.failed, result.summary()
-    # three list pages, nine feed forms, nine statements of three companies, one page of each Congress feed
-    assert len(vendor.calls) == 3 + 9 + 9 * 3 + 2
+    # three list pages, nine feed forms, nine statements of three companies, one page of each Congress feed,
+    # six forward lists (earnings, four IPO stages, offerings), two snapshots of each operating company
+    assert len(vendor.calls) == 3 + 9 + 9 * 3 + 2 + 6 + 2 * 2
     assert 429 not in vendor.statuses
     assert clock.sleeps and sum(clock.sleeps) >= 60 * (len(vendor.calls) // 4 - 1)
 

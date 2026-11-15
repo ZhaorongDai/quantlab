@@ -17,6 +17,9 @@ Shapes:
   companies are those of the newest company lists in the raw tier
   (``quantlab.dataset.stockfit.raw.company_ciks``), or the CIKs a refresh is
   given;
+- ``CompanySnapshot``: a per-company snapshot (the predicted filing
+  calendar, the latest headlines), one request per operating company,
+  re-pulled once a day from what the day's requests leave;
 - ``LatestFilings``: the market-wide feed of recent filings
   (``/api/filings/latest``), one entity per form type, read newest first
   back to the entity's last pull. The refresh takes from it the filers whose
@@ -57,10 +60,17 @@ from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
     CONGRESS_HOUSE_TRADES,
     CONGRESS_SENATE_TRADES,
+    EARNINGS_UPCOMING,
+    FILINGS_CALENDAR,
+    IPO_CALENDAR,
+    NEWS,
+    RECENT_OFFERINGS,
     SYMBOLS,
     WHOLE_LIST,
     company_ciks,
     last_pulled,
+    pulls,
+    read_pull,
     read_watermark,
 )
 
@@ -298,6 +308,40 @@ class LatestFilings(MarketList):
         return previous is not None and bool(filed) and date.fromisoformat(min(filed)) < previous.date() - timedelta(days=1)
 
 
+@dataclass(frozen=True)
+class CompanySnapshot(PerCompany):
+    """A per-company forward snapshot: each operating company, backfilled once, then re-pulled daily.
+
+    The endpoint keeps no history, so the raw tier's pulls are its only
+    record. A market-wide list is pulled on every run before the planner
+    runs; one request per company would spend a day's requests before the
+    backfill got any, so these rows are planned instead: never-pulled
+    companies with the backfill, then each company again once its last pull
+    is ``repull_days`` (one) UTC days old, oldest first, from what the day's
+    requests leave. The companies are those of the newest operating list (a
+    delisted company has no calendar and no news), or the CIKs a refresh is
+    given.
+
+    Examples
+    --------
+    >>> ENDPOINTS["news"].query("1652044")
+    {'limit': 50, 'cik': 1652044}
+    >>> ENDPOINTS["news"].repull_days
+    1
+    """
+
+    repull_days: int | None = 1
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return the given CIKs, or every company of the newest operating list."""
+        if context.ciks is not None:
+            return [str(cik) for cik in context.ciks]
+        if not pulls(context.vendor_root, SYMBOLS, "operating"):
+            return []
+        rows = read_pull(context.vendor_root, SYMBOLS, "operating")
+        return [str(cik) for cik in sorted({int(row["cik"]) for row in rows if row.get("cik")})]
+
+
 def filer_cik(row: Mapping) -> int | None:
     """Return the filer's CIK of a row of ``/api/filings/latest``, read from its EDGAR URL.
 
@@ -391,4 +435,17 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     # Congress members' periodic transaction reports, House and Senate, by filing day.
     SinceFeed(CONGRESS_HOUSE_TRADES, "/api/congress/house/trades/recent", page_size=CONGRESS_PAGE_SIZE),
     SinceFeed(CONGRESS_SENATE_TRADES, "/api/congress/senate/trades/recent", page_size=CONGRESS_PAGE_SIZE),
+    # Forward snapshots: the vendor keeps no history of these, so every refresh pulls them.
+    # Companies reporting in the next 28 days, with consensus EPS (keyed by ticker).
+    MarketList(EARNINGS_UPCOMING, "/api/earnings/upcoming", {"days": 28}, page_size=500),
+    # IPO deals, one entity per stage.
+    MarketList(
+        IPO_CALENDAR, "/api/company/ipo-calendar", page_size=500,
+        variants={stage: {"status": stage} for stage in ("filed", "upcoming", "priced", "withdrawn")},
+    ),
+    # Each company's latest S-1/S-1A of the last year.
+    MarketList(RECENT_OFFERINGS, "/api/filings/recent-offerings", {"days": 365}, page_size=100),
+    # Per operating company: the predicted next 10-K, 10-Q and DEF 14A, and the latest 50 headlines.
+    CompanySnapshot(FILINGS_CALENDAR, "/api/filings/calendar"),
+    CompanySnapshot(NEWS, "/api/lookup/news", {"limit": 50}),
 )}

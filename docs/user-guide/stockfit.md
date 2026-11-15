@@ -161,3 +161,61 @@ config = StockFitCongressTradesConfig(
 StockFitCongressTradesDataset(config).update()
 panel = StockFitCongressTradesDataset(config).panel("2024-01-02", "2024-03-28")
 ```
+
+## Snapshot panels
+
+StockFit keeps no history of some of what it serves: the company lists give each company's status
+and SFIC sector and industry today, the earnings calendar what is expected next, the IPO calendar
+where each deal stands. The refresh pulls these on every run and the raw tier keeps every pull that
+changed something, so these panels accumulate from the first refresh on. All are on the CIK axis
+and NYSE's trading days, in {py:mod}`quantlab.dataset.stockfit.snapshots`.
+
+- **Available date**: each snapshot is placed at the time it was pulled, by the rule every StockFit
+  panel uses: pulled before a session's close (16:00 New York, 13:00 on an early close), it is
+  available that trading day, otherwise on the next one. A cell shows the newest snapshot available
+  that day, so a value shows only from the first snapshot that carried it and a change from the day
+  of the snapshot that carried the change.
+- **No backfill**: a panel starts on the day of the first refresh. The first snapshot of the company
+  lists gives each company's *current* status and industry from that day on, not their history.
+- A company a market-wide snapshot stops listing (an earnings date that passed, an offering older
+  than a year) shows nothing from that snapshot on.
+
+| Panel | Source endpoint | Variables |
+|---|---|---|
+| {py:class}`~quantlab.dataset.stockfit.snapshots.StockFitListingDataset` | `/api/symbols` (operating, delisted), `/api/company/delisted` | `operating` (1, or 0 once delisted), `delisting_day`, `sector`, `industry` (SFIC, coded; `names` maps codes to names) |
+| {py:class}`~quantlab.dataset.stockfit.snapshots.StockFitEarningsConsensusDataset` | `/api/earnings/upcoming` (next 28 days) | `earnings_date`, `filing_date`, `eps_estimate`, `analyst_count`, `confirmed` |
+| {py:class}`~quantlab.dataset.stockfit.snapshots.StockFitIpoCalendarDataset` | `/api/company/ipo-calendar` (each stage) | `stage` (1 filed, 2 upcoming, 3 priced, 4 withdrawn), `price_range_low`, `price_range_high`, `price`, `shares_offered`, `dollar_value`, `filed_date`, `expected_price_date`, `priced_date`, `withdrawn_date` |
+| {py:class}`~quantlab.dataset.stockfit.snapshots.StockFitOfferingsDataset` | `/api/filings/recent-offerings` (last 365 days) | `filed_date`, `priced`, `shares_offered`, `price_range_low`, `price_range_high`, `proposed_max_offering` |
+| {py:class}`~quantlab.dataset.stockfit.snapshots.StockFitFilingCalendarDataset` | `/api/filings/calendar` (per company) | `expected_10k`, `expected_10q`, `expected_def14a`, and `confidence_<form>` (1 low, 2 medium, 3 high) |
+| {py:class}`~quantlab.dataset.stockfit.snapshots.StockFitNewsCountsDataset` | `/api/lookup/news` (per company, latest 50) | `news_count` |
+
+- **SFIC codes**: a sector or industry is coded by the CRC-32 of its name, so a code never depends on
+  the day the store was built.
+- **Earnings consensus**: `confirmed` is 1 when StockFit gives an expected report time, which it does
+  once exchange data confirms the date, and 0 while the date is its prediction from the company's
+  filing cadence (no estimate then). StockFit keeps no consensus history, so an earnings surprise can
+  only be computed from the estimates captured before each report.
+- **Ticker-keyed rows**: the earnings and IPO calendars name a company by ticker. A ticker is resolved
+  to the one company of the company lists that may have held it on the day of the pull, as for
+  Congress trades. An IPO deal names its company only by the ticker it intends to list under, so most
+  deals show on their company only once it is listed; unresolved rows stay in the raw tier only.
+- **Per-company snapshots**: the filing calendar and the news are one request per operating company.
+  They are pulled once with the backfill and then re-pulled once a day from what the day's requests
+  leave, oldest first, so on a busy day some companies are a day or more old.
+- **News**: a headline counts once, on the trading day it became known: the later of its publication
+  time and the pull that first carried it, so the first pull's headlines all land on the first
+  pull's day. `news_count` is 0 on a day without a headline and NaN before the company's first pull.
+  More than 50 headlines between two pulls lose the oldest, so a count is a lower bound. Titles,
+  summaries and links stay in the raw tier only.
+
+```python
+from quantlab.dataset.config import StockFitEarningsConsensusConfig
+from quantlab.dataset.stockfit.snapshots import StockFitEarningsConsensusDataset
+
+config = StockFitEarningsConsensusConfig(
+    zarr_file_path="/data/stores/stockfit_earnings_consensus_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+)
+StockFitEarningsConsensusDataset(config).update()
+panel = StockFitEarningsConsensusDataset(config).panel("2026-11-16", "2026-11-20")
+```
