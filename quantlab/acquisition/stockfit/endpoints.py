@@ -60,7 +60,14 @@ from pathlib import Path
 
 from quantlab.acquisition.stockfit.client import StockFitClient, StockFitResponseError
 from quantlab.acquisition.stockfit.raw_tier import StagedPull, write_entity_watermark
+from quantlab.dataset.stockfit.beneficial_owners import BENEFICIAL_OWNERS
+from quantlab.dataset.stockfit.executives import (
+    EXECUTIVES_COMPENSATION,
+    EXECUTIVES_GOVERNANCE,
+    EXECUTIVES_PERFORMANCE_MEASURES,
+)
 from quantlab.dataset.stockfit.filings import FILINGS
+from quantlab.dataset.stockfit.insiders import INSIDER_TRANSACTIONS
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
     COMPANY_DETAILS,
@@ -143,6 +150,9 @@ _FILER_CIK = re.compile(r"/edgar/data/(\d+)/")
 
 #: The largest page ``/api/filings`` serves.
 FILINGS_PAGE_SIZE = 100
+
+#: The largest page ``/api/insider-transactions`` serves.
+INSIDER_PAGE_SIZE = 250
 
 
 class Outcome(Enum):
@@ -686,8 +696,6 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     ),
     # The three statements, annual, quarterly and TTM, as many periods as served.
     *_statements(),
-    # Fund series: lists, N-PORT, N-1A, N-CSR, N-CEN and daily holdings.
-    *_funds(),
     # Corporate events: each company's profile (its successions), its XBRL
     # split history, and the declared splits and dividends of the next
     # FORWARD_DAYS days, a forward snapshot kept on every refresh.
@@ -702,10 +710,25 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     # Congress members' periodic transaction reports, House and Senate, by filing day.
     SinceFeed(CONGRESS_HOUSE_TRADES, "/api/congress/house/trades/recent", page_size=CONGRESS_PAGE_SIZE),
     SinceFeed(CONGRESS_SENATE_TRADES, "/api/congress/senate/trades/recent", page_size=CONGRESS_PAGE_SIZE),
+    # Insiders, 13D/13G stakes and proxy (DEF 14A) executive data, per company.
+    # Every insider transaction of officers and directors (Forms 4 and 5), re-pulled on a new Form 4.
+    PerCompany(
+        INSIDER_TRANSACTIONS, "/api/insider-transactions", page_size=INSIDER_PAGE_SIZE, triggers=frozenset({"4"}),
+    ),
+    # Every Schedule 13D/13G filed on the company, re-pulled on a new 13D or 13G.
+    PerCompany(BENEFICIAL_OWNERS, "/api/ownership/beneficial-owners/history", triggers=frozenset({"13D", "13G"})),
+    # Pay versus performance, governance flags and company-selected measures, re-pulled on a new proxy.
+    PerCompany(EXECUTIVES_COMPENSATION, "/api/executives/compensation", triggers=frozenset({"DEF 14A"})),
+    PerCompany(EXECUTIVES_GOVERNANCE, "/api/executives/governance", triggers=frozenset({"DEF 14A"})),
+    PerCompany(
+        EXECUTIVES_PERFORMANCE_MEASURES, "/api/executives/performance-measures", triggers=frozenset({"DEF 14A"}),
+    ),
     # Each company's SEC filing list, every form, newest first: the filing panel and accession lookups.
     # Re-pulled when the company files any form the feed follows, and weekly.
     PerCompany(
         FILINGS, "/api/filings", page_size=FILINGS_PAGE_SIZE,
         triggers=frozenset(FEED_FORMS.values()), repull_days=7,
     ),
+    # Fund series: lists, N-PORT, N-1A, N-CSR, N-CEN and daily holdings.
+    *_funds(),
 )}

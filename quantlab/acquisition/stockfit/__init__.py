@@ -19,15 +19,17 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings']
+['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
+from quantlab.dataset.stockfit.beneficial_owners import StockFitBeneficialOwnersDataset
 from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
 from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset, StockFitDeclaredEventsDataset
+from quantlab.dataset.stockfit.executives import StockFitExecutivesDataset
 from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
 from quantlab.dataset.stockfit.funds import (
     StockFitFundFeesDataset,
@@ -35,6 +37,7 @@ from quantlab.dataset.stockfit.funds import (
     StockFitFundNcenDataset,
     StockFitFundProfileDataset,
 )
+from quantlab.dataset.stockfit.insiders import StockFitInsidersDataset
 from quantlab.dataset.stockfit.statements import StockFitStatementsDataset
 
 #: The plan the endpoints need.
@@ -90,6 +93,22 @@ STOCKFIT_SOURCE = register_source(
                 dataset_cls=StockFitFilingsDataset,
                 earliest_available="1994-03-08",
                 entitlement=_ENTITLEMENT,
+            ),
+            # Officers' and directors' Form 4/5 transactions per CIK, with the Sharadar insider panel's variables.
+            Capability(
+                market="us_equity", frequency="1d", data_type="insiders",
+                dataset_cls=StockFitInsidersDataset, earliest_available="2003-01-01", entitlement=_ENTITLEMENT,
+            ),
+            # Schedule 13D/13G stakes per CIK, each placed by its filing's acceptance time.
+            Capability(
+                market="us_equity", frequency="1d", data_type="beneficial_owners",
+                dataset_cls=StockFitBeneficialOwnersDataset, earliest_available="2025-01-01",
+                entitlement=_ENTITLEMENT,
+            ),
+            # Proxy pay versus performance, governance flags and company-selected measures per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="executives",
+                dataset_cls=StockFitExecutivesDataset, earliest_available="2022-01-01", entitlement=_ENTITLEMENT,
             ),
         ),
         # A literal, checked against the client's constant by a test.

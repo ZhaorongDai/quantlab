@@ -162,6 +162,9 @@ LEAF_OVERRIDES: dict[str, dict[str, str]] = {
     "_StockFitEventPanel": {"_normalize_config": _CHECKS_FIELDS},
     "StockFitCorporateEventsDataset": {},
     "StockFitDeclaredEventsDataset": {"_on_config_installed": _DROPS_CACHE},
+    "StockFitInsidersDataset": {"_normalize_config": _CHECKS_FIELDS},
+    "StockFitBeneficialOwnersDataset": {"_normalize_config": _CHECKS_FIELDS},
+    "StockFitExecutivesDataset": {"_normalize_config": _CHECKS_FIELDS},
 }
 
 

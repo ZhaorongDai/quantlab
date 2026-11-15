@@ -1754,3 +1754,89 @@ class StockFitFilingsConfig(DatasetConfig):
     frequency: Frequency = "1d"
     #: Always StockFit.
     vendor: Vendor | None = "stockfit"
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitInsidersConfig(DatasetConfig):
+    """Config of the StockFit insider transaction panel on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier, ``<download-dir>/stockfit``,
+    holding each company's insider transactions
+    (``insider_transactions/<cik>/``).
+
+    Examples
+    --------
+    >>> cfg = StockFitInsidersConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_insiders_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.market, cfg.frequency, cfg.vendor
+    ('us_equity', '1d', 'stockfit')
+    """
+
+    #: StockFit's issuers are US-listed companies.
+    market: Market = "us_equity"
+    #: One value per trading day.
+    frequency: Frequency = "1d"
+    #: Always StockFit.
+    vendor: Vendor | None = "stockfit"
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitBeneficialOwnersConfig(DatasetConfig):
+    """Config of the StockFit 13D/13G stake panel on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier, ``<download-dir>/stockfit``,
+    holding each company's 13D/13G filings
+    (``beneficial_owners_history/<cik>/``) and its filing list
+    (``filings/<cik>/``), which dates each filing by its accession number.
+
+    Examples
+    --------
+    >>> cfg = StockFitBeneficialOwnersConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_beneficial_owners_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.market, cfg.frequency, cfg.vendor
+    ('us_equity', '1d', 'stockfit')
+    """
+
+    #: StockFit's issuers are US-listed companies.
+    market: Market = "us_equity"
+    #: One value per trading day.
+    frequency: Frequency = "1d"
+    #: Always StockFit.
+    vendor: Vendor | None = "stockfit"
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitExecutivesConfig(DatasetConfig):
+    """Config of the StockFit executive pay and governance panel on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier, ``<download-dir>/stockfit``,
+    holding each company's pay versus performance, governance flags and
+    company-selected measures (``executives_*/<cik>/``) and its annual
+    income statements (``income_statement_annual/<cik>/``), which give each
+    fiscal year's end.
+
+    Examples
+    --------
+    >>> cfg = StockFitExecutivesConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_executives_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.vendor, cfg.stale_after_days
+    ('stockfit', 548)
+    """
+
+    #: StockFit's issuers are US-listed companies.
+    market: Market = "us_equity"
+    #: One value per trading day.
+    frequency: Frequency = "1d"
+    #: Always StockFit.
+    vendor: Vendor | None = "stockfit"
+
+    #: Days after its available date that a fiscal year's values stop being
+    #: shown when no newer year has replaced them; ``None`` shows them until
+    #: replaced. About 1.5 times the gap between two proxies.
+    stale_after_days: int | None = 548
