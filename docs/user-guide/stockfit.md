@@ -71,19 +71,21 @@ The same call does the first backfill and every later update; run it once a day.
 
 1. pulls the market-wide lists: the company and fund lists (operating and delisted), the funds
    with daily holdings, the feed of the last 30 days' filings (`/api/filings/latest`, one entity
-   per form type: 10-K, 10-Q, 20-F, Form 4, 13F-HR, N-PORT, 13D, 13G, DEF 14A), and the House and
-   Senate trade feeds, each from its last pull's day;
+   per form type: 10-K, 10-Q, 20-F, Form 4, 13F-HR, N-PORT, 13D, 13G, DEF 14A), a snapshot of the
+   declared split and dividend calendars, and the House and Senate trade feeds, each from its last
+   pull's day;
 2. plans the per-entity pulls due, in this order, within the requests left today:
    - the entities a filing made since their last pull touches: a new 10-K, 10-Q or 20-F re-pulls
-     that company's statements, a new filing of any form the feed follows re-pulls its filing
-     list, and a trust's new N-PORT re-pulls the N-PORT summary and flows of each of its series;
+     that company's statements and its XBRL split history, a new filing of any form the feed
+     follows re-pulls its filing list and its profile, and a trust's new N-PORT re-pulls the
+     N-PORT summary and flows of each of its series;
    - the entities never pulled, in the table's order, which is the backfill order (for the
      statements: income statement, balance sheet and cash-flow statement, annual, quarterly and
      TTM, with as many periods as StockFit serves);
    - the periodic re-pulls, which catch a filing the feed missed or does not follow: every
-     company's statements and filing list once a week; each fund series' N-PORT, fee and
-     performance endpoints every 30 days, its N-CEN endpoints and the adviser lookup every 90
-     days, and its daily holdings once a day.
+     company's statements, filing list, profile and split history once a week; each fund series'
+     N-PORT, fee and performance endpoints every 30 days, its N-CEN endpoints and the adviser
+     lookup every 90 days, and its daily holdings once a day.
 
 The pulls that do not fit in the day's requests are deferred, and the next run plans them again
 from what is on disk, so a backfill that needs weeks of requests resumes where it stopped. Pass
@@ -99,6 +101,59 @@ the next run. A 404 means StockFit holds nothing for that entity; nothing is pub
 
 A part that fails (an endpoint the plan does not include, an entity whose request kept failing) is
 listed in `result.failed` and the other endpoints still run.
+
+## Corporate event panels
+
+Two panels in {py:mod}`quantlab.dataset.stockfit.events` turn StockFit's corporate events into
+daily panels on NYSE's trading calendar, one column per company CIK. **None of these events is
+used to adjust a price**, and quantlab takes no price from StockFit. A split ratio here is a
+feature, not an adjustment factor. Price adjustment comes from the price vendor.
+
+{py:class}`~quantlab.dataset.stockfit.events.StockFitCorporateEventsDataset` shows each event on
+the day it became public and NaN on every other day:
+
+| Variable | Source endpoint | Shown on |
+|---|---|---|
+| `split_ratio`, `split_date` | `/api/company/stock-splits` (XBRL split history) | the trading day of `firstDisclosedAt` |
+| `predecessor_cik`, `successor_cik` | `/api/company/details` (`predecessors`, `successors`; Form 8-K12B) | the trading day of `effectiveDate` |
+
+A historical split is placed at `firstDisclosedAt`, the acceptance day of the first 10-Q or 10-K
+that tagged it in XBRL, never at its split `date`. Filers tag a split weeks to a year after it
+happens, so a split dated 1 March and first tagged on 30 April shows on 30 April. Before that, a
+backtest could not have read it from EDGAR. `split_date` carries the split's own date, as the
+filer tagged it (usually the ex-date, sometimes the record or announcement date). Several splits
+first tagged on one day are multiplied. The history covers XBRL filings only, so it starts around
+2010. A succession shows the other company's CIK on both companies' columns, on its effective day.
+StockFit lists few successions, so expect this part to be sparse.
+
+{py:class}`~quantlab.dataset.stockfit.events.StockFitDeclaredEventsDataset` shows the splits and
+dividends that companies have declared but not yet executed. It reads the forward calendars
+`/api/company/upcoming-stock-splits` and `/api/earnings/upcoming-dividends`, which look 28 days
+ahead. The refresh snapshots them every time it runs. On each trading day, a company shows the
+soonest declared split (`declared_split_ratio`, `declared_split_date`) and the soonest declared
+dividend (`declared_dividend` in USD per share, summed over the dividends going ex that day,
+`declared_dividend_annual`, `declared_dividend_ex_date`). These come from the newest snapshot
+available that day, and an event stays shown through its own date. A snapshot counts on the day
+it was pulled if it was pulled before that session's close (13:00 New York time on a half day).
+Otherwise it counts on the next trading day. Calendar rows name tickers, not CIKs, so each row is
+matched to a CIK through the operating company list the raw tier held when the snapshot was
+pulled. A row whose tickers name no company, or name more than one, is left out. StockFit keeps
+no archive of past declarations, so this panel has a history only from the first snapshot on.
+
+Both panels are built through the last day every endpoint they read was pulled:
+
+```python
+from quantlab.dataset.config import StockFitCorporateEventsConfig
+from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset
+
+config = StockFitCorporateEventsConfig(
+    zarr_file_path="/data/stores/stockfit_corporate_events_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+    start_date="2010-01-04",
+)
+panel = StockFitCorporateEventsDataset(config).update().panel("2020-01-02", "2024-12-31")
+panel["split_ratio"].sel(symbol=1652044).dropna("timestamp")
+```
 
 ## Adding an endpoint
 

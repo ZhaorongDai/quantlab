@@ -60,7 +60,8 @@ def _statement_calls(vendor) -> list[dict]:
 
 def test_a_capped_backfill_spans_several_runs_and_ends_with_the_raw_tier_of_one_uncapped_run(env, tmp_path, clock):
     uncapped = tmp_path / "uncapped"
-    assert not _refresh(uncapped, FakeVendor(FakeClock()), clock).failed
+    own = FakeClock()  # the vendor and the client share a clock, so the minute window rolls
+    assert not _refresh(uncapped, FakeVendor(own), own).failed
 
     capped = tmp_path / "capped"
     vendor = FakeVendor(clock, per_day=32)  # 23 for the company and fund lists and the feeds, 9 for the backfill
@@ -109,6 +110,9 @@ def test_a_day_with_one_new_10k_re_pulls_only_that_companys_filing_driven_endpoi
     assert len(_statement_calls(vendor)) == 9  # three statements, annual, quarterly and TTM
     # the filing list follows every form the feed carries: both filers' lists are re-pulled
     assert {params["cik"] for params in vendor.requested("/api/filings") if str(params["page"]) == "1"} == {str(PLUG), str(TSM)}
+    # the profile follows any form too; the split history only the reports that tag a split
+    assert {params["cik"] for params in vendor.requested("/api/company/details")} == {str(PLUG), str(TSM)}
+    assert {params["cik"] for params in vendor.requested("/api/company/stock-splits")} == {str(PLUG)}
     assert raw.read_watermark(tmp_path / "stockfit", "income_statement_quarter", str(TSM)) == (clock.now() - timedelta(days=1)).date()
 
     clock.advance(days=1)  # the 10-K is still in the 30-day feed, but already re-pulled

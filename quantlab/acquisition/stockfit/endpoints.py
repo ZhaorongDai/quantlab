@@ -63,12 +63,16 @@ from quantlab.acquisition.stockfit.raw_tier import StagedPull, write_entity_wate
 from quantlab.dataset.stockfit.filings import FILINGS
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
+    COMPANY_DETAILS,
     CONGRESS_HOUSE_TRADES,
     CONGRESS_SENATE_TRADES,
     FUND_DAILY_SUPPORTED,
     FUND_LISTS,
     FUND_SYMBOLS,
+    STOCK_SPLITS,
     SYMBOLS,
+    UPCOMING_DIVIDENDS,
+    UPCOMING_STOCK_SPLITS,
     WHOLE_LIST,
     company_ciks,
     daily_supported,
@@ -106,6 +110,11 @@ ADVISER_PAGE_SIZE = 500
 
 #: The most N-CEN reporting years ``/api/fund/service-providers`` returns.
 PROVIDER_YEARS = 40
+#: The days ahead the declared split and dividend calendars are asked for (the most served).
+FORWARD_DAYS = 28
+
+#: The largest page the declared split and dividend calendars serve.
+FORWARD_PAGE_SIZE = 500
 
 #: The largest page the Congress feeds serve.
 CONGRESS_PAGE_SIZE = 250
@@ -125,6 +134,9 @@ FEED_FORMS: dict[str, str] = {
 
 #: The forms of a company's financial reports: they drive the statements.
 REPORT_FORMS = frozenset({"10-K", "10-Q", "20-F"})
+
+#: The forms that disclose a split: the reports that tag it in XBRL, and an 8-K (when the feed follows it).
+SPLIT_FORMS = REPORT_FORMS | {"8-K"}
 
 #: Matches the filer's CIK in a filing's EDGAR URL (``.../edgar/data/<cik>/...``).
 _FILER_CIK = re.compile(r"/edgar/data/(\d+)/")
@@ -676,6 +688,17 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     *_statements(),
     # Fund series: lists, N-PORT, N-1A, N-CSR, N-CEN and daily holdings.
     *_funds(),
+    # Corporate events: each company's profile (its successions), its XBRL
+    # split history, and the declared splits and dividends of the next
+    # FORWARD_DAYS days, a forward snapshot kept on every refresh.
+    # The profile follows any filing (an 8-K12B succession among them); the split history follows
+    # the reports and 8-Ks that tag a split. Both are re-pulled weekly too.
+    PerCompany(COMPANY_DETAILS, "/api/company/details", triggers=frozenset(FEED_FORMS.values()), repull_days=7),
+    PerCompany(STOCK_SPLITS, "/api/company/stock-splits", triggers=SPLIT_FORMS, repull_days=7),
+    MarketList(UPCOMING_STOCK_SPLITS, "/api/company/upcoming-stock-splits", {"days": FORWARD_DAYS},
+               page_size=FORWARD_PAGE_SIZE),
+    MarketList(UPCOMING_DIVIDENDS, "/api/earnings/upcoming-dividends", {"days": FORWARD_DAYS},
+               page_size=FORWARD_PAGE_SIZE),
     # Congress members' periodic transaction reports, House and Senate, by filing day.
     SinceFeed(CONGRESS_HOUSE_TRADES, "/api/congress/house/trades/recent", page_size=CONGRESS_PAGE_SIZE),
     SinceFeed(CONGRESS_SENATE_TRADES, "/api/congress/senate/trades/recent", page_size=CONGRESS_PAGE_SIZE),

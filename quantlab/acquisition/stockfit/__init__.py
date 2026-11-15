@@ -19,7 +19,7 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'congress_trades', 'filings']
+['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
@@ -27,6 +27,7 @@ Examples
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
+from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset, StockFitDeclaredEventsDataset
 from quantlab.dataset.stockfit.filings import StockFitFilingsDataset
 from quantlab.dataset.stockfit.funds import (
     StockFitFundFeesDataset,
@@ -61,6 +62,16 @@ STOCKFIT_SOURCE = register_source(
                        dataset_cls=StockFitFundNcenDataset, entitlement=_ENTITLEMENT),
             # N-CSR performance, N-PORT holdings, daily ETF holdings, N-CEN providers, advisers: raw only.
             Capability(market="us_equity", frequency="1d", data_type="fund_holdings", entitlement=_ENTITLEMENT),
+            # XBRL splits at their first disclosure and successions at their effective day, per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="corporate_events",
+                dataset_cls=StockFitCorporateEventsDataset, entitlement=_ENTITLEMENT,
+            ),
+            # The declared splits and dividends of the coming days, accumulated from snapshots, per CIK.
+            Capability(
+                market="us_equity", frequency="1d", data_type="declared_events",
+                dataset_cls=StockFitDeclaredEventsDataset, entitlement=_ENTITLEMENT,
+            ),
             # House and Senate members' trade reports, placed on the CIK of the trade-date ticker holder.
             Capability(
                 market="us_equity", frequency="1d", data_type="congress_trades",

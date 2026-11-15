@@ -1588,6 +1588,61 @@ class StockFitFundConfig(DatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class StockFitPanelConfig(DatasetConfig):
+    """Config shared by the StockFit panels on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier (``<download-dir>/stockfit``,
+    ``quantlab.dataset.stockfit.raw``); the panel needs nothing else, no
+    other vendor's data. The calendar is NYSE's. Each panel has its own
+    subclass, which a saved config names.
+
+    Examples
+    --------
+    >>> cfg = StockFitCorporateEventsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_corporate_events_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> isinstance(cfg, StockFitPanelConfig), cfg.vendor, cfg.frequency
+    (True, 'stockfit', '1d')
+    """
+
+    #: Always US equity.
+    market: Market = "us_equity"
+    #: Always daily: one row per NYSE trading day.
+    frequency: Frequency = "1d"
+    #: Always StockFit.
+    vendor: Vendor | None = "stockfit"
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitCorporateEventsConfig(StockFitPanelConfig):
+    """Config of the StockFit corporate event panel: XBRL splits and successions, by CIK.
+
+    Examples
+    --------
+    >>> StockFitCorporateEventsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_corporate_events_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... ).vendor
+    'stockfit'
+    """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitDeclaredEventsConfig(StockFitPanelConfig):
+    """Config of the StockFit declared event panel: upcoming splits and dividends, by CIK.
+
+    Examples
+    --------
+    >>> StockFitDeclaredEventsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_declared_events_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... ).market
+    'us_equity'
+    """
+
+
+@dataclass(kw_only=True, frozen=True)
 class StockFitCongressTradesConfig(DatasetConfig):
     """Config of the StockFit Congress trade panel on the CIK axis.
 

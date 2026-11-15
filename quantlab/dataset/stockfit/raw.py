@@ -66,6 +66,18 @@ SYMBOLS = "symbols"
 #: The endpoint of the delisted companies with their delisting day (``/api/company/delisted``).
 COMPANY_DELISTED = "company_delisted"
 
+#: The endpoint of each company's profile, with its successions (``/api/company/details``).
+COMPANY_DETAILS = "company_details"
+
+#: The endpoint of each company's XBRL split history (``/api/company/stock-splits``).
+STOCK_SPLITS = "stock_splits"
+
+#: The forward snapshot of the declared splits (``/api/company/upcoming-stock-splits``).
+UPCOMING_STOCK_SPLITS = "upcoming_stock_splits"
+
+#: The forward snapshot of the declared dividends (``/api/earnings/upcoming-dividends``).
+UPCOMING_DIVIDENDS = "upcoming_dividends"
+
 #: The endpoints of the House and Senate members' trade reports (``/api/congress/*/trades/recent``).
 CONGRESS_HOUSE_TRADES = "congress_house_trades"
 CONGRESS_SENATE_TRADES = "congress_senate_trades"
@@ -453,3 +465,24 @@ def daily_supported(vendor_root: str | Path) -> list[str]:
     if not pulls(vendor_root, FUND_DAILY_SUPPORTED, WHOLE_LIST):
         return []
     return [str(ticker) for ticker in read_pull(vendor_root, FUND_DAILY_SUPPORTED, WHOLE_LIST)]
+def newest_watermark(vendor_root: str | Path, endpoint: str) -> date | None:
+    """Return the latest watermark among an endpoint's entities: the last UTC day it was pulled.
+
+    Every entity counts, its pull published or not (an entity the vendor
+    holds nothing for still has a watermark). ``None`` if the endpoint was
+    never pulled.
+
+    Examples
+    --------
+    >>> newest_watermark("/nonexistent/stockfit", "stock_splits") is None
+    True
+    """
+    root = endpoint_dir(vendor_root, endpoint)
+    if not root.exists():
+        return None
+    days = [
+        day for path in root.iterdir()
+        if path.is_dir() and not path.name.startswith((".", "_"))
+        and (day := read_watermark(vendor_root, endpoint, path.name)) is not None
+    ]
+    return max(days, default=None)

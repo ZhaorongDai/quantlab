@@ -94,7 +94,7 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
 
     vendor = FakeVendor(clock)
     _refresh(tmp_path, vendor, clock)
-    first = clock.now()
+    (first,) = raw.pulls(tmp_path / "stockfit", "income_statement_quarter", str(PLUG))
     restated = fixture("income_statement_plug_quarter")
     restated[0]["facts"]["revenue"] += 1  # SYNTHETIC restatement
     key = ("/api/financials/income-statement", frozenset({("cik", str(PLUG)), ("period", "quarter")}))
@@ -105,9 +105,8 @@ def test_a_changed_re_pull_publishes_a_new_pull_and_keeps_the_old(env, tmp_path,
 
     root = tmp_path / "stockfit"
     original = fixture("income_statement_plug_quarter")
-    # the original and the weekly re-pull (made after the throttle's waits, so not at the run's start)
-    assert raw.pulls(root, "income_statement_quarter", str(PLUG))[0] == first
-    assert len(raw.pulls(root, "income_statement_quarter", str(PLUG))) == 2
+    (kept, repulled) = raw.pulls(root, "income_statement_quarter", str(PLUG))  # the original and the weekly re-pull
+    assert kept == first and repulled.date() == clock.now().date()
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG), first) == original
     assert raw.read_pull(root, "income_statement_quarter", str(PLUG)) == restated
     assert raw.read_pull_as_of(root, "income_statement_quarter", str(PLUG), first) == original

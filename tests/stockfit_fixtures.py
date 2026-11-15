@@ -11,7 +11,8 @@ called as ``vendor(url, params=..., headers=...)`` and returns an
   of a longer list) is served as the list's last page, so a pull of it
   stops after that page;
 - a market-wide list (``/api/symbols``, ``/api/company/delisted``, the
-  Congress ``trades/recent`` feeds) is served
+  declared split and dividend calendars, the Congress ``trades/recent``
+  feeds) is served
   from ``vendor.lists[path]``, filtered on the query parameters that are
   fields of its rows (``status``, ``type``) and paged by ``page`` and
   ``pageSize`` like the vendor's paged objects;
@@ -134,6 +135,9 @@ class FakeVendor:
         self.lists: dict[str, list[dict]] = {
             "/api/symbols": rows,
             "/api/company/delisted": [dict(row, delistedAt="2022-11-08") for row in rows if row["status"] == "delisted"],
+            # The declared split and dividend calendars: the recorded first page's rows.
+            "/api/company/upcoming-stock-splits": fixture("upcoming_stock_splits_page1")["data"],
+            "/api/earnings/upcoming-dividends": fixture("earnings_upcoming_dividends_page1")["data"],
             "/api/congress/house/trades/recent": fixture("congress_house_trades_recent")["data"],
             "/api/congress/senate/trades/recent": fixture("congress_senate_trades_recent")["data"],
             "/api/filings/latest": [],
