@@ -1840,3 +1840,105 @@ class StockFitExecutivesConfig(DatasetConfig):
     #: shown when no newer year has replaced them; ``None`` shows them until
     #: replaced. About 1.5 times the gap between two proxies.
     stale_after_days: int | None = 548
+
+
+# -- StockFit forward snapshots ------------------------------------------------
+
+
+@dataclass(kw_only=True, frozen=True)
+class _StockFitSnapshotConfig(DatasetConfig):
+    """Config shared by the StockFit panels built from forward snapshots, on the CIK axis.
+
+    ``raw_data_dir_path`` is StockFit's raw tier (``<download-dir>/stockfit``).
+    Each snapshot is placed at the time it was pulled, so the panels start on
+    the day of the first refresh.
+    """
+
+    market: Market = "us_equity"
+    frequency: Frequency = "1d"
+    vendor: Vendor | None = "stockfit"
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitListingConfig(_StockFitSnapshotConfig):
+    """Config of the StockFit listing panel (status, delisting day, SFIC sector and industry).
+
+    Examples
+    --------
+    >>> cfg = StockFitListingConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_listing_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... )
+    >>> cfg.vendor, cfg.market, cfg.frequency
+    ('stockfit', 'us_equity', '1d')
+    """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitEarningsConsensusConfig(_StockFitSnapshotConfig):
+    """Config of the StockFit earnings-consensus panel (next date, EPS estimate, analysts, confirmed).
+
+    Examples
+    --------
+    >>> StockFitEarningsConsensusConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_earnings_consensus_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... ).vendor
+    'stockfit'
+    """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitIpoCalendarConfig(_StockFitSnapshotConfig):
+    """Config of the StockFit IPO-calendar panel (deal stage, terms and dates).
+
+    Examples
+    --------
+    >>> StockFitIpoCalendarConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_ipo_calendar_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... ).vendor
+    'stockfit'
+    """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitOfferingsConfig(_StockFitSnapshotConfig):
+    """Config of the StockFit S-1 offerings panel (latest registration terms per company).
+
+    Examples
+    --------
+    >>> StockFitOfferingsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_offerings_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... ).vendor
+    'stockfit'
+    """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitFilingCalendarConfig(_StockFitSnapshotConfig):
+    """Config of the StockFit predicted filing-calendar panel (next 10-K, 10-Q and DEF 14A).
+
+    Examples
+    --------
+    >>> StockFitFilingCalendarConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_filing_calendar_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... ).vendor
+    'stockfit'
+    """
+
+
+@dataclass(kw_only=True, frozen=True)
+class StockFitNewsCountsConfig(_StockFitSnapshotConfig):
+    """Config of the StockFit daily news-count panel (headlines per company per day; no text).
+
+    Examples
+    --------
+    >>> StockFitNewsCountsConfig(
+    ...     zarr_file_path="/data/zarrs/stockfit_news_counts_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/stockfit",
+    ... ).vendor
+    'stockfit'
+    """

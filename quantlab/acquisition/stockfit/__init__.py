@@ -19,7 +19,7 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives']
+['reference', 'statements', 'fund_profile', 'fund_flows', 'fund_fees', 'fund_ncen', 'fund_holdings', 'corporate_events', 'declared_events', 'congress_trades', 'filings', 'insiders', 'beneficial_owners', 'executives', 'listing', 'earnings_consensus', 'ipo_calendar', 'offerings', 'filing_calendar', 'news_counts']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
@@ -38,6 +38,14 @@ from quantlab.dataset.stockfit.funds import (
     StockFitFundProfileDataset,
 )
 from quantlab.dataset.stockfit.insiders import StockFitInsidersDataset
+from quantlab.dataset.stockfit.snapshots import (
+    StockFitEarningsConsensusDataset,
+    StockFitFilingCalendarDataset,
+    StockFitIpoCalendarDataset,
+    StockFitListingDataset,
+    StockFitNewsCountsDataset,
+    StockFitOfferingsDataset,
+)
 from quantlab.dataset.stockfit.statements import StockFitStatementsDataset
 
 #: The plan the endpoints need.
@@ -109,6 +117,18 @@ STOCKFIT_SOURCE = register_source(
             Capability(
                 market="us_equity", frequency="1d", data_type="executives",
                 dataset_cls=StockFitExecutivesDataset, earliest_available="2022-01-01", entitlement=_ENTITLEMENT,
+            ),
+            # Panels accumulated from forward snapshots, each placed at its pull time, on the CIK axis.
+            *(
+                Capability(market="us_equity", frequency="1d", data_type=data_type, dataset_cls=cls, entitlement=_ENTITLEMENT)
+                for data_type, cls in (
+                    ("listing", StockFitListingDataset),
+                    ("earnings_consensus", StockFitEarningsConsensusDataset),
+                    ("ipo_calendar", StockFitIpoCalendarDataset),
+                    ("offerings", StockFitOfferingsDataset),
+                    ("filing_calendar", StockFitFilingCalendarDataset),
+                    ("news_counts", StockFitNewsCountsDataset),
+                )
             ),
         ),
         # A literal, checked against the client's constant by a test.

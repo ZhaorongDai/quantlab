@@ -141,6 +141,10 @@ class FakeVendor:
             "/api/congress/house/trades/recent": fixture("congress_house_trades_recent")["data"],
             "/api/congress/senate/trades/recent": fixture("congress_senate_trades_recent")["data"],
             "/api/filings/latest": [],
+            # Forward snapshots: empty unless a test fills them.
+            "/api/earnings/upcoming": [],
+            "/api/company/ipo-calendar": [],
+            "/api/filings/recent-offerings": [],
         }
         self.per_minute = per_minute
         self.per_day = per_day

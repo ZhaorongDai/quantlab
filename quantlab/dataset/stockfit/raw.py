@@ -82,6 +82,17 @@ UPCOMING_DIVIDENDS = "upcoming_dividends"
 CONGRESS_HOUSE_TRADES = "congress_house_trades"
 CONGRESS_SENATE_TRADES = "congress_senate_trades"
 
+#: The forward snapshots, pulled on every refresh: the market-wide earnings
+#: calendar with consensus (``/api/earnings/upcoming``), IPO deals by stage
+#: (``/api/company/ipo-calendar``), recent S-1 offerings
+#: (``/api/filings/recent-offerings``), and per company the predicted filing
+#: calendar (``/api/filings/calendar``) and the latest headlines (``/api/lookup/news``).
+EARNINGS_UPCOMING = "earnings_upcoming"
+IPO_CALENDAR = "ipo_calendar"
+RECENT_OFFERINGS = "recent_offerings"
+FILINGS_CALENDAR = "filings_calendar"
+NEWS = "news"
+
 #: The entity of an endpoint that is one market-wide list.
 WHOLE_LIST = "all"
 
