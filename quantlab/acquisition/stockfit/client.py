@@ -368,4 +368,3 @@ class StockFitClient:
     def __repr__(self) -> str:
         """Return a repr without the key."""
         return f"StockFitClient(requests={self.requests}, remaining_day={self.remaining_day})"
-
