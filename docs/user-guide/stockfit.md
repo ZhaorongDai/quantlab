@@ -69,7 +69,7 @@ print(result.summary())
 
 It pulls the company lists (operating and delisted companies) and then, for every company, the
 income statement, balance sheet and cash-flow statement, annual, quarterly and TTM, with as many
-periods as StockFit serves. Pass `endpoints=` to
+periods as StockFit serves, and the House and Senate trade feeds. Pass `endpoints=` to
 {py:func}`quantlab.acquisition.stockfit.refresh.refresh_raw_tier` to pull some endpoints only, and
 `ciks=` to pull some companies only.
 
@@ -95,7 +95,10 @@ instance of the class for its *pull shape*:
   selected by its ticker or Composite FIGI;
   {py:class}`~quantlab.acquisition.stockfit.endpoints.PerFundQuarter`: one per series and quarter,
   each asked once; {py:class}`~quantlab.acquisition.stockfit.endpoints.PerAdviser`: one per
-  adviser CRD.
+  adviser CRD;
+- {py:class}`~quantlab.acquisition.stockfit.endpoints.SinceFeed`: a market-wide feed asked for
+  everything filed since a day: the whole archive on the first pull, then from the last pull's day
+  less `overlap_days` (30), so each pull holds only its window.
 
 An endpoint of an existing shape is one row: a name (its directory), the path and the fixed query
 parameters. A new shape is a subclass of
@@ -184,3 +187,44 @@ What the panels are safe for:
   pull on, a changed value is a new pull, so the raw tier keeps every version seen.
 - **Fees are one share class's.** The fee table is that of the share class whose ticker the series
   was asked for by.
+
+## Congress trades
+
+{py:class}`~quantlab.dataset.stockfit.congress.StockFitCongressTradesDataset` is a daily panel, on
+the CIK axis and NYSE's trading days, of the stock trades members of Congress disclose under the
+STOCK Act. It reads the feeds `congress_house_trades` (House Clerk, since 2014) and
+`congress_senate_trades` (Senate eFD, since 2012), pulled with `since=` from the archive start and
+then from the last pull's day.
+
+| Variable | Meaning |
+|---|---|
+| `purchase_min`, `purchase_max` | Sums of the purchases' disclosed amount bands, lower and upper bounds (USD) |
+| `sale_min`, `sale_max` | The same for sales and partial sales |
+| `purchases`, `sales` | Number of transactions |
+| `members_buying`, `members_selling` | Distinct members with a purchase or a sale |
+
+- **Available date**: the report's filing date, on that trading day or the next one (reports carry
+  no acceptance time). The transaction date, often weeks earlier, never places a trade.
+- **Which trades count**: only those whose `linkConfidence` is `high` and whose `resolvedTicker`
+  names exactly one company on the transaction date. Tickers are reused, so a ticker is resolved
+  through the current and prior tickers of StockFit's company lists: a prior ticker's holder held it
+  at least until its `lastSeen` and maybe up to 182 days after (StockFit's `lastSeen` is a lower
+  bound), and a trade in that handover window, when another company holds the ticker later, is not
+  placed. Unresolved, low-confidence and paper reports stay in the raw tier only.
+- An open amount band (`Over $50,000,000`) adds its lower bound to both bounds. A trade an amendment
+  repeats exactly is counted on its first report only. Every asset type StockFit resolved to a
+  listing counts, options among them. A day without a counted trade is 0.
+- **Look-ahead**: the company lists are read as of their newest pull, so the ticker history is
+  today's view of it.
+
+```python
+from quantlab.dataset.config import StockFitCongressTradesConfig
+from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
+
+config = StockFitCongressTradesConfig(
+    zarr_file_path="/data/stores/stockfit_congress_trades_1d.zarr",
+    raw_data_dir_path="/data/downloads/stockfit",
+)
+StockFitCongressTradesDataset(config).update()
+panel = StockFitCongressTradesDataset(config).panel("2024-01-02", "2024-03-28")
+```

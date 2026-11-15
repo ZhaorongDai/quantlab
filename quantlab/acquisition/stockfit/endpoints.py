@@ -11,6 +11,8 @@ Shapes:
   per named variant of its query (the operating and the delisted companies),
   every page of the vendor's paged object (``page``, ``pageSize``,
   ``totalPages``, ``data``) kept in one pull;
+- ``SinceFeed``: a market-wide feed asked from a day (``since``), from the
+  start of the archive first and from the last pull's day afterwards;
 - ``PerCompany``: one request per company, selected by ``cik``; the
   companies are those of the newest company lists in the raw tier
   (``quantlab.dataset.stockfit.raw.company_ciks``), or the CIKs a refresh is
@@ -40,6 +42,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -48,6 +51,8 @@ from quantlab.acquisition.stockfit.client import StockFitClient, StockFitRespons
 from quantlab.acquisition.stockfit.raw_tier import StagedPull, write_entity_watermark
 from quantlab.dataset.stockfit.raw import (
     COMPANY_DELISTED,
+    CONGRESS_HOUSE_TRADES,
+    CONGRESS_SENATE_TRADES,
     FUND_DAILY_SUPPORTED,
     FUND_LISTS,
     FUND_SYMBOLS,
@@ -79,6 +84,9 @@ ADVISER_PAGE_SIZE = 500
 
 #: The most N-CEN reporting years ``/api/fund/service-providers`` returns.
 PROVIDER_YEARS = 40
+
+#: The largest page the Congress feeds serve.
+CONGRESS_PAGE_SIZE = 250
 
 
 class Outcome(Enum):
@@ -140,8 +148,8 @@ class Endpoint(ABC):
     def query(self, entity: str) -> dict:
         """Return the query of one entity's pull, without paging."""
 
-    def _query_in(self, vendor_root: Path, entity: str) -> dict:
-        """Return the query of one entity's pull from this raw tier; ``query(entity)`` unless the shape needs the tier."""
+    def query_now(self, vendor_root: Path, entity: str) -> dict:
+        """Return the query of the entity's next pull, which may depend on the raw tier; ``query`` by default."""
         return self.query(entity)
 
     def pull(self, client: StockFitClient, vendor_root: Path, entity: str) -> Outcome:
@@ -157,7 +165,7 @@ class Endpoint(ABC):
             published and the watermark stays.
         """
         pulled_at = client.now()
-        query = self._query_in(vendor_root, entity)
+        query = self.query_now(vendor_root, entity)
         if self.page_size is None:
             body = client.get_json(self.path, query)
             if body is None:
@@ -326,7 +334,7 @@ class PerFundSeries(Endpoint):
             raise ValueError(f"StockFit fund series {entity!r} is asked for by a selector; none was given.")
         return {**self.params, **selector}
 
-    def _query_in(self, vendor_root: Path, entity: str) -> dict:
+    def query_now(self, vendor_root: Path, entity: str) -> dict:
         """Return the query with the series' selector from the raw tier's fund lists."""
         selector = self._selectors(PullContext(vendor_root, fund_series=(entity,))).get(entity)
         return self.query(entity, selector)
@@ -367,7 +375,7 @@ class PerFundQuarter(PerFundSeries):
         series, day = entity.split("_")
         return {**super().query(series, selector), "reportDate": day}
 
-    def _query_in(self, vendor_root: Path, entity: str) -> dict:
+    def query_now(self, vendor_root: Path, entity: str) -> dict:
         """Return the query with the series' selector from the raw tier's fund lists."""
         series = entity.split("_")[0]
         selector = self._selectors(PullContext(vendor_root, fund_series=(series,))).get(series)
@@ -435,6 +443,49 @@ def _funds() -> list[Endpoint]:
     ]
 
 
+@dataclass(frozen=True)
+class SinceFeed(Endpoint):
+    """A market-wide feed asked for everything filed on or after a day (``since``).
+
+    The first pull asks from ``start``, the start of the vendor's archive,
+    and pages through the whole history; each later pull asks from the day
+    of the entity's last pull, ``overlap_days`` back, so a report the vendor
+    added late is caught. Each pull holds only its window; the panels join
+    every pull of the feed. The feed is one entity, ``WHOLE_LIST``.
+
+    Parameters
+    ----------
+    start : str, default "2012-01-01"
+        The ``since`` of the first pull (ISO date).
+    overlap_days : int, default 30
+        How far before the last pull's day a later pull reaches back.
+
+    Examples
+    --------
+    >>> feed = ENDPOINTS["congress_house_trades"]
+    >>> feed.query_now(Path("/nonexistent/stockfit"), "all")
+    {'since': '2012-01-01'}
+    """
+
+    start: str = "2012-01-01"
+    overlap_days: int = 30
+
+    def entities(self, context: PullContext) -> list[str]:
+        """Return the one entity of the feed."""
+        return [WHOLE_LIST]
+
+    def query(self, entity: str) -> dict:
+        """Return the fixed parameters and the first pull's ``since``."""
+        return {**self.params, "since": self.start}
+
+    def query_now(self, vendor_root: Path, entity: str) -> dict:
+        """Return the fixed parameters and ``since``: the last pull's day less ``overlap_days``, or ``start``."""
+        last = read_watermark(vendor_root, self.name, entity)
+        if last is None:
+            return self.query(entity)
+        return {**self.params, "since": max(last - timedelta(days=self.overlap_days), date.fromisoformat(self.start)).isoformat()}
+
+
 def _statements() -> list[Endpoint]:
     paths = {
         "income_statement": "/api/financials/income-statement",
@@ -462,4 +513,7 @@ ENDPOINTS: dict[str, Endpoint] = {endpoint.name: endpoint for endpoint in (
     *_statements(),
     # Fund series: lists, N-PORT, N-1A, N-CSR, N-CEN and daily holdings.
     *_funds(),
+    # Congress members' periodic transaction reports, House and Senate, by filing day.
+    SinceFeed(CONGRESS_HOUSE_TRADES, "/api/congress/house/trades/recent", page_size=CONGRESS_PAGE_SIZE),
+    SinceFeed(CONGRESS_SENATE_TRADES, "/api/congress/senate/trades/recent", page_size=CONGRESS_PAGE_SIZE),
 )}

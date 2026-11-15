@@ -66,6 +66,10 @@ SYMBOLS = "symbols"
 #: The endpoint of the delisted companies with their delisting day (``/api/company/delisted``).
 COMPANY_DELISTED = "company_delisted"
 
+#: The endpoints of the House and Senate members' trade reports (``/api/congress/*/trades/recent``).
+CONGRESS_HOUSE_TRADES = "congress_house_trades"
+CONGRESS_SENATE_TRADES = "congress_senate_trades"
+
 #: The entity of an endpoint that is one market-wide list.
 WHOLE_LIST = "all"
 
