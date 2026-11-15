@@ -53,12 +53,12 @@ def _vendor(clock, filings_by_cik):
     return vendor
 
 
-def _refresh(download_dir, vendor, clock):
+def _refresh(download_dir, vendor, clock, ciks=None):
     from quantlab.acquisition.stockfit.client import StockFitClient
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
     client = StockFitClient(http_get=vendor, sleep=clock.sleep, now=clock.now)
-    return refresh_raw_tier(download_dir, client=client, endpoints=("symbols", "filings"))
+    return refresh_raw_tier(download_dir, client=client, endpoints=("symbols", "filings"), ciks=ciks)
 
 
 def _dataset(download_dir, tmp_path, start="2026-01-01", end=None):
@@ -172,3 +172,26 @@ def test_the_panel_ends_on_the_day_before_the_latest_pull(env, tmp_path):
 
     assert str(panel["timestamp"].values[-1])[:10] == "2026-11-11"
     assert _days_with(panel, "form_8_k", PLUG) == {"2026-11-11": 1}
+
+
+def test_a_company_not_pulled_yet_is_missing_not_zero_until_its_first_pull(env, tmp_path):
+    import math
+
+    clock = FakeClock()
+    rows = {cik: [filing("8-K", "2026-11-10T15:00:00Z", "2026-11-10", accession=f"d-{cik}")] for cik in (PLUG, GOOGL)}
+    vendor = _vendor(clock, rows)  # SYNTHETIC filings
+    _refresh(tmp_path, vendor, clock, ciks=(PLUG,))  # a capped backfill: GOOGL waits for the next run
+
+    dataset = _dataset(tmp_path, tmp_path, start="2026-11-02")
+    dataset.update()
+    panel = dataset.panel("2026-11-02", "2026-11-13").load()
+    assert GOOGL not in panel["symbol"].values.tolist()
+    shown = panel["form_8_k"].reindex(symbol=[PLUG, GOOGL])  # read against a universe: missing, never 0
+    assert math.isnan(shown.sel(symbol=GOOGL, timestamp="2026-11-10").item())
+
+    clock.advance(days=1)
+    _refresh(tmp_path, vendor, clock)
+    _dataset(tmp_path, tmp_path, start="2026-11-02").update()
+    panel = _dataset(tmp_path, tmp_path, start="2026-11-02").panel("2026-11-02", "2026-11-13").load()
+    assert _days_with(panel, "form_8_k", GOOGL) == {"2026-11-10": 1}
+    assert _days_with(panel, "form_8_k", PLUG) == {"2026-11-10": 1}
