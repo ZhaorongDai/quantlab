@@ -9,7 +9,8 @@ called as ``vendor(url, params=..., headers=...)`` and returns an
   (every parameter but ``page``, ``pageSize`` and ``limit``) match, and with
   404 when nothing was recorded for it;
 - a market-wide list (``/api/symbols``, ``/api/company/delisted``, the
-  declared split and dividend calendars) is served
+  declared split and dividend calendars, the Congress ``trades/recent``
+  feeds) is served
   from ``vendor.lists[path]``, filtered on the query parameters that are
   fields of its rows (``status``, ``type``) and paged by ``page`` and
   ``pageSize`` like the vendor's paged objects;
@@ -120,6 +121,8 @@ class FakeVendor:
             # The declared split and dividend calendars: the recorded first page's rows.
             "/api/company/upcoming-stock-splits": fixture("upcoming_stock_splits_page1")["data"],
             "/api/earnings/upcoming-dividends": fixture("earnings_upcoming_dividends_page1")["data"],
+            "/api/congress/house/trades/recent": fixture("congress_house_trades_recent")["data"],
+            "/api/congress/senate/trades/recent": fixture("congress_senate_trades_recent")["data"],
         }
         self.per_minute = per_minute
         self.per_day = per_day

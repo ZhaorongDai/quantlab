@@ -19,13 +19,14 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("stockfit")
 >>> [c.data_type for c in source.capabilities]
-['reference', 'statements', 'corporate_events', 'declared_events']
+['reference', 'statements', 'corporate_events', 'declared_events', 'congress_trades']
 >>> source.required_env
 ('STOCKFIT_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
+from quantlab.dataset.stockfit.congress import StockFitCongressTradesDataset
 from quantlab.dataset.stockfit.events import StockFitCorporateEventsDataset, StockFitDeclaredEventsDataset
 
 #: The plan the endpoints need.
@@ -52,6 +53,11 @@ STOCKFIT_SOURCE = register_source(
             Capability(
                 market="us_equity", frequency="1d", data_type="declared_events",
                 dataset_cls=StockFitDeclaredEventsDataset, entitlement=_ENTITLEMENT,
+            ),
+            # House and Senate members' trade reports, placed on the CIK of the trade-date ticker holder.
+            Capability(
+                market="us_equity", frequency="1d", data_type="congress_trades",
+                dataset_cls=StockFitCongressTradesDataset, entitlement=_ENTITLEMENT,
             ),
         ),
         # A literal, checked against the client's constant by a test.

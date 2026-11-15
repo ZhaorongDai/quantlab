@@ -78,6 +78,10 @@ UPCOMING_STOCK_SPLITS = "upcoming_stock_splits"
 #: The forward snapshot of the declared dividends (``/api/earnings/upcoming-dividends``).
 UPCOMING_DIVIDENDS = "upcoming_dividends"
 
+#: The endpoints of the House and Senate members' trade reports (``/api/congress/*/trades/recent``).
+CONGRESS_HOUSE_TRADES = "congress_house_trades"
+CONGRESS_SENATE_TRADES = "congress_senate_trades"
+
 #: The entity of an endpoint that is one market-wide list.
 WHOLE_LIST = "all"
 
