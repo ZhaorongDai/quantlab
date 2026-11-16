@@ -450,14 +450,17 @@ def _quarters(statements: Mapping[str, list], place: _Placer, reported: str) -> 
         if base is None:
             continue  # not public by the day the raw tier is complete through
         end = date.fromisoformat(entry["period"])
+        release = _parse_filed(own[1]) or end
         quarter = quarters.setdefault(entry["period"], _Quarter(
             period_end=end,
             fiscal=int(entry.get("fiscalYear") or end.year) * 4 + _QUARTERS[entry["fiscalPeriod"]],
-            release=_parse_filed(own[1]) or end,
+            release=release,
             base=base,
             versions={},
         ))
+        # A quarter several statements carry is first available, and first filed, at the earliest of them.
         quarter.base = min(quarter.base, base)
+        quarter.release = min(quarter.release, release)
         names = VARIABLE_NAMES[name]
         for version in versions:
             variable = names.get(version.fact)

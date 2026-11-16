@@ -213,3 +213,15 @@ def test_a_quarter_without_its_own_filing_date_is_dated_by_its_earliest_dated_fi
 def test_annual_statements_stay_in_the_raw_tier(tmp_path):
     with pytest.raises(ValueError, match="Annual statements stay in the raw tier"):
         _panel(tmp_path, tmp_path, period="annual")
+
+
+def test_a_quarter_in_several_statements_shows_the_earliest_of_their_filing_dates_as_its_release_date(env, tmp_path):
+    vendor = FakeVendor(FakeClock())
+    (quarter,) = [entry for entry in _plug_income(vendor) if entry["period"] == "2026-06-30"]
+    quarter["dateFiled"] = "2026-11-12"  # SYNTHETIC: the income statement dates the quarter at a later filing
+    quarter["acceptedAt"] = "2026-11-12T15:00:00Z"
+    panel = _panel(tmp_path, _raw_tier(tmp_path, vendor))
+
+    # The balance sheet and cash-flow statement date it at its 10-Q of 2026-08-10, accepted after the close.
+    assert _on(panel, "2026-08-11", "period_end") == pd.Timestamp("2026-06-30").value
+    assert _on(panel, "2026-08-11", "release_date") == pd.Timestamp("2026-08-10").value
