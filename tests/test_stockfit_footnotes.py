@@ -283,6 +283,28 @@ def test_a_restated_older_period_does_not_revive_a_stale_newer_one(env, tmp_path
     assert np.isnan(_on(panel, RPO, "2026-11-18"))
 
 
+@pytest.mark.parametrize("member", ["us-gaap:ParentCompanyMember", "srt:ParentCompanyMember"])
+def test_the_parent_only_column_is_read_under_either_parent_member(env, tmp_path, clock, member):
+    vendor = FakeVendor(clock)
+    body = fixture("footnote_subsidiary_financials_googl")
+    body[0]["subsidiaries"].append({  # SYNTHETIC column in the vendor's shape
+        "member": member, "name": "Parent Company", "currency": "USD", "revenue": 5_000_000_000,
+    })
+    vendor.bodies[("/api/footnotes/subsidiary-financials", BACKLOG[1])] = body
+    _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
+    panel = _panel(tmp_path, "subsidiary_financials", start="2014-01-01")
+
+    assert _on(panel, "parent_revenue", "2016-02-11") == 5_000_000_000
+
+
+def test_no_footnote_variable_reads_a_key_the_vendor_never_serves():
+    from quantlab.dataset.stockfit.footnotes import FOOTNOTES
+
+    fair_value = FOOTNOTES["fair_value_hierarchy"].fields
+    assert not [name for name, path in fair_value.items() if path.endswith(".total")]
+    assert {"employee_compensation", "direct_labor"}.isdisjoint(FOOTNOTES["workforce_cost"].fields)
+
+
 # -- the vendor's rollups, and the specs as data --------------------------------------
 
 

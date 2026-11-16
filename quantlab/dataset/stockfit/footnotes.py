@@ -12,8 +12,8 @@ its spec.
 A spec names each variable's place in the response body by a *path*: steps
 joined by dots, where a step is a key (``operating``), a key with a selector
 (``measures[measure=assets]``: the first element of the list whose fields
-match; ``null`` matches a missing or null field), or ``[]``, the list of
-periods. Every path holds one ``[]``: each element there is one period
+match; ``a|b`` matches either value, ``null`` a missing or null field), or
+``[]``, the list of periods. Every path holds one ``[]``: each element there is one period
 (``period``, ``fiscalYear``, ``dateFiled``) and the value the rest of the path
 reaches is that period's. ``"[].cashSpent"`` is the cash spent of each period
 of a period-major body; ``"costTypes[member=us-gaap:EmployeeSeveranceMember].history[].charges"``
@@ -167,8 +167,11 @@ def footnote_endpoint(footnote: str, period: str) -> str:
 # -- the paths -------------------------------------------------------------------
 
 
-def _steps(path: str) -> list[tuple[str, dict[str, str | None] | None]]:
-    """Return a path's steps: (key, selector), the selector ``{}`` for ``[]`` and ``None`` for none."""
+def _steps(path: str) -> list[tuple[str, dict[str, tuple[str | None, ...]] | None]]:
+    """Return a path's steps: (key, selector), the selector ``{}`` for ``[]`` and ``None`` for none.
+
+    A selector maps each field to the values it may hold (``a|b``: either).
+    """
     steps = []
     for text in _STEP_SPLIT.split(path):
         match = _STEP.match(text)
@@ -178,10 +181,12 @@ def _steps(path: str) -> list[tuple[str, dict[str, str | None] | None]]:
         if selector is None:
             steps.append((match.group("key"), None))
             continue
-        conditions: dict[str, str | None] = {}
+        conditions: dict[str, tuple[str | None, ...]] = {}
         for condition in filter(None, selector.split(",")):
             name, _, value = condition.partition("=")
-            conditions[name.strip()] = None if value.strip() == "null" else value.strip()
+            conditions[name.strip()] = tuple(
+                None if choice.strip() == "null" else choice.strip() for choice in value.split("|")
+            )
         steps.append((match.group("key"), conditions))
     if sum(1 for _, selector in steps if selector == {}) != 1:
         raise ValueError(f"StockFit footnote path {path!r} must hold one '[]', the list of periods")
@@ -205,7 +210,7 @@ def _walk(node, steps) -> Iterator[tuple[dict, object]]:
                 chosen = next((
                     element for element in here or ()
                     if isinstance(element, dict)
-                    and all(element.get(name) == value for name, value in selector.items())
+                    and all(element.get(name) in values for name, values in selector.items())
                 ), None)
                 reached.append((point, chosen))
         nodes = reached
@@ -309,7 +314,7 @@ _FAIR_VALUE_MEASURES = {
 
 _FAIR_VALUE_LEVELS = {
     "_level1": "level1", "_level2": "level2", "_level3": "level3",
-    "_nav": "nav", "_total": "total", "_level3_share": "level3Share",
+    "_nav": "nav", "_level3_share": "level3Share",
 }
 
 _CONCENTRATIONS = {
@@ -482,7 +487,8 @@ FOOTNOTES: dict[str, FootnoteSpec] = {
     "subsidiary_financials": FootnoteSpec(
         "/api/footnotes/subsidiary-financials",
         {
-            **_each("parent", "[].subsidiaries[member=srt:ParentCompanyMember]", _LEGAL_ENTITY),
+            **_each("parent", "[].subsidiaries[member=us-gaap:ParentCompanyMember|srt:ParentCompanyMember]",
+                    _LEGAL_ENTITY),
             **_each("subsidiaries", "[].subsidiaries[member=us-gaap:SubsidiariesMember]", _LEGAL_ENTITY),
         },
         description="The parent-only and all-subsidiaries columns; each named legal entity stays raw.",
@@ -522,8 +528,6 @@ FOOTNOTES: dict[str, FootnoteSpec] = {
         "/api/footnotes/workforce-cost",
         {
             "labor_expense": "periods[].laborExpense",
-            "employee_compensation": "periods[].employeeCompensation",
-            "direct_labor": "periods[].directLabor",
             "other_labor_expense": "periods[].otherLaborExpense",
             "defined_contribution_plan_cost": "periods[].definedContributionPlanCost",
             "accrued_compensation": "periods[].accruedCompensation",
