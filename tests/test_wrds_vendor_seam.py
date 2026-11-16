@@ -360,7 +360,7 @@ def test_enumeration_survives_any_import_order(first_module) -> None:
     )
 
     assert child.returncode == 0, child.stderr
-    assert child.stdout.strip() == "['alpaca', 'fred', 'massive', 'sharadar', 'stockfit', 'tiingo', 'wrds']", child.stdout
+    assert child.stdout.strip() == "['alpaca', 'fred', 'massive', 'sec_edgar', 'sharadar', 'stockfit', 'tiingo', 'wrds']", child.stdout
     assert "Traceback" not in child.stderr
 
 

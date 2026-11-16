@@ -55,7 +55,7 @@ downloaded yourself from Binance's bulk-download site.
 ```python
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'fred', 'massive', 'sharadar', 'stockfit', 'tiingo', 'wrds']
+['alpaca', 'fred', 'massive', 'sec_edgar', 'sharadar', 'stockfit', 'tiingo', 'wrds']
 >>> wrds = DataSourceRegistry.get("wrds")
 >>> wrds.supports("us_equity", "tick", "nbbo")
 True
