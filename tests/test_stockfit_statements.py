@@ -225,3 +225,28 @@ def test_a_quarter_in_several_statements_shows_the_earliest_of_their_filing_date
     # The balance sheet and cash-flow statement date it at its 10-Q of 2026-08-10, accepted after the close.
     assert _on(panel, "2026-08-11", "period_end") == pd.Timestamp("2026-06-30").value
     assert _on(panel, "2026-08-11", "release_date") == pd.Timestamp("2026-08-10").value
+
+
+def _listed_only_later(statement: str, listed: str) -> list:
+    """Return the versions of one fact whose only listing is a filing on ``listed``; the period was filed 2016-03-15."""
+    from quantlab.dataset.stockfit.statements import fact_versions
+
+    period = {  # SYNTHETIC values and accession, VERBATIM field names
+        "dateFiled": "2016-03-15", "acceptedAt": "2016-03-15T21:00:00Z", "facts": {"stockholdersEquity": 7.0},
+        "sources": {"0001157601-19-000001": {"type": "10-K", "dateFiled": listed, "facts": {"stockholdersEquity": {}}}},
+    }
+    return [(version.value, version.date_filed) for version in fact_versions(period, statement)]
+
+
+@pytest.mark.parametrize(
+    ("statement", "listed", "dated"),
+    [
+        ("balance_sheet", "2017-04-19", "2016-03-15"),  # 400 days: still the next year's comparative column
+        ("balance_sheet", "2017-04-20", "2017-04-20"),  # 401 days: too late to be a comparative
+        ("income_statement", "2018-04-14", "2016-03-15"),  # 760 days: a 10-K lists three years
+        ("income_statement", "2018-04-15", "2018-04-15"),
+        ("cash_flow_statement", "2018-04-15", "2018-04-15"),
+    ],
+)
+def test_a_value_first_listed_too_late_to_be_a_comparative_is_dated_at_that_listing(statement, listed, dated):
+    assert _listed_only_later(statement, listed) == [(7.0, dated)]
