@@ -37,7 +37,7 @@ def index(*lines: tuple[int, str, str, str, str]) -> bytes:
 
 
 class FakeClock:
-    """A UTC clock that only moves when slept on or advanced; also the client's monotonic clock."""
+    """A UTC clock that only moves when slept on or advanced."""
 
     def __init__(self, start: datetime = datetime(2024, 5, 10, 14, tzinfo=UTC)):
         self.at = start
@@ -45,9 +45,6 @@ class FakeClock:
 
     def now(self) -> datetime:
         return self.at
-
-    def monotonic(self) -> float:
-        return self.at.timestamp()
 
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
@@ -63,6 +60,7 @@ class FakeSec:
     def __init__(self, clock: FakeClock):
         self.clock = clock
         self.indexes: dict[tuple[int, int], bytes] = {}
+        self.fallback: bytes | None = None  # served for a quarter not in ``indexes``; None is a 404
         self.replies: list[HttpResponse] = []
         self.calls: list[tuple[str, dict]] = []
 
@@ -73,14 +71,14 @@ class FakeSec:
         if self.replies:
             return self.replies.pop(0)
         year, quarter = url.split("/full-index/")[1].split("/")[:2]
-        body = self.indexes.get((int(year), int(quarter.removeprefix("QTR"))))
+        body = self.indexes.get((int(year), int(quarter.removeprefix("QTR"))), self.fallback)
         return HttpResponse(404, b"Not Found") if body is None else HttpResponse(200, body)
 
     def client(self, **options):
         from quantlab.acquisition.sec_edgar import SecEdgarClient
 
         return SecEdgarClient(
-            user_agent=USER_AGENT, http_get=self, sleep=self.clock.sleep, monotonic=self.clock.monotonic,
+            user_agent=USER_AGENT, http_get=self, sleep=self.clock.sleep, monotonic=lambda: self.clock.now().timestamp(),
             now=self.clock.now, **options,
         )
 

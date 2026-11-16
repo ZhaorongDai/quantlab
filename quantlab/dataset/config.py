@@ -20,6 +20,7 @@ its definition.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from quantlab.core.component import component
@@ -1586,8 +1587,9 @@ class StockFitPanelConfig(DatasetConfig):
     """Config shared by every StockFit panel: US equity, daily, StockFit.
 
     ``raw_data_dir_path`` is StockFit's raw tier (``<root>/downloads/stockfit``,
-    ``quantlab.dataset.stockfit.raw``); a panel needs nothing else, no other
-    vendor's data. Its days are NYSE's sessions through the day before the
+    ``quantlab.dataset.stockfit.raw``); a panel needs no other vendor's data,
+    save the 13F panel, which also reads SEC EDGAR's filing indexes
+    (``StockFitHoldingsConfig``). Its days are NYSE's sessions through the day before the
     endpoints it reads were last pulled. Each panel has its own subclass,
     which a saved config names; ``symbols``, when set, keeps only those
     symbols of the panel's axis (CIKs, CUSIPs or fund series). A store lives
@@ -1942,8 +1944,11 @@ class StockFitHoldingsConfig(StockFitPanelConfig):
     """Config of the StockFit 13F panel: per-security quarterly totals on the CUSIP axis.
 
     The raw tier holds the 13F holder rows of each company and quarter and
-    the 13F filings of each manager they name. ``symbols``, when set, keeps
-    only those CUSIPs.
+    the 13F filings of each manager they name. A filing StockFit gives no
+    date for is dated by SEC EDGAR's quarterly filing indexes, a raw tier of
+    their own (``quantlab.dataset.sec_edgar``) at ``sec_edgar_dir_path``:
+    the 13F panel is the one StockFit panel that reads another raw tier.
+    ``symbols``, when set, keeps only those CUSIPs.
 
     Examples
     --------
@@ -1953,7 +1958,27 @@ class StockFitHoldingsConfig(StockFitPanelConfig):
     ... )
     >>> cfg.vendor, cfg.market, cfg.frequency
     ('stockfit', 'us_equity', '1d')
+    >>> cfg.edgar_root
+    '/data/downloads/sec_edgar'
     """
+
+    #: SEC EDGAR's raw tier (``<root>/downloads/sec_edgar``); ``None`` is the
+    #: ``sec_edgar`` directory beside ``raw_data_dir_path``.
+    sec_edgar_dir_path: str | None = None
+
+    @property
+    def edgar_root(self) -> str:
+        """The SEC EDGAR raw tier the panel reads: ``sec_edgar_dir_path``, or the one beside StockFit's.
+
+        Examples
+        --------
+        >>> StockFitHoldingsConfig(zarr_file_path="h.zarr", raw_data_dir_path="/d/stockfit",
+        ...                        sec_edgar_dir_path="/e/sec_edgar").edgar_root
+        '/e/sec_edgar'
+        """
+        if self.sec_edgar_dir_path is not None:
+            return self.sec_edgar_dir_path
+        return str(Path(self.raw_data_dir_path).parent / "sec_edgar")
 
 
 @dataclass(kw_only=True, frozen=True)

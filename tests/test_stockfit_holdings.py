@@ -14,6 +14,7 @@ from datetime import date
 import pytest
 
 from tests.stockfit_fixtures import KEY, FakeClock, FakeVendor, company_row
+from tests.test_sec_edgar import FakeSec, index
 
 HOLDERS = "/api/ownership/institutional-holders"
 FILINGS = "/api/filings"
@@ -103,8 +104,21 @@ def _vendor(clock) -> FakeVendor:
 THIRTEEN_F = ("symbols", "institutional_holders", "manager_13f_filings", "manager_portfolio")
 
 
-def _refresh(tmp_path, vendor, clock, *, end=date(2024, 7, 1), first_quarter=date(2024, 3, 31), names=THIRTEEN_F, runs=3):
-    """Run the refresh ``runs`` times: holders land, then their managers' filings, then the portfolios."""
+def _edgar(download_dir, clock, *lines) -> None:
+    """Land EDGAR's quarterly indexes under ``download_dir``: ``lines`` (``(manager, form, filed, accession)``) in 2024 Q2."""
+    from quantlab.acquisition.sec_edgar import refresh_raw_tier
+
+    sec = FakeSec(clock)
+    sec.fallback = index()
+    sec.indexes[(2024, 2)] = index(*((manager, f"MANAGER {manager}", form, filed, accession)
+                                     for manager, form, filed, accession in lines))
+    result = refresh_raw_tier(download_dir, client=sec.client())
+    assert not result.failed, result.summary()
+
+
+def _refresh(tmp_path, vendor, clock, *, end=date(2024, 7, 1), first_quarter=date(2024, 3, 31), names=THIRTEEN_F, runs=3,
+             edgar=(), with_edgar=True):
+    """Run the refresh ``runs`` times: holders land, then their managers' filings, then the portfolios; then EDGAR's."""
     from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
     from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
 
@@ -117,6 +131,8 @@ def _refresh(tmp_path, vendor, clock, *, end=date(2024, 7, 1), first_quarter=dat
     for _ in range(runs):
         result = refresh_raw_tier(tmp_path, client=client, endpoints=rows, end=end)
         assert not result.failed, result.summary()
+    if with_edgar:
+        _edgar(tmp_path, clock, *edgar)
     return result
 
 
@@ -264,20 +280,26 @@ def test_a_row_filed_after_day_45_counts_from_its_filings_available_date(env, tm
         holder(MANAGER_B, CLASS_A, "2024-03-31", "late-1", 40.0),  # accepted after the close
         holder(9003, CLASS_A, "2024-03-31", "late-2", 7.0),  # accepted a minute before the close
         holder(9004, CLASS_A, "2024-03-31", "half-day", 3.0),  # after a 13:00 close
-        holder(9005, CLASS_A, "2024-03-31", "unknown", 1000.0),  # in no filing list nor feed: day 45
+        holder(9005, CLASS_A, "2024-03-31", "0000009005-24-000001", 1000.0),  # dated by EDGAR's index only
+        holder(9006, CLASS_A, "2024-03-31", "0000009006-24-000001", 99.0),  # dated nowhere: not shown
     ])
     serve_filings(vendor, MANAGER_A, [filing(A1, "2024-03-31", "2024-05-10", None)])
     serve_filings(vendor, MANAGER_B, [filing("late-1", "2024-03-31", "2024-05-20", "2024-05-20T20:05:00Z", True)])
     serve_filings(vendor, 9003, [filing("late-2", "2024-03-31", "2024-05-22", "2024-05-22T19:59:00Z")])
     serve_filings(vendor, 9004, [filing("half-day", "2024-03-31", "2024-07-03", "2024-07-03T17:30:00Z")])
-    _refresh(tmp_path / "dl", vendor, clock)
+    # EDGAR dates 9005's filing on Saturday 2024-05-25; its 2024-06-20 line for A1 does not override StockFit's.
+    _refresh(tmp_path / "dl", vendor, clock, edgar=[
+        (9005, "13F-HR", "2024-05-25", "0000009005-24-000001"), (MANAGER_A, "13F-HR", "2024-06-20", A1),
+    ])
 
     panel = _panel(tmp_path, tmp_path / "dl")
     shares = panel["shares_held"].sel(symbol=CLASS_A)
-    assert float(shares.sel(timestamp="2024-05-15")) == 1100.0
-    assert float(shares.sel(timestamp="2024-05-20")) == 1100.0
-    assert float(shares.sel(timestamp="2024-05-21")) == 1140.0
-    assert float(shares.sel(timestamp="2024-05-22")) == 1147.0
+    assert float(shares.sel(timestamp="2024-05-15")) == 100.0
+    assert float(shares.sel(timestamp="2024-05-20")) == 100.0
+    assert float(shares.sel(timestamp="2024-05-21")) == 140.0
+    assert float(shares.sel(timestamp="2024-05-22")) == 147.0
+    assert float(shares.sel(timestamp="2024-05-24")) == 147.0
+    assert float(shares.sel(timestamp="2024-05-28")) == 1147.0  # Monday after the Memorial Day weekend
     assert float(shares.sel(timestamp="2024-07-03")) == 1147.0
     assert float(shares.sel(timestamp="2024-07-05")) == 1150.0
     assert float(panel["holders"].sel(symbol=CLASS_A, timestamp="2024-07-05")) == 5.0
@@ -297,14 +319,16 @@ def test_a_row_of_a_manager_without_a_filing_list_is_dated_by_the_recent_filings
     feed = filing(B1, "2024-03-31", "2024-06-03", "2024-06-03T20:30:00Z", True)
     feed["url"] = f"https://www.sec.gov/Archives/edgar/data/{MANAGER_B}/000000900224000001/primary_doc.xml"
     vendor.lists["/api/filings/latest"] = [feed]
-    _refresh(tmp_path / "dl", vendor, clock, names=("filings_latest", *THIRTEEN_F))
+    _refresh(tmp_path / "dl", vendor, clock, names=("filings_latest", *THIRTEEN_F), edgar=[
+        (MANAGER_A, "13F-HR", "2024-05-13", A1), (MANAGER_B, "13F-HR/A", "2024-06-03", B1),
+    ])
 
     panel = _panel(tmp_path, tmp_path / "dl")
     shares = panel["shares_held"].sel(symbol=CLASS_A)
     assert shares.sel(timestamp=slice(None, "2024-05-14")).isnull().all()
-    assert float(shares.sel(timestamp="2024-05-15")) == 100.0  # no filing date known: day 45
+    assert float(shares.sel(timestamp="2024-05-15")) == 100.0  # EDGAR's date, before day 45: day 45
     assert float(shares.sel(timestamp="2024-06-03")) == 100.0
-    assert float(shares.sel(timestamp="2024-06-04")) == 140.0  # the feed's amendment, after the close
+    assert float(shares.sel(timestamp="2024-06-04")) == 140.0  # the feed's acceptance time, after the close
 
 
 def test_manager_portfolios_are_raw_files_only(env, tmp_path, clock):
@@ -337,3 +361,48 @@ def test_an_update_adds_a_new_security_with_its_history_as_a_rebuild_shows_it(en
     updated = _dataset(tmp_path, tmp_path / "dl").panel("2024-05-01", "2024-08-30").load()
     assert _on(updated, "shares_held", "2024-08-14", DIGITS) == 5.0
     assert updated.identical(_panel(tmp_path / "rebuilt", tmp_path / "dl"))
+
+
+def test_a_row_whose_filing_neither_stockfit_nor_edgar_dates_is_not_shown_and_is_counted(env, tmp_path, clock):
+    vendor = _vendor(clock)
+    serve_holders(vendor, ALPHA, "2024-03-31", [
+        holder(MANAGER_A, CLASS_A, "2024-03-31", A1, 100.0),
+        holder(MANAGER_B, CLASS_A, "2024-03-31", B1, 40.0),
+        holder(9003, CLASS_A, "2024-03-31", "0000009003-24-000001", 7.0),
+    ])
+    serve_filings(vendor, MANAGER_A, [filing(A1, "2024-03-31", "2024-05-10", None)])
+    vendor.bodies.pop(key(FILINGS, cik=MANAGER_B, type="13F-HR"), None)
+    _refresh(tmp_path / "dl", vendor, clock, edgar=[(MANAGER_B, "13F-HR", "2024-05-14", B1)])
+
+    dataset = _dataset(tmp_path, tmp_path / "dl")
+    dataset.update()
+    assert (dataset.build_report.rows, dataset.build_report.stockfit, dataset.build_report.edgar,
+            dataset.build_report.undated) == (3, 1, 1, 1)
+    panel = _dataset(tmp_path, tmp_path / "dl").panel("2024-05-01", "2024-08-30").load()
+    assert float(panel["shares_held"].sel(symbol=CLASS_A, timestamp="2024-05-15")) == 140.0
+    assert float(panel["holders"].sel(symbol=CLASS_A, timestamp="2024-05-15")) == 2.0
+
+
+def test_the_panel_ends_where_edgars_indexes_are_complete_through(env, tmp_path, clock):
+    vendor = _vendor(clock)
+    serve_holders(vendor, ALPHA, "2024-03-31", [holder(MANAGER_A, CLASS_A, "2024-03-31", A1, 100.0)])
+    serve_filings(vendor, MANAGER_A, [filing(A1, "2024-03-31", "2024-05-10", None)])
+    _refresh(tmp_path / "dl", vendor, clock)  # StockFit and EDGAR pulled 2026-11-16
+    clock.advance(days=7)
+    _refresh(tmp_path / "dl", vendor, clock, runs=1, with_edgar=False)  # StockFit pulled again 2026-11-23
+
+    # EDGAR's pull of 2026-11-16 holds the filings through 2026-11-14; the last session by then is the 13th.
+    calendar = _dataset(tmp_path, tmp_path / "dl", end_date=None)._trading_calendar()
+    assert calendar.through == date(2026, 11, 14)
+
+
+def test_a_holdings_panel_needs_edgars_indexes(env, tmp_path, clock):
+    import shutil
+
+    vendor = _vendor(clock)
+    serve_holders(vendor, ALPHA, "2024-03-31", [holder(MANAGER_A, CLASS_A, "2024-03-31", A1, 100.0)])
+    _refresh(tmp_path / "dl", vendor, clock)
+    shutil.rmtree(tmp_path / "dl" / "sec_edgar")
+
+    with pytest.raises(ValueError, match="SEC EDGAR"):
+        _dataset(tmp_path, tmp_path / "dl").update()
