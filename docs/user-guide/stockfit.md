@@ -249,6 +249,18 @@ and Q3 from year-to-date values), are dated at the period's original filing. A l
 older quarter never replaces a newer one, and a quarter no newer one replaced stops being shown
 `stale_after_days` (365) after its filing date.
 
+StockFit lists an unchanged value under the *last* filing that reported it, not the first: a fiscal
+year-end balance sheet, which the next year's 10-Qs repeat as their comparative column, is listed
+under the latest of those 10-Qs. The panel therefore dates the first value of every fact at the
+period's original filing (the 10-K for a fourth quarter), and a later filing that repeats it
+unchanged neither moves nor erases it. The exceptions are cover-page facts (`publicFloat`,
+`currentSharesOutstanding`), which a later filing's cover reports about the period, dated at the
+filing that lists them. A comparative period without a filing of its own (first reported as the
+prior-year column of a later filing, mostly from before the company's first filing StockFit holds)
+is dated at the earliest dated filing among its sources, each fact at the first filing listing it;
+a quarter with no dated source at all (a reconstructed quarter alone) is dropped. Being older than
+the quarters shown by then, such a period mostly fills the TTM window's history.
+
 Facts keep the vendor's names; the five the cash-flow statement shares with the income statement
 are prefixed (`cashFlowNetIncome`, `cashFlowDepreciation`, `cashFlowAmortization`,
 `cashFlowDepreciationAndAmortization`, `cashFlowImpairments`). `release_date` (the shown quarter's
@@ -298,6 +310,8 @@ StockFit serves today. Their panels share one rule
   (`may_include_restatement = 0`), so from a company's first pull on the history is point in time.
 - Each day shows the latest fiscal period available by then. `release_date` and `period_end` say
   which period that is. A later filing of an older period never replaces a newer one.
+- A row whose period ends after its filing date is not a period that filing reports (StockFit
+  sometimes serves a maturity or schedule row as a period ending years later) and is never shown.
 
 | Dataset | Endpoints | What a store holds | Placed at |
 |---|---|---|---|
@@ -386,7 +400,7 @@ What a panel shows is data: each footnote is a
 {py:class}`~quantlab.dataset.stockfit.footnotes.FootnoteSpec` in
 `quantlab.dataset.stockfit.footnotes.FOOTNOTES`, a path per variable into the response body. A
 step is a key, a key with a selector (`measures[measure=assets]` picks the first element whose
-fields match; `null` matches a missing field) or `[]`, the list of periods. Adding a field is one
+fields match; `a|b` matches either value, `null` a missing field) or `[]`, the list of periods. Adding a field is one
 line:
 
 ```python
@@ -401,8 +415,11 @@ line:
 
 **Point in time.** A period's values are shown from its `dateFiled` (the newest filing that
 reported it, on that day; footnotes carry no acceptance time) until a newer period replaces them; a
-restated older period never replaces a newer one, and a period released more than
-`stale_after_days` (400 by default) before the day is not shown. StockFit keeps no restatement
+restated older period never replaces a newer one, and a period whose shown version became
+available more than `stale_after_days` (400 by default) before the day is not shown. A row whose
+period ends after its filing date (a lease maturity or facility schedule StockFit serves as a period
+ending years later) is not a period of that filing and is never shown: taken for the latest period,
+it would hide every real period until that future date. StockFit keeps no restatement
 history for footnotes: it serves each period's latest values. **Values backfilled from a company's
 first pull may therefore include restatements made after the filing date they are placed at**; the
 panel flags them with `may_include_restatement = 1`. From the first pull on, each pull is compared
@@ -581,7 +598,8 @@ then from the last pull's day.
 - **Available date**: the report's filing date, on that trading day or the next one (reports carry
   no acceptance time). The transaction date, often weeks earlier, never places a trade.
 - **Which trades count**: only those whose `linkConfidence` is `high` and whose `resolvedTicker`
-  names exactly one company on the transaction date. Tickers are reused, so a ticker is resolved
+  names exactly one company on the transaction date (on the report's filing date when StockFit
+  parsed no transaction date). Tickers are reused, so a ticker is resolved
   through the current and prior tickers of StockFit's company lists: a prior ticker's holder held it
   at least until its `lastSeen` and maybe up to 182 days after (StockFit's `lastSeen` is a lower
   bound), and a trade in that handover window, when another company holds the ticker later, is not
@@ -619,6 +637,10 @@ accumulate from the first refresh on. All are on the CIK axis and NYSE's trading
   snapshot that carried the change.
 - **No backfill**: a panel starts on the day of the first refresh. The first snapshot of the company
   lists gives each company's *current* status and industry from that day on, not their history.
+- **The first day**: a snapshot pulled today counts from the next trading day, past the calendar's
+  end, so on the first refresh's day nothing is shown yet. `update()` then writes nothing, logs a
+  warning and returns (its `last_chunk_result` is `None`); the next day's update builds the store.
+  Every StockFit panel behaves so, where other quantlab panels refuse an empty window.
 - A company a market-wide snapshot stops listing (an earnings date that passed, an offering older
   than a year) shows nothing from that snapshot on.
 
@@ -773,13 +795,17 @@ When a row is shown:
   quarter's, the same quarter for every security. Before day 45 nothing of it is shown, and a
   security with no row in the shown quarter shows nothing.
 - Within the shown quarter a row counts from the later of that day and its filing's available date
-  (see [Available dates](#available-dates)). A row whose filing is in no pulled filing list counts
-  from the day after its holder rows were pulled.
+  (see [Available dates](#available-dates)). Holder rows carry the filing's accession but no date;
+  the date comes from, in order, the manager's 13F filing list, the 13F-HR rows of any pull of the
+  recent-filings feed (`filings_latest`), or nowhere, and then the row counts from day 45.
 
 Look-ahead caveat: StockFit merges an amendment (13F-HR/A) into the quarter it amends and gives the
 amendment's accession on the row. The original value is never shown, and a position first
 disclosed in a late amendment (a confidential stake, say) is missing from its quarter until the
-amendment's date, or entirely when that quarter is no longer shown by then.
+amendment's date, or entirely when that quarter is no longer shown by then. A row whose filing
+date is unknown counts from day 45, so the values of a late amendment are shown early when its
+manager is outside StockFit's company lists (no filing list) and it was filed before the raw tier's
+first pull of the recent-filings feed.
 
 ```python
 from quantlab.dataset.config import StockFitHoldingsConfig
@@ -793,3 +819,19 @@ StockFitHoldingsDataset(config).update()
 panel = StockFitHoldingsDataset(config).panel("2024-01-02", "2024-12-31")
 panel["holders"].sel(symbol="02079K305")  # Alphabet class A
 ```
+
+## Known data issues
+
+StockFit serves what the filings' XBRL says, and the panels pass some of its errors on unchanged:
+
+- **Scale errors**: a value tagged in the wrong unit is off by a factor of 1,000 (Kimberly-Clark's
+  2010 Q1 revenue served as 4,835; Apple's shares outstanding on 2014-04-25 as 24.1 million between
+  values of 24.0 billion). Check large jumps between neighbouring periods before using a level.
+- **Insider price errors**: a mistyped price on a Form 4 line (745,000 shares at $74,500 a share)
+  makes a day's net insider value tens of billions of dollars.
+- **Sign errors fixed years later**: a value can be served with the wrong sign until a later filing
+  corrects it (Plug Power's 2020 Q4 revenue was positive from 2021-05-14 to 2022-03-14, then
+  negative); the panel shows each as known at the time.
+- **Period ends are approximate**: `period` is not always the period's real end date (every Apple
+  quarter shows the 26th of its month; Microsoft's December 31 and March 31 show as the 30th).
+  Align with other vendors by fiscal year and quarter, not by exact date.
