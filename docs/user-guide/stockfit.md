@@ -259,10 +259,18 @@ period's original filing (the 10-K for a fourth quarter), and a later filing tha
 unchanged neither moves nor erases it. The exceptions are cover-page facts (`publicFloat`,
 `currentSharesOutstanding`), which a later filing's cover reports about the period, dated at the
 filing that lists them, and a value first listed by a filing too late to be a comparative column
-repeating it, dated at that filing too: more than 400 days after the period's filing for the
-balance sheet (a period-end balance is repeated only by the next 10-K and the next year's 10-Qs),
-more than 760 days for the income and cash-flow statements (a 10-K lists three years). The windows
-are `COMPARATIVE_WINDOW_DAYS` in `quantlab.dataset.stockfit.statements`. A comparative period without a filing of its own (first reported as the
+repeating it, dated at that filing too. The window after the period's filing is:
+
+| Facts | Window | Why |
+|---|---|---|
+| equity balances and share counts (`stockholdersEquity`, `totalEquity`, `retainedEarnings`, ...) and cash (`cash`, `endCash`, `beginningCash`) | 1,100 days | a 10-K's statement of equity and cash-flow statement list three years of opening and closing balances |
+| `goodwill` | 760 days | a goodwill roll-forward lists two years |
+| other balance-sheet facts | 400 days | a period-end balance is repeated only by the next 10-K and the next year's 10-Qs |
+| other income and cash-flow facts | 760 days | a 10-K lists three years |
+
+The per-fact windows are `FACT_WINDOW_DAYS` and the per-statement defaults
+`COMPARATIVE_WINDOW_DAYS`, both in `quantlab.dataset.stockfit.statements`. A comparative period
+without a filing of its own (first reported as the
 prior-year column of a later filing, mostly from before the company's first filing StockFit holds)
 is dated at the earliest dated filing among its sources, each fact at the first filing listing it;
 a quarter with no dated source at all (a reconstructed quarter alone) is dropped. Being older than

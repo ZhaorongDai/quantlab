@@ -28,9 +28,11 @@ filing that made it public. It hides what the chain is made of:
   it. Cover-page facts (``COVER_FACTS``: the public float, which a 10-K's
   cover reports as of the second quarter's end) are dated at the filing
   that lists them, and so is a value whose first listing came later than
-  any comparative column could (``COMPARATIVE_WINDOW_DAYS``: 400 days
-  after the period's filing for the balance sheet, 760 for the income and
-  cash-flow statements);
+  any comparative column could (``comparative_window``: 1,100 days after
+  the period's filing for equity and cash balances, which the statement of
+  equity and the cash-flow statement list for three years; 760 for
+  goodwill and for the income and cash-flow statements; 400 for the rest
+  of the balance sheet);
 - a comparative period with no filing of its own (first reported as the
   prior-year column of a later filing, mostly before a company's first
   filing the vendor holds) is dated at the earliest dated filing in its
@@ -253,12 +255,48 @@ COVER_FACTS: frozenset[str] = frozenset({"publicFloat", "currentSharesOutstandin
 #: Per statement, the most days after a period's own filing that a later filing can still carry its values
 #: as a comparative column: a balance sheet repeats a period-end balance only in the next 10-K and the next
 #: year's 10-Qs (400 days); a 10-K lists three years of income and cash flows (760 days). A value first
-#: listed later than this is dated at that listing, not at the period's filing.
+#: listed later than its window (``comparative_window``) is dated at that listing, not at the period's filing.
 COMPARATIVE_WINDOW_DAYS: dict[str, int] = {
     "balance_sheet": 400,
     "income_statement": 760,
     "cash_flow_statement": 760,
 }
+
+#: Facts whose window is their own, whatever the statement: a 10-K's statement of equity lists three
+#: years of opening and closing equity balances and share counts, and its cash-flow statement three years
+#: of opening and closing cash (1,100 days); a goodwill roll-forward lists two years (760 days).
+FACT_WINDOW_DAYS: dict[str, int] = {
+    **dict.fromkeys(
+        ("stockholdersEquity", "totalEquity", "minorityInterest", "commonStock", "preferredStock",
+         "retainedEarnings", "otherEquityAdjustments", "additionalPaidInCapital", "sharesIssued",
+         "sharesOutstanding", "treasuryShares"),
+        1100,
+    ),
+    **dict.fromkeys(("cash", "endCash", "beginningCash"), 1100),
+    "goodwill": 760,
+}
+
+
+def comparative_window(statement: str, fact: str) -> int:
+    """Return the most days after a period's filing that a later filing can repeat one of its facts as a comparative.
+
+    ``FACT_WINDOW_DAYS`` for a fact listed there, otherwise the statement's
+    ``COMPARATIVE_WINDOW_DAYS``.
+
+    Raises
+    ------
+    KeyError
+        If ``statement`` is not a key of ``COMPARATIVE_WINDOW_DAYS``.
+
+    Examples
+    --------
+    >>> comparative_window("balance_sheet", "assets"), comparative_window("balance_sheet", "stockholdersEquity")
+    (400, 1100)
+    >>> comparative_window("cash_flow_statement", "endCash"), comparative_window("balance_sheet", "goodwill")
+    (1100, 760)
+    """
+    default = COMPARATIVE_WINDOW_DAYS[statement]
+    return FACT_WINDOW_DAYS.get(fact, default)
 
 
 def _dates(source: Mapping) -> tuple[str | None, str | None]:
@@ -333,8 +371,8 @@ def fact_versions(period: Mapping, statement: str) -> list[FactVersion]:
     date the first value at the first filing listing the fact: cover-page
     facts (``COVER_FACTS``), which the period's own filing does not carry;
     the facts of a comparative period without a filing of its own; and a
-    value whose first listing was filed more than the statement's
-    ``COMPARATIVE_WINDOW_DAYS`` after the period's filing, too late to be a
+    value whose first listing was filed more than its
+    ``comparative_window`` after the period's filing, too late to be a
     comparative column repeating it. Each filing that changed a value adds
     the value it changed it to, at its own dates.
 
@@ -384,17 +422,18 @@ def fact_versions(period: Mapping, statement: str) -> list[FactVersion]:
     >>> [(v.value, v.date_filed) for v in fact_versions(period, "balance_sheet")]
     [(359.241, '2025-10-31')]
 
-    A 2015 year-end equity first listed by a 10-K of 2019, too late for any
-    comparative column, is dated at that 10-K:
+    A 2015 year-end asset total first listed by a 10-K of 2019, too late for
+    any comparative column, is dated at that 10-K:
 
     >>> period = {
-    ...     "dateFiled": "2016-03-15", "facts": {"stockholdersEquity": 7.0},
-    ...     "sources": {"a": {"type": "10-K", "dateFiled": "2019-03-01", "facts": {"stockholdersEquity": {}}}},
+    ...     "dateFiled": "2016-03-15", "facts": {"assets": 7.0},
+    ...     "sources": {"a": {"type": "10-K", "dateFiled": "2019-03-01", "facts": {"assets": {}}}},
     ... }
     >>> [(v.value, v.date_filed) for v in fact_versions(period, "balance_sheet")]
     [(7.0, '2019-03-01')]
     """
-    window = COMPARATIVE_WINDOW_DAYS[statement]
+    if statement not in COMPARATIVE_WINDOW_DAYS:
+        raise KeyError(f"statement must be one of {tuple(COMPARATIVE_WINDOW_DAYS)}, got {statement!r}.")
     own = period_filing(period)
     comparative = not period.get("dateFiled")
     filings = sorted(
@@ -408,7 +447,7 @@ def fact_versions(period: Mapping, statement: str) -> list[FactVersion]:
         listings = [(dates, facts[fact] or {}) for dates, facts in filings if fact in facts]
         changes = [(dates, entry["before"]) for dates, entry in listings if "before" in entry]
         by_listing = comparative or fact in COVER_FACTS or (
-            bool(listings) and _days_between(own[1], listings[0][0][1]) > window
+            bool(listings) and _days_between(own[1], listings[0][0][1]) > comparative_window(statement, fact)
         )
         first = listings[0][0] if by_listing and listings and "before" not in listings[0][1] else own
         values = [before for _, before in changes] + [current]
