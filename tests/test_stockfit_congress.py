@@ -190,3 +190,15 @@ def test_a_trade_an_amendment_repeats_is_counted_on_its_first_filing_only(env, t
     assert _at(panel, "purchases", "2023-06-20", ZTS) == 0
     assert _at(panel, "sales", "2023-06-20", ZTS) == 1
     assert np.isfinite(panel["purchase_max"].values).all()
+
+
+def test_a_trade_without_a_transaction_date_resolves_its_ticker_on_the_filing_date(env, tmp_path, clock):
+    undated = _trade("FB", "purchase", None, 1001, 15000)  # SYNTHETIC: the vendor parsed no transaction date
+    panel = _panel(tmp_path, clock, [
+        _filing("H1", "2021-06-08", "M1", [undated, _trade("ZTS", "sale", None, 1001, 15000)]),
+        _filing("H2", "2023-06-06", "M1", [_trade("FB", "purchase", None, 15001, 50000)]),
+    ])
+
+    assert _at(panel, "purchases", "2021-06-08", META) == 1  # META held FB on the filing date
+    assert _at(panel, "sales", "2021-06-08", ZTS) == 1
+    assert _at(panel, "purchases", "2023-06-06", LATER_FB) == 1

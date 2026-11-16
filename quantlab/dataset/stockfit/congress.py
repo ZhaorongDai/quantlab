@@ -14,7 +14,8 @@ and stays in the raw tier only.
 A transaction reaches the panel only when
 
 - its ``linkConfidence`` is ``high``;
-- its ``resolvedTicker`` names one company on its transaction date
+- its ``resolvedTicker`` names one company on its transaction date, or on
+  its report's filing date when the vendor parsed no transaction date
   (``TickerHolders``): tickers are reused, so a ticker is resolved through
   the current and prior tickers of StockFit's company lists, not through
   whoever holds it today;
@@ -286,14 +287,15 @@ class StockFitCongressTradesDataset(FilingPanelDataset):
                 ticker = trade.get("resolvedTicker")
                 if trade.get("linkConfidence") != HIGH or not ticker or kind not in (*PURCHASES, *SALES):
                     continue
-                traded = date.fromisoformat(trade["transactionDate"][:10])
-                cik = holders.on(ticker, traded)
+                filed = date.fromisoformat(report["filingDate"][:10])
+                traded = date.fromisoformat(trade["transactionDate"][:10]) if trade.get("transactionDate") else None
+                cik = holders.on(ticker, traded or filed)  # undated: whoever held the ticker when it was filed
                 if cik is None:
                     continue
                 low = float(trade.get("amountMin") or 0.0)
                 high = trade.get("amountMax")
                 lines.append({
-                    "cik": cik, "date": date.fromisoformat(report["filingDate"][:10]),
+                    "cik": cik, "date": filed,
                     "chamber": chamber, "member": who, "owner": trade.get("owner"),
                     "ticker": normalize_ticker(ticker), "kind": kind, "transaction_date": traded,
                     "amount_min": low, "amount_max": low if high is None else float(high),
