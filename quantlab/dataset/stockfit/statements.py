@@ -559,6 +559,9 @@ class StockFitStatementsDataset(ReleasePanelDataset):
         ds.panel("2024-01-02", "2024-01-05")["period_end"]
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = StockFitStatementsConfig
 

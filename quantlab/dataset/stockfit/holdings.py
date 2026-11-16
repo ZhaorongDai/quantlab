@@ -132,6 +132,9 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
         # ['holders', 'quarter_end', 'shares_held', 'value_held']
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = StockFitHoldingsConfig
 

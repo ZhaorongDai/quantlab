@@ -152,6 +152,9 @@ class StockFitFundPanel(ReleasePanelDataset):
         StockFitFundFlowsDataset(config).update().panel("2024-01-02", "2024-12-31")["flow_sales_mon1"]
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = StockFitFundConfig
 

@@ -342,3 +342,44 @@ def test_a_changed_snapshot_shows_from_the_day_of_its_pull(env, tmp_path):
     assert _on(scores, "piotroskiFScore", "2026-11-17", GOOGL) == 6
     assert _on(scores, "piotroskiFScore", "2026-11-18", GOOGL) == 7
     assert "may_include_restatement" not in scores
+
+
+def test_an_update_before_the_first_snapshot_is_shown_writes_nothing_and_does_not_fail(env, tmp_path):
+    import os
+
+    from quantlab.dataset.config import StockFitScoresTrendsConfig
+    from quantlab.dataset.stockfit.scores_trends import StockFitScoresTrendsDataset
+
+    vendor = _googl_vendor()
+    root = _refresh(tmp_path, vendor, ("scores",), (GOOGL,))  # pulled 2026-11-16, shown from that day
+    config = StockFitScoresTrendsConfig(
+        zarr_file_path=str(tmp_path / "scores.zarr"), raw_data_dir_path=str(root), table="scores",
+        start_date="2026-11-01",
+    )
+    dataset = StockFitScoresTrendsDataset(config).update()  # the raw tier is complete through 2026-11-15
+
+    assert dataset.last_chunk_result is None
+    assert not os.path.exists(config.zarr_file_path)
+    vendor.clock.advance(days=1)
+    vendor.lists["/api/filings/latest"] = [filing_row("10-Q", GOOGL, "2026-11-16")]  # SYNTHETIC: re-pulls scores
+    _refresh(tmp_path, vendor, ("filings_latest", "scores"), (GOOGL,))
+    panel = StockFitScoresTrendsDataset(config).update().panel("2026-11-01", "2026-12-31").load()
+    assert _on(panel, "piotroskiFScore", "2026-11-16", GOOGL) == 6
+
+
+def test_every_stockfit_panel_skips_an_update_with_nothing_shown_yet():
+    import importlib
+    import inspect
+    import pkgutil
+
+    import quantlab.dataset.stockfit as package
+    from quantlab.dataset._support.point_in_time import ReleasePanelDataset
+
+    panels = [
+        cls
+        for info in pkgutil.iter_modules(package.__path__)
+        for _, cls in inspect.getmembers(importlib.import_module(f"{package.__name__}.{info.name}"), inspect.isclass)
+        if issubclass(cls, ReleasePanelDataset) and cls.__module__.startswith(package.__name__)
+    ]
+    assert len(panels) > 20
+    assert [cls.__name__ for cls in panels if not cls.SKIPS_EMPTY_UPDATE] == []

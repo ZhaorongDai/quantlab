@@ -97,6 +97,9 @@ _DAY = pl.Datetime("ns")
 class _StockFitEventPanel(ReleasePanelDataset):
     """A StockFit panel on the CIK axis, on NYSE's calendar through the day before its endpoints were last pulled."""
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     #: The raw-tier endpoints read; the calendar ends on the last day all were pulled.
     ENDPOINTS: ClassVar[tuple[str, ...]] = ()
     #: The panel's variables and their attributes, in panel order.

@@ -282,6 +282,9 @@ class StockFitSnapshotPanelDataset(ReleasePanelDataset):
     ``entity_states``).
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     CONFIG: type[DatasetConfig]
     ENDPOINT: str
     SCHEMA: Mapping[str, pl.DataType]
@@ -751,6 +754,9 @@ class StockFitNewsCountsDataset(FilingPanelDataset):
 
         StockFitNewsCountsDataset(config).panel("2026-11-16", "2026-11-20")["news_count"]
     """
+
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
 
     config_cls = StockFitNewsCountsConfig
 

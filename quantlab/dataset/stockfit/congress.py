@@ -219,6 +219,9 @@ class StockFitCongressTradesDataset(FilingPanelDataset):
         list(ds.panel("2024-01-02", "2024-01-05").data_vars)[:2]  # ['purchase_min', 'purchase_max']
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = StockFitCongressTradesConfig
 

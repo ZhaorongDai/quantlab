@@ -569,6 +569,9 @@ class StockFitFootnoteDataset(ReleasePanelDataset):
         StockFitFootnoteDataset(config).update()
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     config_cls: ClassVar = StockFitFootnoteConfig
     config: StockFitFootnoteConfig
 

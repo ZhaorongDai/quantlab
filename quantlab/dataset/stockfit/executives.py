@@ -259,6 +259,9 @@ class StockFitExecutivesDataset(ReleasePanelDataset):
         # array([10800694., 10906079.])
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = StockFitExecutivesConfig
 

@@ -68,6 +68,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
+from loguru import logger
 
 from quantlab.dataset.raw import RawDataset
 from quantlab.utils.symbol_axis import sort_symbol_axis
@@ -481,6 +482,12 @@ class ReleasePanelDataset(RawDataset):
     ``_added_symbols_with_raw_history`` and keeps the rest. A panel whose
     symbols are text even when all digits (a CUSIP) sets ``TEXT_SYMBOLS``.
 
+    A window that shows nothing is refused. A panel whose raw tier may hold
+    rows not shown yet (a snapshot first pulled today counts from the next
+    trading day, past the calendar's end) sets ``SKIPS_EMPTY_UPDATE``: its
+    ``update`` then writes nothing and returns, so a scheduled update does
+    not fail before the first row is shown.
+
     Examples
     --------
     ``SharadarFundamentalsDataset`` is one, on SEP's calendar
@@ -491,6 +498,9 @@ class ReleasePanelDataset(RawDataset):
 
     #: Whether the symbol axis is text whatever the labels (``axis_symbols``).
     TEXT_SYMBOLS: bool = False
+
+    #: Whether ``update`` writes nothing and returns, instead of refusing, when no row is shown yet.
+    SKIPS_EMPTY_UPDATE: bool = False
 
     def _on_config_installed(self) -> None:
         """Drop what was cached for the previous config."""
@@ -555,6 +565,32 @@ class ReleasePanelDataset(RawDataset):
                 f"configured universe."
             )
         return symbols, pd.DatetimeIndex(days.to_list())
+
+    def update(self, granularity: str = "year", ledger_path: str | None = None, append_dim: str = "timestamp"):
+        """Bring the store up to date (``RawDataset.update``); with nothing shown yet, maybe skip.
+
+        When ``SKIPS_EMPTY_UPDATE`` is set and the configured window shows no
+        row yet, nothing is written, a warning is logged and
+        ``last_chunk_result`` is ``None``; otherwise an empty window is
+        refused as by ``RawDataset.update``.
+
+        Examples
+        --------
+        A StockFit snapshot panel the day its first pull is made::
+
+            dataset = StockFitListingDataset(config).update()
+            dataset.last_chunk_result  # None: the pull counts from tomorrow
+        """
+        if self.SKIPS_EMPTY_UPDATE:
+            days = self._trading_calendar().days_in(self.config.start_date, self.config.end_date)
+            if not days.len() or not shown_symbols(self._released_rows(), days):
+                logger.warning(
+                    f"{self.class_name}: {self._nothing_shown()} in [{self.config.start_date}, "
+                    f"{self.config.end_date}] yet; nothing written."
+                )
+                self.last_chunk_result = None
+                return self
+        return super().update(granularity=granularity, ledger_path=ledger_path, append_dim=append_dim)
 
     def _window_axes(self, start_date, end_date, symbols) -> tuple[pl.Series, list]:
         """Return a window's trading days and its symbols, those shown by its end when ``None``."""

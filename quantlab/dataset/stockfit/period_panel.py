@@ -102,6 +102,9 @@ class VersionedPeriodDataset(ReleasePanelDataset):
         StockFitAsReportedDataset(config).update().panel("2026-01-02", "2026-01-05")["period_end"]
     """
 
+    #: A raw tier's newest pull counts from the next trading day: an update before then writes nothing.
+    SKIPS_EMPTY_UPDATE = True
+
     #: Whether the panel carries the ``may_include_restatement`` flag.
     flags_restatements: bool = True
 
