@@ -819,19 +819,3 @@ StockFitHoldingsDataset(config).update()
 panel = StockFitHoldingsDataset(config).panel("2024-01-02", "2024-12-31")
 panel["holders"].sel(symbol="02079K305")  # Alphabet class A
 ```
-
-## Known data issues
-
-StockFit serves what the filings' XBRL says, and the panels pass some of its errors on unchanged:
-
-- **Scale errors**: a value tagged in the wrong unit is off by a factor of 1,000 (Kimberly-Clark's
-  2010 Q1 revenue served as 4,835; Apple's shares outstanding on 2014-04-25 as 24.1 million between
-  values of 24.0 billion). Check large jumps between neighbouring periods before using a level.
-- **Insider price errors**: a mistyped price on a Form 4 line (745,000 shares at $74,500 a share)
-  makes a day's net insider value tens of billions of dollars.
-- **Sign errors fixed years later**: a value can be served with the wrong sign until a later filing
-  corrects it (Plug Power's 2020 Q4 revenue was positive from 2021-05-14 to 2022-03-14, then
-  negative); the panel shows each as known at the time.
-- **Period ends are approximate**: `period` is not always the period's real end date (every Apple
-  quarter shows the 26th of its month; Microsoft's December 31 and March 31 show as the 30th).
-  Align with other vendors by fiscal year and quarter, not by exact date.
