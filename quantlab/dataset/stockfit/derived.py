@@ -55,7 +55,7 @@ from quantlab.dataset.stockfit.period_panel import (
     VersionedPeriodDataset,
 )
 from quantlab.dataset.stockfit.raw import as_number
-from quantlab.dataset.stockfit.statements import STATEMENTS
+from quantlab.dataset.stockfit.statements import STATEMENTS, period_filing
 
 #: The growth rates, in the vendor's order (decimals: 0.15 is 15%).
 GROWTH_FIELDS: tuple[str, ...] = (
@@ -175,7 +175,9 @@ def statement_filings(vendor_root: str | Path, cik: int | str) -> dict[str, tupl
     """Return, per fiscal period end, the date and acceptance time of the period's original filing.
 
     Read from the newest pull of each quarterly and annual statement of the
-    company; when the statements disagree, the earliest filing wins.
+    company; when the statements disagree, the earliest filing wins. A
+    comparative period without a filing of its own is dated by its sources
+    (``quantlab.dataset.stockfit.statements.period_filing``).
 
     Parameters
     ----------
@@ -199,9 +201,10 @@ def statement_filings(vendor_root: str | Path, cik: int | str) -> dict[str, tupl
         if not raw.pulls(vendor_root, endpoint, str(cik)):
             continue
         for entry in raw.read_pull(vendor_root, endpoint, str(cik)) or ():
-            if not entry.get("period") or not entry.get("dateFiled"):
+            accepted, filed = period_filing(entry) if entry.get("period") else (None, None)
+            if not filed:
                 continue
-            filing = (date.fromisoformat(entry["dateFiled"][:10]), parse_accepted(entry.get("acceptedAt")))
+            filing = (date.fromisoformat(filed[:10]), parse_accepted(accepted))
             key = str(entry["period"])[:10]
             known = found.get(key)
             if known is None or _order(filing) < _order(known):

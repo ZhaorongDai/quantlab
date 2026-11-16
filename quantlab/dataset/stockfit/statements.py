@@ -20,7 +20,20 @@ filing that made it public. It hides what the chain is made of:
   have no dates of their own: their values are dated at the period's
   original filing, the one that made the reconstruction possible;
 - a fact the vendor computes from others (listed in ``derived``) has no
-  chain: its latest value is dated at the period's original filing.
+  chain: its latest value is dated at the period's original filing;
+- a source listing a fact with ``{}`` is the last filing that reported the
+  value unchanged (a 10-Q repeating the fiscal year-end balance sheet as
+  its comparative column), not the first: the value is dated at the
+  period's original filing, and the later filing neither moves nor erases
+  it. Cover-page facts (``COVER_FACTS``: the public float, which a 10-K's
+  cover reports as of the second quarter's end) are dated at the filing
+  that lists them;
+- a comparative period with no filing of its own (first reported as the
+  prior-year column of a later filing, mostly before a company's first
+  filing the vendor holds) is dated at the earliest dated filing in its
+  ``sources`` and each of its facts at the first filing listing it; a
+  quarter with no dated source at all (a reconstructed quarter alone) is
+  dropped.
 
 ``StockFitStatementsDataset`` places every value at its available date
 (``quantlab.dataset.stockfit.available``: accepted before the NYSE close,
@@ -229,15 +242,77 @@ class FactVersion:
     date_filed: str | None
 
 
+#: Cover-page facts: reported on a later filing's cover (the float as of the second quarter's end on the
+#: 10-K), not in the period's own statements, so they are dated at the filing that lists them.
+COVER_FACTS: frozenset[str] = frozenset({"publicFloat", "currentSharesOutstanding"})
+
+
+def _dates(source: Mapping) -> tuple[str | None, str | None]:
+    return source.get("acceptedAt"), source.get("dateFiled")
+
+
+def _sorted_sources(period: Mapping) -> list[tuple[tuple[str | None, str | None], Mapping]]:
+    """Return the period's ``sources`` as ``((accepted_at, date_filed), facts)``, by filing date and acceptance time."""
+    return sorted(
+        ((_dates(source), source.get("facts") or {}) for source in (period.get("sources") or {}).values()),
+        key=lambda filing: (filing[0][1] or "", filing[0][0] or ""),
+    )
+
+
+def period_filing(period: Mapping) -> tuple[str | None, str | None]:
+    """Return the ``(accepted_at, date_filed)`` of the filing that first made a statement period public.
+
+    The period's own ``acceptedAt`` and ``dateFiled`` when the vendor gives
+    them. A comparative period (one first reported as the prior-year column
+    of a later filing, typically from before the company's first filing the
+    vendor holds) has none: it is dated at the earliest dated filing in its
+    ``sources`` that supplied one of its statement facts (cover-page facts,
+    ``COVER_FACTS``, do not count: a cover reports them about an older
+    period). ``(None, None)`` when no source is dated either, such as a
+    reconstructed quarter alone.
+
+    Parameters
+    ----------
+    period : Mapping
+        One entry of a statement response.
+
+    Returns
+    -------
+    tuple
+        ``(accepted_at, date_filed)``; either may be ``None``.
+
+    Examples
+    --------
+    >>> period_filing({"dateFiled": "2024-05-01", "acceptedAt": "2024-05-01T20:00:00Z"})
+    ('2024-05-01T20:00:00Z', '2024-05-01')
+    >>> period_filing({"sources": {
+    ...     "a": {"dateFiled": "2010-05-07", "facts": {"publicFloat": {}}},
+    ...     "b": {"dateFiled": "2010-08-06", "facts": {"cash": {}}},
+    ... }})
+    (None, '2010-08-06')
+    """
+    if period.get("dateFiled"):
+        return _dates(period)
+    for dates, facts in _sorted_sources(period):
+        if dates[1] and any(fact not in COVER_FACTS for fact in facts):
+            return dates
+    return None, None
+
+
 def fact_versions(period: Mapping) -> list[FactVersion]:
     """Return every value each fact of one statement period had, oldest first per fact.
 
     The period's facts are walked through its ``sources`` chain, filings
-    sorted by filing date and acceptance time: the first value is dated at
-    the filing that first supplied it (at the period's original filing when
-    that filing was pruned, or when the value comes from a reconstruction or
-    is ``derived``), and each filing that changed it adds the value it
-    changed it to, at its own dates.
+    sorted by filing date and acceptance time. A source listing a fact with
+    ``{}`` is the *last* filing that reported its value unchanged (a 10-Q
+    repeating the fiscal year-end balance sheet as its comparative column),
+    not the first, so the first value of a statement fact is dated at the
+    period's original filing (``period_filing``), as are a pruned filing's
+    values, reconstructed quarters and ``derived`` facts. Two exceptions date
+    the first value at the first filing listing the fact: cover-page facts
+    (``COVER_FACTS``), which the period's own filing does not carry, and the
+    facts of a comparative period without a filing of its own. Each filing
+    that changed a value adds the value it changed it to, at its own dates.
 
     Parameters
     ----------
@@ -266,16 +341,20 @@ def fact_versions(period: Mapping) -> list[FactVersion]:
     ... }
     >>> [(v.value, v.date_filed) for v in fact_versions(period)]
     [(-0.36, '2019-03-13'), (-0.39, '2021-05-14')]
+
+    A year-end asset total the next 10-Q repeats is dated at the 10-K:
+
+    >>> period = {
+    ...     "dateFiled": "2025-10-31", "facts": {"assets": 359.241},
+    ...     "sources": {"0000320193-26-000020": {"type": "10-Q", "dateFiled": "2026-07-31", "facts": {"assets": {}}}},
+    ... }
+    >>> [(v.value, v.date_filed) for v in fact_versions(period)]
+    [(359.241, '2025-10-31')]
     """
-    own = (period.get("acceptedAt"), period.get("dateFiled"))
+    own = period_filing(period)
+    comparative = not period.get("dateFiled")
     filings = sorted(
-        (
-            (
-                (source.get("acceptedAt"), source.get("dateFiled")) if source.get("dateFiled") else own,
-                source.get("facts") or {},
-            )
-            for source in (period.get("sources") or {}).values()
-        ),
+        ((dates if dates[1] else own, facts) for dates, facts in _sorted_sources(period)),
         key=lambda filing: (filing[0][1] or "", filing[0][0] or ""),
     )
     versions: list[FactVersion] = []
@@ -284,7 +363,8 @@ def fact_versions(period: Mapping) -> list[FactVersion]:
             continue
         listings = [(dates, facts[fact] or {}) for dates, facts in filings if fact in facts]
         changes = [(dates, entry["before"]) for dates, entry in listings if "before" in entry]
-        first = listings[0][0] if listings and "before" not in listings[0][1] else own
+        by_listing = comparative or fact in COVER_FACTS
+        first = listings[0][0] if by_listing and listings and "before" not in listings[0][1] else own
         values = [before for _, before in changes] + [current]
         dated = [first] + [dates for dates, _ in changes]
         versions.extend(
@@ -361,19 +441,19 @@ def _quarters(statements: Mapping[str, list], place: _Placer, reported: str) -> 
     place.add(
         pair
         for _, entry, versions in walked
-        for pair in [(entry.get("acceptedAt"), entry.get("dateFiled"))]
-        + [(version.accepted_at, version.date_filed) for version in versions]
+        for pair in [period_filing(entry)] + [(version.accepted_at, version.date_filed) for version in versions]
     )
     quarters: dict[str, _Quarter] = {}
     for name, entry, versions in walked:
-        base = place(entry.get("acceptedAt"), entry.get("dateFiled"))
+        own = period_filing(entry)
+        base = place(*own)
         if base is None:
             continue  # not public by the day the raw tier is complete through
         end = date.fromisoformat(entry["period"])
         quarter = quarters.setdefault(entry["period"], _Quarter(
             period_end=end,
             fiscal=int(entry.get("fiscalYear") or end.year) * 4 + _QUARTERS[entry["fiscalPeriod"]],
-            release=_parse_filed(entry.get("dateFiled")) or end,
+            release=_parse_filed(own[1]) or end,
             base=base,
             versions={},
         ))

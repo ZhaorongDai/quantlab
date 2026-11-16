@@ -159,6 +159,57 @@ def test_a_ttm_flow_one_of_the_four_quarters_lacks_is_missing_not_a_partial_sum(
     assert not np.isnan(_on(panel, "2026-11-13", "netIncome"))
 
 
+def _plug_balance_sheet(vendor):
+    """Return the vendor's PLUG quarterly balance sheet, to edit in place."""
+    (key,) = [k for k in vendor.bodies
+              if k[0] == "/api/financials/balance-sheet" and ("cik", str(PLUG)) in k[1] and ("period", "quarter") in k[1]]
+    return vendor.bodies[key]
+
+
+def test_a_fiscal_year_end_balance_sheet_shows_from_its_10k_though_a_later_10q_repeats_it(env, tmp_path):
+    # VERBATIM: the vendor lists PLUG's 2025-12-31 assets under the 10-Q of 2026-08-10 (a later filing that
+    # repeats the year-end balance sheet unchanged), not under the 10-K of 2026-03-02 that first reported it.
+    (quarter,) = [entry for entry in fixture("balance_sheet_plug_quarter") if entry["period"] == "2025-12-31"]
+    assert "assets" not in quarter["sources"]["0001104659-26-022286"]["facts"]
+    assert quarter["sources"]["0001104659-26-093454"]["facts"]["assets"] == {}
+    panel = _panel(tmp_path, _raw_tier(tmp_path))
+
+    # The 10-K was accepted 2026-03-02 16:30 in New York, after the close.
+    assert _on(panel, "2026-03-03", "period_end") == pd.Timestamp("2025-12-31").value
+    assert _on(panel, "2026-03-03", "assets") == quarter["facts"]["assets"]
+    assert _on(panel, "2026-05-11", "assets") == quarter["facts"]["assets"]
+
+
+def test_a_cover_page_fact_shows_from_the_filing_that_reports_it_not_the_quarters_own(env, tmp_path):
+    vendor = FakeVendor(FakeClock())
+    (quarter,) = [entry for entry in _plug_balance_sheet(vendor) if entry["period"] == "2026-06-30"]
+    quarter["facts"]["publicFloat"] = 1_500_000_000.0  # SYNTHETIC: a later 10-K's cover page reports the Q2 float
+    quarter["sources"]["0001104659-26-990002"] = {  # SYNTHETIC accession
+        "type": "10-K", "dateFiled": "2026-11-12", "acceptedAt": "2026-11-12T15:00:00Z", "amendment": False,
+        "facts": {"publicFloat": {}},
+    }
+    panel = _panel(tmp_path, _raw_tier(tmp_path, vendor))
+
+    assert np.isnan(_on(panel, "2026-08-11", "publicFloat"))
+    assert np.isnan(_on(panel, "2026-11-09", "publicFloat"))
+
+
+def test_a_quarter_without_its_own_filing_date_is_dated_by_its_earliest_dated_filing(env, tmp_path):
+    vendor = FakeVendor(FakeClock())
+    for body in (_plug_income(vendor), _plug_balance_sheet(vendor)):
+        (quarter,) = [entry for entry in body if entry["period"] == "2026-06-30"]
+        quarter.pop("dateFiled")  # SYNTHETIC: a comparative period the vendor gives no filing of its own
+        quarter.pop("acceptedAt")
+    panel = _panel(tmp_path, _raw_tier(tmp_path, vendor))
+
+    # Its 10-Q of 2026-08-10, accepted after the close, carries the quarter.
+    assert _on(panel, "2026-08-10", "period_end") == pd.Timestamp("2026-03-31").value
+    assert _on(panel, "2026-08-11", "period_end") == pd.Timestamp("2026-06-30").value
+    (quarter,) = [entry for entry in fixture("balance_sheet_plug_quarter") if entry["period"] == "2026-06-30"]
+    assert _on(panel, "2026-08-11", "assets") == quarter["facts"]["assets"]
+    assert _on(panel, "2026-08-11", "release_date") == pd.Timestamp("2026-08-10").value
+
+
 def test_annual_statements_stay_in_the_raw_tier(tmp_path):
     with pytest.raises(ValueError, match="Annual statements stay in the raw tier"):
         _panel(tmp_path, tmp_path, period="annual")

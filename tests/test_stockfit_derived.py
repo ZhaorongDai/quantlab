@@ -225,6 +225,28 @@ def test_a_derived_row_with_no_matching_statement_period_is_dropped_and_counted(
     assert panel["revenueGrowth"].sel(symbol=GOOGL, timestamp=slice("2025-12-01", "2026-07-22")).isnull().all()
 
 
+def test_a_derived_row_borrows_the_filing_of_a_statement_period_dated_only_by_its_sources(env, tmp_path):
+    from quantlab.dataset.config import StockFitDerivedConfig
+    from quantlab.dataset.stockfit.derived import StockFitDerivedDataset
+
+    vendor = _googl_vendor()
+    income = fixture("income_statement_googl_quarter_source_details")
+    income[0].pop("dateFiled")  # SYNTHETIC: the 2026-09-30 quarter without a filing of its own
+    income[0].pop("acceptedAt")
+    _serve(vendor, INCOME, GOOGL, income)
+    root = _refresh(tmp_path, vendor, (INCOME, "growth_quarter"), (GOOGL,))
+    config = StockFitDerivedConfig(
+        zarr_file_path=str(tmp_path / "growth.zarr"), raw_data_dir_path=str(root), table="growth",
+        start_date="2026-07-01",
+    )
+    dataset = StockFitDerivedDataset(config).update()
+    panel = dataset.panel("2026-07-01", "2026-12-31").load()
+
+    # Its source, the 10-Q accepted 2026-10-29T00:29:06Z (the evening before in New York), dates it.
+    assert _on(panel, "revenueGrowth", "2026-10-29", GOOGL) == 0.065
+    assert _on(panel, "release_date", "2026-10-29", GOOGL) == pd.Timestamp("2026-10-29").value
+
+
 @pytest.mark.parametrize(
     ("table", "variable", "expected"),
     [
