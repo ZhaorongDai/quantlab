@@ -35,6 +35,7 @@ converts it to a panel.
 | `massive` | Every US-equity SIP trade, minute and day aggregates, dividends, short interest and volume, news, 8-K disclosures, IPOs | `MASSIVE_API_KEY`, `MASSIVE_S3_ACCESS_KEY_ID` (`MASSIVE_S3_SECRET_ACCESS_KEY` optional) |
 | `stockfit` | SEC-filing data parsed from EDGAR, on its own identifiers (CIK, CUSIP, fund series): company lists and data dictionaries; quarterly and TTM statement panels as known on each day; as-reported facts, derived metrics, share classes, scores and trends; 17 footnote tables; fund profiles, flows, fees and N-CEN fields; XBRL splits, successions and declared splits and dividends; Congress trades; SEC filing counts and 8-K events; insider transactions; 13D/13G stakes; executive pay and governance; listing, earnings-consensus, IPO, offering, filing-calendar and news-count snapshots; 13F holdings per CUSIP | `STOCKFIT_API_KEY` |
 | `fred` | Interest-rate series such as DTB3, the 3-month Treasury bill rate | none |
+| `sec_edgar` | SEC EDGAR's quarterly filing indexes (every filing's form, filing date and accession), which date the StockFit 13F filings StockFit gives no date for; raw only, see [StockFit](stockfit.md#sec-edgar-filing-indexes) | `SEC_EDGAR_USER_AGENT` (a name and contact address SEC asks for, not a key) |
 | `tiingo` | US equity daily bars | `TIINGO_API_KEY` |
 | `alpaca` | US equity daily and minute bars; tick quotes and trades | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` |
 | `wrds` | CRSP daily stock file; TAQ NBBO quotes (retired) | `WRDS_USERNAME`, password in `~/.pgpass` |
@@ -110,7 +111,8 @@ This is what the daily update calls. It returns a
 {py:class}`~quantlab.acquisition.refresh.RawTierRefreshResult` with one entry per part; a
 part the vendor or the network failed is recorded in `failed` and the other parts still
 run, while a missing credential raises before any part. The options are the vendor's own:
-`trading_days` for Sharadar, `endpoints` for Massive, `series` and `start` for FRED.
+`trading_days` for Sharadar, `endpoints` for Massive, `series` and `start` for FRED, `start`
+for SEC EDGAR.
 
 ```python
 from quantlab.acquisition.base import DataSourceRegistry

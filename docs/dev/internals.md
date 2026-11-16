@@ -53,6 +53,7 @@ corrupt file. The module knows no vendor; each raw tier's writer passes its own 
 | `sharadar/<table>/_watermark.json` | `table`, `through` | {py:func}`~quantlab.acquisition.sharadar.raw_tier.write_table_watermark` |
 | `massive/<type>/_watermark.json` | `data_type`, `through` | {py:func}`~quantlab.acquisition.massive.raw_tier.write_day_file_watermark` |
 | `massive/rest/<endpoint>/_watermark.json` | `endpoint`, `field`, `through` | {py:func}`~quantlab.acquisition.massive.raw_tier.write_rest_watermark` |
+| `sec_edgar/full_index/<YYYY>QTR<n>/_watermark.json` | `quarter`, `pulled_at`, `through` | {py:func}`~quantlab.acquisition.sec_edgar.refresh_raw_tier` |
 
 A snapshot endpoint's watermark has `field` `"snapshot"` and `through` the day of the last
 snapshot. The readers stay in the dataset layer; the writers, like every other raw-tier

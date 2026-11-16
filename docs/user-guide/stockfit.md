@@ -18,6 +18,9 @@ export STOCKFIT_API_KEY=...
 It is sent only as an `Authorization: Bearer` header, never in a URL, and is kept out of every log
 line and error message.
 
+The 13F panel also reads SEC EDGAR's free filing indexes, which need `SEC_EDGAR_USER_AGENT` instead
+of a key (see [SEC EDGAR filing indexes](#sec-edgar-filing-indexes)).
+
 ## The raw tier
 
 StockFit has no bulk files, so its raw tier is built request by request: one pull of one endpoint
@@ -255,7 +258,11 @@ under the latest of those 10-Qs. The panel therefore dates the first value of ev
 period's original filing (the 10-K for a fourth quarter), and a later filing that repeats it
 unchanged neither moves nor erases it. The exceptions are cover-page facts (`publicFloat`,
 `currentSharesOutstanding`), which a later filing's cover reports about the period, dated at the
-filing that lists them. A comparative period without a filing of its own (first reported as the
+filing that lists them, and a value first listed by a filing too late to be a comparative column
+repeating it, dated at that filing too: more than 400 days after the period's filing for the
+balance sheet (a period-end balance is repeated only by the next 10-K and the next year's 10-Qs),
+more than 760 days for the income and cash-flow statements (a 10-K lists three years). The windows
+are `COMPARATIVE_WINDOW_DAYS` in `quantlab.dataset.stockfit.statements`. A comparative period without a filing of its own (first reported as the
 prior-year column of a later filing, mostly from before the company's first filing StockFit holds)
 is dated at the earliest dated filing among its sources, each fact at the first filing listing it;
 a quarter with no dated source at all (a reconstructed quarter alone) is dropped. Being older than
@@ -264,7 +271,7 @@ the quarters shown by then, such a period mostly fills the TTM window's history.
 Facts keep the vendor's names; the five the cash-flow statement shares with the income statement
 are prefixed (`cashFlowNetIncome`, `cashFlowDepreciation`, `cashFlowAmortization`,
 `cashFlowDepreciationAndAmortization`, `cashFlowImpairments`). `release_date` (the shown quarter's
-original filing date) and `period_end` (its fiscal period end) say which quarter a cell shows.
+original filing date, the earliest among the three statements when they date it differently) and `period_end` (its fiscal period end) say which quarter a cell shows.
 
 ```python
 from quantlab.dataset.config import StockFitStatementsConfig
@@ -795,17 +802,22 @@ When a row is shown:
   quarter's, the same quarter for every security. Before day 45 nothing of it is shown, and a
   security with no row in the shown quarter shows nothing.
 - Within the shown quarter a row counts from the later of that day and its filing's available date
-  (see [Available dates](#available-dates)). Holder rows carry the filing's accession but no date;
-  the date comes from, in order, the manager's 13F filing list, the 13F-HR rows of any pull of the
-  recent-filings feed (`filings_latest`), or nowhere, and then the row counts from day 45.
+  (see [Available dates](#available-dates)). Holder rows carry the filing's accession but no date.
+  The date comes first from the manager's 13F filing list or the 13F-HR rows of any pull of the
+  recent-filings feed (`filings_latest`), which carry the acceptance time. Most managers are not in
+  StockFit's company lists and have no filing list, so the filing is otherwise dated by its
+  accession's filing date in SEC EDGAR's quarterly filing indexes (see
+  [SEC EDGAR filing indexes](#sec-edgar-filing-indexes)), counted on that day as a filing with
+  only a filing date is.
+- A row whose filing neither source dates is not shown. After a build, `build_report` counts the
+  rows dated by StockFit, by EDGAR and not shown, and `update()` logs the counts.
+- The panel's last day is the earlier of the day the 13F holder rows and the day EDGAR's indexes are
+  complete through, so a filing EDGAR has not indexed yet is never taken for one it does not list.
 
-Look-ahead caveat: StockFit merges an amendment (13F-HR/A) into the quarter it amends and gives the
-amendment's accession on the row. The original value is never shown, and a position first
-disclosed in a late amendment (a confidential stake, say) is missing from its quarter until the
-amendment's date, or entirely when that quarter is no longer shown by then. A row whose filing
-date is unknown counts from day 45, so the values of a late amendment are shown early when its
-manager is outside StockFit's company lists (no filing list) and it was filed before the raw tier's
-first pull of the recent-filings feed.
+StockFit merges an amendment (13F-HR/A) into the quarter it amends and gives the amendment's
+accession on the row. The original value is never shown, and a position first disclosed in a late
+amendment (a confidential stake, say) is missing from its quarter until the amendment's date, or
+entirely when that quarter is no longer shown by then.
 
 ```python
 from quantlab.dataset.config import StockFitHoldingsConfig
@@ -819,3 +831,43 @@ StockFitHoldingsDataset(config).update()
 panel = StockFitHoldingsDataset(config).panel("2024-01-02", "2024-12-31")
 panel["holders"].sel(symbol="02079K305")  # Alphabet class A
 ```
+
+### SEC EDGAR filing indexes
+
+The 13F panel reads one raw tier besides StockFit's: SEC EDGAR's quarterly master indexes
+(`https://www.sec.gov/Archives/edgar/full-index/<YYYY>/QTR<n>/master.idx`), free and without a
+key, which list every filing of a quarter with its form type, filing date and accession. They are a
+vendor of their own, `sec_edgar`, kept whole and compressed under the download root:
+
+```text
+<root>/downloads/sec_edgar/full_index/2024QTR1/master.idx.gz
+<root>/downloads/sec_edgar/full_index/2024QTR1/_watermark.json
+```
+
+SEC asks every automated client to declare a name and a contact address in its `User-Agent`;
+quantlab reads it from the environment and sends nothing without it:
+
+```bash
+export SEC_EDGAR_USER_AGENT="Your Name your.address@example.com"
+```
+
+The header's value is kept out of every log line and error message. Requests are spaced at least
+0.1 s apart (SEC allows 10 a second), and a 403, 429 or 5xx is retried after a doubling back-off.
+Refresh the indexes before building the 13F panel, through the registry like any vendor:
+
+```python
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import refresh_raw_tier
+
+result = refresh_raw_tier(DataSourceRegistry.get("sec_edgar"), "/data/downloads")
+result.summary()  # per quarter pulled: published, unchanged, or not on EDGAR yet
+```
+
+The first run pulls every quarter from 2013 Q1, the first quarter of StockFit's 13F data (about 55
+requests). Each later run pulls the current quarter again, since EDGAR rebuilds its index every
+night through the previous business day, and also the quarter just ended for four weeks after its
+end, and any quarter whose last pull came too early to hold all of it. A pull equal to the file on
+disk is dropped; the quarter's watermark moves to the pull's UTC day either way. A pull holds the
+filings dated at least two days before its UTC day, which is how far the 13F panel takes the
+indexes to be complete. `StockFitHoldingsConfig.sec_edgar_dir_path` names the raw tier when it is
+not the `sec_edgar` directory beside StockFit's.
