@@ -8,7 +8,9 @@ company and quarter (``institutional_holders``, every share class of the
 company) and, per manager the rows name, its 13F filings with their filing
 dates (``manager_13f_filings``); ``quantlab.dataset.stockfit.raw`` lays them
 out. The managers' own portfolios (``manager_portfolio``) stay raw files:
-this panel does not read them.
+this panel does not read them. StockFit has no filing list for most 13F
+managers (those outside its company lists); the 13F-HR rows of the
+recent-filings feed (``filings_latest``) date their filings instead.
 
 ``StockFitHoldingsDataset`` sums the rows by security and quarter. The
 symbol is the CUSIP, so the share classes of one company are separate
@@ -33,13 +35,18 @@ a late amendment counts only from the amendment's filing. A filing is
 available on the day it was accepted when accepted before that NYSE
 session's close (13:00 on a half day), and on the next trading day
 otherwise; a filing without an acceptance time is available on its filing
-date. A row whose accession is in no pulled filing list counts from the day
-after its holder rows were pulled, never earlier.
+date. A filing's dates come from, in order, its manager's 13F filing list,
+the 13F-HR rows of any pull of the recent-filings feed, or nowhere: a row
+whose accession neither names counts from quarter end + 45 days.
 
 Look-ahead caveats. StockFit serves each quarter as it holds it now: an
 amendment replaces the original row, so the original value is never shown
 and the position is missing from the quarter until the amendment's date; a
-late amendment of a quarter no longer shown is not shown at all.
+late amendment of a quarter no longer shown is not shown at all. A row
+whose filing date is unknown counts from quarter end + 45 days, so the
+values of a late amendment by a manager outside StockFit's company lists,
+filed before the raw tier's first pull of the recent-filings feed, are shown
+from that day, before the amendment was filed.
 
 Examples
 --------
@@ -72,6 +79,8 @@ from quantlab.dataset._support.point_in_time import (
 from quantlab.dataset.config import DatasetConfig, StockFitHoldingsConfig
 from quantlab.dataset.stockfit.available import nyse_calendar, release_day
 from quantlab.dataset.stockfit.raw import (
+    FEED_13F,
+    FILINGS_LATEST,
     INSTITUTIONAL_HOLDERS,
     MANAGER_13F_FILINGS,
     entities,
@@ -101,7 +110,6 @@ _HOLDER_SCHEMA = {
     "accession": pl.String,
     "shares": pl.Float64,
     "value": pl.Float64,
-    "pulled": pl.Date,
 }
 
 
@@ -146,15 +154,14 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
     # -- the raw tier ------------------------------------------------------------
 
     def _holder_rows(self) -> pl.DataFrame:
-        """Return every share holding of the newest holder pulls, with the day each pull was made."""
+        """Return every share holding of the newest holder pulls."""
         root = self.config.raw_data_dir_path
         frames = []
         for entity in entities(root, INSTITUTIONAL_HOLDERS):
             _, quarter = split_quarter_entity(entity)
-            pulled = pulls(root, INSTITUTIONAL_HOLDERS, entity)[-1].date()
             rows = [
                 (row["cusip"], int(row["managerCik"]), quarter, row.get("accessionNumber"),
-                 float(row.get("shares") or 0.0), float(row.get("value") or 0.0), pulled)
+                 float(row.get("shares") or 0.0), float(row.get("value") or 0.0))
                 for row in read_pull(root, INSTITUTIONAL_HOLDERS, entity)
                 if row.get("cusip") and row.get("managerCik") is not None
                 and row.get("shareType") == "SH" and row.get("putCall") is None
@@ -167,14 +174,27 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
         return frame
 
     def _filings(self) -> pl.DataFrame:
-        """Return the day each pulled 13F filing counts from: ``accession``, ``public``."""
+        """Return the day each known 13F filing counts from: ``accession``, ``public``.
+
+        A filing's dates come from its manager's 13F filing list when pulled,
+        and otherwise from the 13F-HR rows of every pull of the recent-filings
+        feed.
+        """
         root = self.config.raw_data_dir_path
-        rows = [
+        listed = [
             (row["accessionNumber"], row.get("dateFiled"), row.get("acceptedAt"))
             for manager in entities(root, MANAGER_13F_FILINGS)
             for row in read_pull(root, MANAGER_13F_FILINGS, manager)
             if row.get("accessionNumber")
         ]
+        known = {accession for accession, _, _ in listed}
+        fed = [
+            (row["accessionNumber"], row.get("dateFiled"), row.get("acceptedAt"))
+            for pulled_at in pulls(root, FILINGS_LATEST, FEED_13F)
+            for row in read_pull(root, FILINGS_LATEST, FEED_13F, pulled_at) or ()
+            if row.get("accessionNumber") and row["accessionNumber"] not in known
+        ]
+        rows = listed + fed
         schema = {"accession": pl.String, "dateFiled": pl.String, "acceptedAt": pl.String}
         filings = pl.DataFrame(rows, schema=schema, orient="row").select(
             "accession",
@@ -207,12 +227,9 @@ class StockFitHoldingsDataset(ReleasePanelDataset):
         """
         calendar = self._trading_calendar()
         holdings = self._holder_rows().join(self._filings(), on="accession", how="left")
-        # A row counts from the later of quarter end + 45 days and its filing's day.
+        # A row counts from the later of quarter end + 45 days and its filing's day, when known.
         holdings = holdings.with_columns(
-            pl.max_horizontal(
-                pl.col("quarter_end") + AVAILABILITY_LAG,
-                pl.col("public").fill_null(pl.col("pulled") + pl.duration(days=1)),
-            ).alias("due")
+            pl.max_horizontal(pl.col("quarter_end") + AVAILABILITY_LAG, pl.col("public")).alias("due")
         )
         holdings = calendar.place(holdings, "due")
         keys = ["symbol", "quarter_end"]

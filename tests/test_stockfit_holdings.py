@@ -264,7 +264,7 @@ def test_a_row_filed_after_day_45_counts_from_its_filings_available_date(env, tm
         holder(MANAGER_B, CLASS_A, "2024-03-31", "late-1", 40.0),  # accepted after the close
         holder(9003, CLASS_A, "2024-03-31", "late-2", 7.0),  # accepted a minute before the close
         holder(9004, CLASS_A, "2024-03-31", "half-day", 3.0),  # after a 13:00 close
-        holder(9005, CLASS_A, "2024-03-31", "unknown", 1000.0),  # its manager's filings were never pulled
+        holder(9005, CLASS_A, "2024-03-31", "unknown", 1000.0),  # in no filing list nor feed: day 45
     ])
     serve_filings(vendor, MANAGER_A, [filing(A1, "2024-03-31", "2024-05-10", None)])
     serve_filings(vendor, MANAGER_B, [filing("late-1", "2024-03-31", "2024-05-20", "2024-05-20T20:05:00Z", True)])
@@ -274,14 +274,37 @@ def test_a_row_filed_after_day_45_counts_from_its_filings_available_date(env, tm
 
     panel = _panel(tmp_path, tmp_path / "dl")
     shares = panel["shares_held"].sel(symbol=CLASS_A)
-    assert float(shares.sel(timestamp="2024-05-20")) == 100.0
-    assert float(shares.sel(timestamp="2024-05-21")) == 140.0
-    assert float(shares.sel(timestamp="2024-05-22")) == 147.0
-    assert float(shares.sel(timestamp="2024-07-03")) == 147.0
-    assert float(shares.sel(timestamp="2024-07-05")) == 150.0
-    assert float(panel["holders"].sel(symbol=CLASS_A, timestamp="2024-07-05")) == 4.0
+    assert float(shares.sel(timestamp="2024-05-15")) == 1100.0
+    assert float(shares.sel(timestamp="2024-05-20")) == 1100.0
+    assert float(shares.sel(timestamp="2024-05-21")) == 1140.0
+    assert float(shares.sel(timestamp="2024-05-22")) == 1147.0
+    assert float(shares.sel(timestamp="2024-07-03")) == 1147.0
+    assert float(shares.sel(timestamp="2024-07-05")) == 1150.0
+    assert float(panel["holders"].sel(symbol=CLASS_A, timestamp="2024-07-05")) == 5.0
     # The next quarter, without a row for the security, replaces it: nothing is shown.
     assert shares.sel(timestamp=slice("2024-08-14", None)).isnull().all()
+
+
+def test_a_row_of_a_manager_without_a_filing_list_is_dated_by_the_recent_filings_feed(env, tmp_path, clock):
+    vendor = _vendor(clock)
+    serve_holders(vendor, ALPHA, "2024-03-31", [
+        holder(MANAGER_A, CLASS_A, "2024-03-31", A1, 100.0),
+        holder(MANAGER_B, CLASS_A, "2024-03-31", B1, 40.0),  # an amendment filed after day 45
+    ])
+    # /api/filings answers both managers with HTTP 400 "CIK not found": no filing list
+    for manager in (MANAGER_A, MANAGER_B):
+        vendor.bodies.pop(key(FILINGS, cik=manager, type="13F-HR"), None)
+    feed = filing(B1, "2024-03-31", "2024-06-03", "2024-06-03T20:30:00Z", True)
+    feed["url"] = f"https://www.sec.gov/Archives/edgar/data/{MANAGER_B}/000000900224000001/primary_doc.xml"
+    vendor.lists["/api/filings/latest"] = [feed]
+    _refresh(tmp_path / "dl", vendor, clock, names=("filings_latest", *THIRTEEN_F))
+
+    panel = _panel(tmp_path, tmp_path / "dl")
+    shares = panel["shares_held"].sel(symbol=CLASS_A)
+    assert shares.sel(timestamp=slice(None, "2024-05-14")).isnull().all()
+    assert float(shares.sel(timestamp="2024-05-15")) == 100.0  # no filing date known: day 45
+    assert float(shares.sel(timestamp="2024-06-03")) == 100.0
+    assert float(shares.sel(timestamp="2024-06-04")) == 140.0  # the feed's amendment, after the close
 
 
 def test_manager_portfolios_are_raw_files_only(env, tmp_path, clock):

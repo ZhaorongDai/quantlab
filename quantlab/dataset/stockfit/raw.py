@@ -543,6 +543,13 @@ MANAGER_13F_FILINGS = "manager_13f_filings"
 #: ``<manager cik>_<quarter end>``.
 MANAGER_PORTFOLIO = "manager_portfolio"
 
+#: The endpoint of the recent-filings feed (``/api/filings/latest?type=...``), one entity per form
+#: type (``13F-HR``, ``DEF-14A``, ...); each pull holds the filings since the one before.
+FILINGS_LATEST = "filings_latest"
+
+#: The feed entity of the 13F holdings reports, amendments included.
+FEED_13F = "13F-HR"
+
 
 def quarter_entity(owner: int | str, quarter: date) -> str:
     """Return the entity of one owner's (a company's or a manager's) pull for one quarter.
