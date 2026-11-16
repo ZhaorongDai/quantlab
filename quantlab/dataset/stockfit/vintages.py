@@ -157,3 +157,37 @@ def observed_versions(pulls: Sequence[tuple[datetime, Mapping[str, ServedRow]]])
             found.append(Version(key, row.filed, row.values, None if filed_since else pulled_at, False))
         previous, previous_day = rows, pd.Timestamp(pulled_at).tz_convert(NEW_YORK).date()
     return found
+
+
+def reported_by(period_end: str | date, filed: date) -> bool:
+    """Return whether a filing of ``filed`` can report the period ending ``period_end``.
+
+    A filing reports periods that ended by its filing date. The vendor
+    sometimes serves a row whose period ends after it (a lease-maturity or
+    facility-schedule row read as a period, ending in a later year): that row
+    is not a period of its filing, and a panel showing a company's latest
+    period must not take it for one, or it would hide every real period until
+    that future date.
+
+    Parameters
+    ----------
+    period_end : str or date
+        The row's period end (ISO string or date).
+    filed : date
+        The row's filing date.
+
+    Returns
+    -------
+    bool
+        ``True`` when the period ended on or before the filing date.
+
+    Examples
+    --------
+    >>> from datetime import date
+    >>> reported_by("2020-12-31", date(2021, 2, 18))
+    True
+    >>> reported_by("2026-12-31", date(2021, 2, 18))
+    False
+    """
+    end = date.fromisoformat(period_end[:10]) if isinstance(period_end, str) else period_end
+    return end <= filed

@@ -17,7 +17,9 @@ trail of what they replaced. Their panels are built here the same way:
   (``quantlab.dataset.stockfit.available``; a pull's day by
   ``available.pull_day``), and on every trading day the panel shows the
   latest fiscal period available by then, in its latest version known that
-  day. A later filing of an older period never replaces a newer one.
+  day. A later filing of an older period never replaces a newer one, and a
+  row whose period ends after its filing date (a maturity or schedule row
+  the vendor serves as a period, ``vintages.reported_by``) is never shown.
 
 ``VersionedPeriodDataset`` is that panel; a subclass says which endpoint it
 reads and how one pull becomes rows (``_period_rows``). ``release_date``
@@ -49,7 +51,7 @@ from quantlab.dataset._support.point_in_time import (
 )
 from quantlab.dataset.stockfit import raw
 from quantlab.dataset.stockfit.available import nyse_calendar, place_released, pull_day
-from quantlab.dataset.stockfit.vintages import ServedRow, Version, observed_versions
+from quantlab.dataset.stockfit.vintages import ServedRow, Version, observed_versions, reported_by
 from quantlab.utils.timer import Timer
 
 #: The variables saying which period a cell shows.
@@ -163,6 +165,7 @@ class VersionedPeriodDataset(ReleasePanelDataset):
             found.extend(
                 (int(cik), version, None if version.seen_at is not None else accepted.get((version.key, version.filed)))
                 for version in observed_versions(pulls)
+                if reported_by(version.key, version.filed)  # else a schedule row, not a period of its filing
             )
         return found
 

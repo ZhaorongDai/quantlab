@@ -250,6 +250,39 @@ def test_a_restated_older_period_never_replaces_the_newer_one_shown(env, tmp_pat
     assert _on(panel, "period_end", "2026-11-18") == pd.Timestamp("2025-12-31").value
 
 
+def test_a_period_ending_after_its_filing_date_never_becomes_the_period_shown(env, tmp_path, clock):
+    vendor = FakeVendor(clock)
+    body = fixture("footnote_backlog_googl")
+    body.append({  # SYNTHETIC: a schedule row the vendor serves as a period, ending years after its filing
+        "period": "2029-12-31", "fiscalYear": 2029, "fiscalPeriod": "FY", "currency": "USD",
+        "remainingPerformanceObligation": 1.0, "dateFiled": "2025-02-05",
+    })
+    vendor.bodies[BACKLOG] = body
+    _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
+    panel = _panel(tmp_path, "backlog", start="2024-06-01")
+
+    assert _on(panel, RPO, "2025-02-05") == 93_200_000_000
+    assert _on(panel, "period_end", "2025-02-05") == pd.Timestamp("2024-12-31").value
+    assert _on(panel, RPO, "2026-02-05") == 242_800_000_000
+
+
+def test_a_restated_older_period_does_not_revive_a_stale_newer_one(env, tmp_path, clock):
+    vendor = FakeVendor(clock)
+    _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
+    restated = fixture("footnote_backlog_googl")
+    restated[1]["remainingPerformanceObligation"] = 1.0  # SYNTHETIC silent restatement of FY2024
+    vendor.bodies[BACKLOG] = restated
+    clock.advance(days=2)
+    _file_report(vendor, clock)
+    _refresh(tmp_path, vendor, clock, ciks=(GOOGL,))
+    _next_day_refresh(tmp_path, vendor, clock)
+    panel = _panel(tmp_path, "backlog", start="2024-06-01", stale_after_days=200)
+
+    assert _on(panel, RPO, "2026-08-21") == 242_800_000_000  # FY2025, released 2026-02-05
+    assert np.isnan(_on(panel, RPO, "2026-09-01"))
+    assert np.isnan(_on(panel, RPO, "2026-11-18"))
+
+
 # -- the vendor's rollups, and the specs as data --------------------------------------
 
 

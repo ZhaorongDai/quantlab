@@ -167,6 +167,23 @@ def test_an_as_reported_value_shows_from_its_filing_flagged_as_possibly_restated
     assert pd.isna(_on(panel, "NetIncomeLoss", "2026-08-10", PLUG))  # Q2 accepted 17:06 on 08-10
 
 
+def test_an_as_reported_period_ending_after_its_filing_date_never_becomes_the_period_shown(env, tmp_path):
+    vendor = FakeVendor(FakeClock())
+    _serve(vendor, "as_reported_quarter", GOOGL, [  # SYNTHETIC
+        {"period": "2026-06-30", "fiscalYear": 2026, "fiscalPeriod": "Q2", "dateFiled": "2026-07-23",
+         "facts": {"us-gaap:NetIncomeLoss": 1.0}, "sources": {}},
+        {"period": "2029-03-31", "fiscalYear": 2029, "fiscalPeriod": "Q1", "dateFiled": "2026-07-23",
+         "facts": {"us-gaap:NetIncomeLoss": 9.0}, "sources": {}},
+        {"period": "2026-09-30", "fiscalYear": 2026, "fiscalPeriod": "Q3", "dateFiled": "2026-10-29",
+         "facts": {"us-gaap:NetIncomeLoss": 2.0}, "sources": {}},
+    ])
+    root = _refresh(tmp_path, vendor, ("as_reported_quarter",), (GOOGL,))
+    panel = _as_reported_panel(tmp_path, root, ("us-gaap:NetIncomeLoss",), start="2026-07-01")
+
+    assert _on(panel, "NetIncomeLoss", "2026-07-23", GOOGL) == 1.0
+    assert _on(panel, "NetIncomeLoss", "2026-10-29", GOOGL) == 2.0
+
+
 def test_a_value_a_re_pull_changes_shows_from_the_pull_day_unflagged(env, tmp_path):
     vendor = _as_reported_vendor()
     root = _refresh(tmp_path, vendor, ("as_reported_quarter",), (PLUG,))
@@ -178,7 +195,7 @@ def test_a_value_a_re_pull_changes_shows_from_the_pull_day_unflagged(env, tmp_pa
     _refresh(tmp_path, vendor, ("filings_latest", "as_reported_quarter"), (PLUG,))
     vendor.clock.advance(days=1)  # a second company's first pull: the raw tier is complete through 2026-11-18
     _refresh(tmp_path, vendor, ("filings_latest", "as_reported_quarter"), (PLUG, GOOGL))
-    panel = _as_reported_panel(tmp_path, root, ("us-gaap:NetIncomeLoss",))
+    panel = _as_reported_panel(tmp_path, root, ("us-gaap:NetIncomeLoss",), start="2026-07-01")
 
     assert _on(panel, "NetIncomeLoss", "2026-11-17", PLUG) == 99_766_000
     assert _on(panel, "may_include_restatement", "2026-11-17", PLUG) == 1.0

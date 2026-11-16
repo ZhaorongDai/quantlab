@@ -46,8 +46,12 @@ in time.
 
 On each day a company shows its latest fiscal period whose values are
 available by then, in its latest known version; a restated older period
-never replaces a newer one. A period released more than
-``stale_after_days`` before the day stops being shown.
+never replaces a newer one. A row whose period ends after its filing date
+is not a period that filing reports (the vendor sometimes serves a lease
+maturity or facility schedule ending years later as a period) and is never
+shown (``quantlab.dataset.stockfit.vintages.reported_by``). A shown
+period's ``release_date`` is the day its shown version became available; it
+stops being shown ``stale_after_days`` after that day.
 
 Examples
 --------
@@ -86,7 +90,7 @@ from quantlab.dataset.config import StockFitFootnoteConfig
 from quantlab.dataset.stockfit import raw
 from quantlab.dataset.stockfit.available import nyse_calendar, pull_day
 from quantlab.dataset.stockfit.raw import as_number
-from quantlab.dataset.stockfit.vintages import ServedRow, observed_versions
+from quantlab.dataset.stockfit.vintages import ServedRow, observed_versions, reported_by
 
 #: The period types a footnote is pulled for, the ``period`` query parameter.
 PERIODS: tuple[str, ...] = StockFitFootnoteConfig.PERIODS
@@ -629,6 +633,8 @@ class StockFitFootnoteDataset(ReleasePanelDataset):
                 years.update({period: year for period, (_, year) in served.items() if year is not None})
                 pulls.append((pulled_at, {period: row for period, (row, _) in served.items()}))
             for order, version in enumerate(observed_versions(pulls)):
+                if not reported_by(version.key, version.filed):
+                    continue  # a maturity or schedule row, not a period its filing reports
                 day = version.filed if version.seen_at is None else pull_day(version.seen_at)
                 records.append({
                     "symbol": int(entity),
@@ -664,7 +670,7 @@ class StockFitFootnoteDataset(ReleasePanelDataset):
                 newest = latest[max(latest)]
                 by_day[row["available"]] = {**{name: newest[name] for name in names},
                                             "symbol": symbol, "available": row["available"],
-                                            "release_date": row["available"]}
+                                            "release_date": newest["available"]}
             shown.extend(by_day.values())
         schema = {
             "symbol": pl.Int64, "available": pl.Datetime("ns"), "release_date": pl.Datetime("ns"),
