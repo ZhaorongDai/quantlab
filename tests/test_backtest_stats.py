@@ -7,7 +7,10 @@ the model layer, the dataset layer or vectorbt. What is locked here:
 
 - ``return_stats`` gives the rows vectorbt's ``ReturnsAccessor.stats`` gave
   (the ``in_sample``, ``out_of_sample`` and ``benchmark`` blocks), equal to
-  the bit, on ordinary, flat, rising, short and gapped series;
+  the bit, on ordinary, flat, rising, short and gapped series; a series
+  without spread has the Sharpe and Sortino ratios of vectorbt 1.2.1 (NaN
+  when flat, ``inf`` signed as the mean when constant), whatever vectorbt is
+  installed;
 - a backtest's ``metrics.json`` rows are the functions' output on its
   simulation and the decided rebalances its run directory records;
 - ``drawdown_span`` picks the deepest of vectorbt's drawdown records of a
@@ -19,6 +22,7 @@ the model layer, the dataset layer or vectorbt. What is locked here:
 
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
@@ -84,12 +88,40 @@ SERIES = {
 }
 
 
+#: The Sharpe and Sortino ratios of the series without spread. vectorbt
+#: before 1.2.1 gave ``inf`` for both on a flat series and a Sharpe ratio of
+#: about 2.4e16 on a constant one, where rounding leaves a tiny standard
+#: deviation; ``return_stats`` follows vectorbt 1.2.1.
+NO_SPREAD = {
+    "flat": {"Sharpe Ratio": float("nan"), "Sortino Ratio": float("nan")},
+    "rising": {"Sharpe Ratio": float("inf"), "Sortino Ratio": float("inf")},
+}
+VECTORBT_BEFORE_1_2_1 = tuple(int(part) for part in version("vectorbt").split(".")[:3]) < (1, 2, 1)
+
+
 @pytest.mark.parametrize("name", sorted(SERIES))
 def test_return_stats_are_vectorbts_returns_stats(name):
     returns = _series(SERIES[name])
-    _assert_same_rows(
-        return_stats(returns, bar_interval=BAR, year_freq=YEAR), _vectorbt_stats(returns)
-    )
+    want = _vectorbt_stats(returns)
+    if VECTORBT_BEFORE_1_2_1:
+        want.update(NO_SPREAD.get(name, {}))
+    _assert_same_rows(return_stats(returns, bar_interval=BAR, year_freq=YEAR), want)
+
+
+@pytest.mark.parametrize(
+    "values, sharpe, sortino",
+    [
+        (np.zeros(20), float("nan"), float("nan")),
+        (np.full(30, 0.001), float("inf"), float("inf")),
+        (np.full(30, -0.001), float("-inf"), -0.001 * 252 / (0.001 * np.sqrt(252))),
+        (np.r_[np.full(10, 0.002), np.nan, np.full(10, 0.002)], float("inf"), float("inf")),
+    ],
+    ids=["flat", "rising", "falling", "rising_with_nan"],
+)
+def test_a_series_without_spread_has_no_finite_sharpe_ratio(values, sharpe, sortino):
+    stats = return_stats(_series(values), bar_interval=BAR, year_freq=YEAR)
+    np.testing.assert_equal(stats["Sharpe Ratio"], sharpe)
+    np.testing.assert_allclose(stats["Sortino Ratio"], sortino, rtol=1e-12)
 
 
 def test_a_runs_metrics_rows_are_the_functions_output(stores):  # noqa: F811

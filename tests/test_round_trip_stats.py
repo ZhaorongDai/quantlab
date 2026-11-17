@@ -12,8 +12,11 @@ same rows from its own fills, adding the cash a position received while open
   position trade view,
   on fixtures with shorts, reversals, partial closes, adds, fees and
   positions still open at the end, and on a quantlab run's ``whole`` block.
-- **Gross exposure.** ``exposure_stats`` gives vectorbt's ``Max Gross
-  Exposure [%]`` from the fills, the valuation prices and the cash balance.
+- **Gross exposure.** ``exposure_stats`` gives the largest summed absolute
+  position value over the portfolio's value, vectorbt's ``Max Gross
+  Exposure [%]`` since 1.2.1, from the fills, the valuation prices and the
+  cash balance; it is checked against vectorbt's position and portfolio
+  values, which every version agrees on, and equals a quantlab run's row.
 - **Cash flows.** A flow is added to the PnL and the return of the round
   trip holding the symbol on its bar; a flow on a bar where the symbol is
   flat is refused.
@@ -272,7 +275,7 @@ def test_a_fill_off_the_close_axis_is_refused():
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2, 3])
-def test_target_percent_long_short_fills_give_vectorbts_max_gross_exposure(seed):
+def test_target_percent_long_short_fills_give_their_max_gross_exposure(seed):
     rng = np.random.default_rng(seed)
     n_bars, n_symbols = 40, 5
     bars = pd.date_range("2024-01-01", periods=n_bars, freq="1D")
@@ -292,9 +295,13 @@ def test_target_percent_long_short_fills_give_vectorbts_max_gross_exposure(seed)
     )
     cash = xr.DataArray(portfolio.cash().to_numpy(), dims="timestamp", coords={"timestamp": bars})
     got = exposure_stats(_fills(portfolio), xr.DataArray(close, dims=("timestamp", "symbol")), cash)
-    want = portfolio.stats(metrics=["max_gross_exposure"], silence_warnings=True)
+    # vectorbt's gross exposure since 1.2.1, built from the values every
+    # version reports alike.
+    gross = portfolio.asset_value(group_by=False).abs().sum(axis=1).to_numpy()
+    want = np.max(gross / portfolio.value().to_numpy()) * 100
     assert list(got) == ["Max Gross Exposure [%]"]
-    np.testing.assert_allclose(got["Max Gross Exposure [%]"], want.iloc[0], rtol=1e-12)
+    np.testing.assert_allclose(got["Max Gross Exposure [%]"], want, rtol=1e-12)
+    assert want > 50
 
 
 def test_a_cash_flow_on_the_entry_bar_is_not_the_new_round_trips():
