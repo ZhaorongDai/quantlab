@@ -327,8 +327,8 @@ StockFit serves today. Their panels share one rule
   (`may_include_restatement = 0`), so from a company's first pull on the history is point in time.
 - Each day shows the latest fiscal period available by then. `release_date` and `period_end` say
   which period that is. A later filing of an older period never replaces a newer one.
-- A row whose period ends after its filing date is not a period that filing reports (StockFit
-  sometimes serves a maturity or schedule row as a period ending years later) and is never shown.
+- A row whose period ends after its filing date is not a period that filing reports and is never
+  shown.
 
 | Dataset | Endpoints | What a store holds | Placed at |
 |---|---|---|---|
@@ -434,9 +434,7 @@ line:
 reported it, on that day; footnotes carry no acceptance time) until a newer period replaces them; a
 restated older period never replaces a newer one, and a period whose shown version became
 available more than `stale_after_days` (400 by default) before the day is not shown. A row whose
-period ends after its filing date (a lease maturity or facility schedule StockFit serves as a period
-ending years later) is not a period of that filing and is never shown: taken for the latest period,
-it would hide every real period until that future date. StockFit keeps no restatement
+period ends after its filing date is not a period of that filing and is never shown. StockFit keeps no restatement
 history for footnotes: it serves each period's latest values. **Values backfilled from a company's
 first pull may therefore include restatements made after the filing date they are placed at**; the
 panel flags them with `may_include_restatement = 1`. From the first pull on, each pull is compared
@@ -475,9 +473,7 @@ panel["event_earnings"].sel(symbol=1652044)  # Alphabet's CIK
 ```
 
 A company the backfill has not reached yet is not on the panel's axis, so read against a universe
-it is missing, never 0; after its first pull it appears with its whole history. StockFit's filing
-lists have gaps (a company's early 10-Ks can be missing, and a delisted company may list only a few
-filings), so a zero means StockFit lists no filing that day, not that none was made.
+it is missing, never 0; after its first pull it appears with its whole history.
 
 ## Insider transactions
 
