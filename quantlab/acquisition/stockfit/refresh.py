@@ -25,6 +25,11 @@ One run, in two steps:
 A pull lands under ``<download-dir>/stockfit/<endpoint>/<entity>/<stamp>/``
 by one rename, or is dropped when it equals the entity's newest pull; the
 entity's watermark moves either way (``quantlab.dataset.stockfit.raw``).
+Once nothing more is due, each per-company or per-fund endpoint none of whose
+pulls was deferred or failed gets a watermark of its own for the day, so a
+panel's calendar (``quantlab.dataset.stockfit.available.nyse_calendar``)
+reaches the day of the refresh although none of the endpoint's entities was
+due.
 
 Running out of the day's requests is not a failure: the run stops sending
 (``StockFitDailyCapReached``) and each endpoint's part says how many pulls it
@@ -73,6 +78,7 @@ from quantlab.acquisition.stockfit.endpoints import (
     filer_cik,
 )
 from quantlab.acquisition.stockfit.planner import EndpointState, EntityState, Job, plan_jobs
+from quantlab.acquisition.stockfit.raw_tier import write_endpoint_watermark
 from quantlab.dataset.stockfit.raw import VENDOR_DIR, last_pulled, pulls, read_pull
 
 #: The errors that skip one entity; its endpoint's other entities still run.
@@ -209,12 +215,27 @@ def refresh_raw_tier(
             for name, count in planned.deferred.items():
                 tallies[name].deferred += count
         if not fresh:
+            _mark_current(others, tallies, vendor_root, client.now().date())
             break
         tried.update((job.endpoint, job.entity) for job in fresh)
         capped = _run(fresh, by_name, tallies, client, vendor_root)
         if planned.deferred:
             break
     return RawTierRefreshResult("stockfit", tuple(tally.part(name) for name, tally in tallies.items()))
+
+
+def _mark_current(endpoints: list[Endpoint], tallies: dict[str, _Tally], vendor_root: Path, today: date) -> None:
+    """Record each endpoint whose due entities were all pulled as current through ``today``.
+
+    Called once nothing more is due: an endpoint none of whose pulls was
+    deferred, refused or failed holds what the vendor serves today, so the
+    panels reading it end where the endpoints pulled today end, though no
+    entity of it was due.
+    """
+    for endpoint in endpoints:
+        tally = tallies[endpoint.name]
+        if not (tally.deferred or tally.refused is not None or tally.skipped):
+            write_endpoint_watermark(vendor_root, endpoint.name, today)
 
 
 def _run(jobs: list[Job], endpoints: dict[str, Endpoint], tallies: dict[str, _Tally], client, vendor_root) -> bool:

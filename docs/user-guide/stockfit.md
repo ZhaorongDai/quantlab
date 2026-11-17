@@ -225,7 +225,9 @@ So a 10-Q accepted at 16:30 is not on that day's bar; one accepted at 15:59 is. 
 NYSE's trading days through the day before the oldest of the newest pulls of the endpoints it reads
 ({py:func}`~quantlab.dataset.stockfit.available.nyse_calendar`): a refresh made on a day holds every
 filing public by the previous close. The daily refresh re-pulls only what a filing touched, so a
-company not re-pulled since its last pull is taken to be unchanged.
+company not re-pulled since its last pull is taken to be unchanged. A refresh that pulled every
+entity due of an endpoint, none deferred or failed, also records the endpoint as current through its
+day, so a panel still reaches that day when no entity of the endpoint was due.
 
 ## Statement panels
 

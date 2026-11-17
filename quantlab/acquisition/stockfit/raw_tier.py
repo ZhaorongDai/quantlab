@@ -33,11 +33,12 @@ import hashlib
 import json
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from quantlab.dataset.stockfit.raw import (
     MANIFEST_FILE,
+    endpoint_watermark_file,
     newest_pull_dir,
     page_name,
     pending_dir,
@@ -194,3 +195,20 @@ def write_entity_watermark(vendor_root: str | Path, endpoint: str, entity: str, 
         pulled_at.astimezone(UTC).date(),
         {"endpoint": endpoint, "entity": entity, "pulled_at": pull_stamp(pulled_at)},
     )
+
+
+def write_endpoint_watermark(vendor_root: str | Path, endpoint: str, through: date) -> None:
+    """Record that a refresh on ``through`` (UTC) found none of the endpoint's entities due.
+
+    Read back through ``quantlab.dataset.stockfit.raw.newest_watermark``.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> from quantlab.dataset.stockfit.raw import newest_watermark
+    >>> root = tempfile.mkdtemp()
+    >>> write_endpoint_watermark(root, "income_statement_quarter", date(2026, 11, 17))
+    >>> newest_watermark(root, "income_statement_quarter")
+    datetime.date(2026, 11, 17)
+    """
+    write_watermark(endpoint_watermark_file(vendor_root, endpoint), through, {"endpoint": endpoint})

@@ -216,8 +216,10 @@ def nyse_calendar(
 
     That is the day before the oldest of their newest watermarks (each the
     UTC day of the latest pull of any of the endpoint's entities, published
-    or not): a refresh made on a day holds every row public by the close of
-    the day before, whatever time it ran.
+    or not, or of the latest refresh that found none of them due,
+    ``quantlab.dataset.stockfit.raw.newest_watermark``): a refresh made on a
+    day holds every row public by the close of the day before, whatever
+    time it ran.
 
     Parameters
     ----------

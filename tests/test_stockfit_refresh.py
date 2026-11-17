@@ -9,6 +9,7 @@ through ``quantlab.dataset.stockfit.raw``, the module that owns the layout.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import pytest
 from loguru import logger
@@ -269,3 +270,31 @@ def test_the_data_dictionaries_land_raw_and_an_unchanged_list_is_dropped(env, tm
     assert len(raw.pulls(root, "symbol_sectors", "all")) == 1
     assert raw.read_watermark(root, "symbol_sectors", "all") == clock.now().date()
     assert len(vendor.requested("/api/executives/officers")) == 1
+
+
+def test_an_endpoint_with_nothing_due_is_current_through_the_day_of_the_refresh(env, tmp_path, clock):
+    from quantlab.dataset.stockfit import raw
+
+    vendor = FakeVendor(clock)
+    _refresh(tmp_path, vendor, clock)
+    clock.advance(days=1)  # the statements are re-pulled weekly: nothing is due today
+    result = _refresh(tmp_path, vendor, clock)
+
+    root = tmp_path / "stockfit"
+    assert "nothing due" in result.summary()
+    assert raw.read_watermark(root, "income_statement_quarter", str(PLUG)) == clock.now().date() - timedelta(days=1)
+    # the panels' calendar reads the endpoint as current through today, not through yesterday's pulls
+    assert raw.newest_watermark(root, "income_statement_quarter") == clock.now().date()
+
+
+def test_an_endpoint_whose_pulls_were_deferred_or_failed_stays_at_its_last_pull(env, tmp_path, clock):
+    from quantlab.acquisition.stockfit.refresh import refresh_raw_tier
+    from quantlab.dataset.stockfit import raw
+
+    refresh_raw_tier(tmp_path, client=_client(FakeVendor(clock, per_day=5), clock, day_reserve=1))
+    root = tmp_path / "stockfit"
+    assert raw.newest_watermark(root, "income_statement_annual") is None
+
+    vendor = FakeVendor(clock, replies=[(500, b"oops")] * 50)
+    _refresh(tmp_path, vendor, clock, endpoints=["income_statement_quarter"], ciks=[PLUG])
+    assert raw.newest_watermark(root, "income_statement_quarter") is None

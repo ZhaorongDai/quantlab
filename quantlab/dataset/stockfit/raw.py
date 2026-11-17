@@ -20,7 +20,9 @@ directory, which nothing reads, and appears by one directory rename, so a
 pull directory is always a whole pull (ADR 0053). A pull whose content equals
 the entity's newest pull is not published: only the entity's watermark
 (``_watermark.json``, the UTC day of the last pull) moves. So the pulls of an
-entity are the changes the vendor made to it, each kept.
+entity are the changes the vendor made to it, each kept. An endpoint's own
+``_watermark.json`` records the last day a refresh found none of its
+entities due.
 
 The writer (``quantlab.acquisition.stockfit.raw_tier``) takes every path from
 here; the readers are ``pulls``, ``read_pull``, ``read_pull_as_of``,
@@ -504,12 +506,23 @@ def daily_supported(vendor_root: str | Path) -> list[str]:
     return [str(ticker) for ticker in read_pull(vendor_root, FUND_DAILY_SUPPORTED, WHOLE_LIST)]
 
 
-def newest_watermark(vendor_root: str | Path, endpoint: str) -> date | None:
-    """Return the latest watermark among an endpoint's entities: the last UTC day it was pulled.
+def endpoint_watermark_file(vendor_root: str | Path, endpoint: str) -> Path:
+    """Return the endpoint's own watermark: the UTC day a refresh last found none of its entities due.
 
-    Every entity counts, its pull published or not (an entity the vendor
-    holds nothing for still has a watermark). ``None`` if the endpoint was
-    never pulled.
+    >>> endpoint_watermark_file("/d/stockfit", "income_statement_quarter").as_posix()
+    '/d/stockfit/income_statement_quarter/_watermark.json'
+    """
+    return endpoint_dir(vendor_root, endpoint) / WATERMARK_FILE
+
+
+def newest_watermark(vendor_root: str | Path, endpoint: str) -> date | None:
+    """Return the last UTC day the endpoint is known current through.
+
+    The latest of its entities' watermarks (each the last UTC day the
+    entity was pulled, published or not: an entity the vendor holds nothing
+    for still has one) and of the endpoint's own (the last day a refresh
+    pulled every entity due and found nothing left, see
+    ``endpoint_watermark_file``). ``None`` if the endpoint was never pulled.
 
     Examples
     --------
@@ -524,6 +537,8 @@ def newest_watermark(vendor_root: str | Path, endpoint: str) -> date | None:
         if path.is_dir() and not path.name.startswith((".", "_"))
         and (day := read_watermark(vendor_root, endpoint, path.name)) is not None
     ]
+    if (own := _read_watermark(endpoint_watermark_file(vendor_root, endpoint))) is not None:
+        days.append(own)
     return max(days, default=None)
 
 
