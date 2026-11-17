@@ -8,6 +8,21 @@ compatibility shims or config migrations.
 
 ### Added
 
+- StockFit (`stockfit`), a vendor of SEC-filing data, usable with only its key
+  (`STOCKFIT_API_KEY`). `quantlab.acquisition.stockfit.refresh.refresh_raw_tier` keeps its raw tier
+  under `<download-dir>/stockfit/` current within the daily request limit: a backfill that resumes
+  across days, then only what new filings touched. Point-in-time panels keyed by CIK are built in
+  `quantlab.dataset.stockfit`: statements (as known and TTM), as-reported facts, footnotes, derived
+  metrics, scores and trends, filings, insider transactions, 13D/13G stakes, executives, corporate
+  and declared events, Congress trades, listings, earnings consensus, IPOs, offerings, the filing
+  calendar, news counts, 13F holdings (keyed by CUSIP) and funds (keyed by fund series). See the
+  StockFit guide.
+- SEC EDGAR (`sec_edgar`): `quantlab.acquisition.sec_edgar.refresh_raw_tier` keeps EDGAR's quarterly
+  full indexes under `<download-dir>/sec_edgar/` (needs `SEC_EDGAR_USER_AGENT`), and
+  `quantlab.dataset.sec_edgar.filing_dates` reads each filing's date from them; the StockFit 13F
+  holdings panel dates filings by it.
+- `CikMapDataset` (`quantlab.dataset.sharadar.cik_map`) reads a company panel keyed by CIK on
+  Sharadar's permaticker axis, through the CIK of each security in Sharadar's ticker table.
 - `tables.latest_bulk(vendor_root, code)`, the path of a table's newest Sharadar bulk pull, for
   code outside the library that reads it directly.
 - `tables.resume_day(vendor_root, code)`: a table's watermark, or the day of its bulk when a pull
@@ -16,6 +31,10 @@ compatibility shims or config migrations.
 
 ### Changed
 
+- The point-in-time release panels are vendor-neutral: `TradingCalendar`, `ReleaseSpec`,
+  `ReleasePanelDataset`, `as_of`, `on_grid`, `shown_symbols` and `to_panel` moved from
+  `quantlab.dataset.sharadar.point_in_time` to `quantlab.dataset._support.point_in_time`. The
+  Sharadar module keeps SEP's calendar (`sep_calendar`) and `SepReleasePanelDataset`.
 - Massive's REST pull shapes moved from `MassiveClient` to `quantlab.acquisition.massive.shapes`.
   `RestEndpoint` is now their base class, and each shape has its own config class holding only its
   fields: `DatedEndpoint`, `WindowedEndpoint`, `SnapshotEndpoint`, `AsOfEndpoint`, `IdsEndpoint`
