@@ -24,9 +24,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ubuntu matches the Linux training server; macos (arm64) matches the dev host,
-        # where the darwin-only paths run (OpenMP guard, KunQuant symbol padding).
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-latest tracks the newest runner image; ubuntu-22.04 matches the Linux
+        # training server (its GCC compiles KunQuant's factor graphs); macos (arm64)
+        # matches the dev host, where the darwin-only paths run (OpenMP guard, KunQuant
+        # symbol padding).
+        os: [ubuntu-latest, ubuntu-22.04, macos-latest]
     permissions:
       contents: read
       id-token: write  # OIDC upload to Codecov
@@ -54,7 +56,7 @@ jobs:
 
       - name: Upload coverage to Codecov
         # OIDC authenticates the upload, so the repository needs no Codecov token.
-        # Codecov merges the two operating systems' reports into one figure.
+        # Codecov merges the runners' reports into one figure.
         uses: codecov/codecov-action@v7
         with:
           use_oidc: true
