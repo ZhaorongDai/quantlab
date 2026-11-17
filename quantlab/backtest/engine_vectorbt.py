@@ -25,6 +25,7 @@ from vectorbt.portfolio.enums import SizeType
 
 from quantlab.backtest.base import BaseBacktester, SimulationResult
 from quantlab.execution.rules import FILL_DELAY_BARS, OrderPlan, plan_orders
+from quantlab.runs.backtest_stats import return_stats
 
 #: The order price a settlement at a last valuation of 0.0 is sent at: vectorbt
 #: refuses a price of 0, and at the smallest positive float the trade's cash is
@@ -577,6 +578,13 @@ class VectorBtBacktester(BaseBacktester):
         the two views; the portfolio-level ones (returns, drawdown, ratios,
         exposure, fees, dates and values) are identical. The annualisation
         frequency comes from the market spec.
+
+        Three rows whose definition vectorbt changed in 1.2.1 come from
+        ``quantlab.runs.backtest_stats`` instead, so they do not depend on the
+        installed vectorbt: ``Max Gross Exposure [%]`` is the largest summed
+        absolute holding over the portfolio's value, and ``Sharpe Ratio`` and
+        ``Sortino Ratio`` are ``return_stats``'s, which give a constant
+        series no spread.
         """
         year_freq = self.MARKET.year_freq(simulation.bar_interval)  # type: ignore[union-attr]
         portfolio = simulation.native.replace(trades_type="positions")  # type: ignore[union-attr]
@@ -584,8 +592,15 @@ class VectorBtBacktester(BaseBacktester):
             metrics=list(self.STATS_METRICS),
             settings=dict(year_freq=year_freq),
             silence_warnings=True,
+        ).to_dict()
+        returns = return_stats(
+            simulation.returns, bar_interval=simulation.bar_interval, year_freq=year_freq
         )
-        return stats.to_dict()
+        holdings = np.abs(np.asarray(simulation.holdings.values, dtype=np.float64))
+        stats["Max Gross Exposure [%]"] = float(np.nansum(holdings, axis=1).max()) * 100
+        stats["Sharpe Ratio"] = returns["Sharpe Ratio"]
+        stats["Sortino Ratio"] = returns["Sortino Ratio"]
+        return stats
 
     def _report_notes(self) -> list[str]:
         """Return the base notes plus the trade-view and drawdown-marker notes.

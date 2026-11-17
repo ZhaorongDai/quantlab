@@ -309,15 +309,22 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: inside 48 bars, so both formulas agree), and the reports' hover texts state the
 #: new definitions. #315 added the attribution block's `relative_to_universe` to
 #: the four model runs' metrics.json; without it their bytes are the ones before.
+#: The three long-short runs (long_short_delisting, weights, weights_benchmark)
+#: were re-recorded, with their reports without holdings, when ``Max Gross
+#: Exposure [%]`` became the summed absolute holding over the portfolio's value,
+#: vectorbt's definition since 1.2.1, computed by quantlab whatever vectorbt is
+#: installed (100.19% for 102.73% on the weights runs, 105.59% for 102.95% on
+#: the long-short run); nothing else moved, and the long-only and run_cv bytes
+#: did not change.
 EXPECTED: dict[str, str] = {
     "run_long_only_benchmark/report.html": "07b54704ddf93aff3e5fa07147cfc0ac961cf2545118811584a501898d005f4f",
     "run_long_only_benchmark/metrics.json": "7a47c7e6b252b22784792d033878219752397b6b1bc9530325f5f18ce44d1850",
-    "run_long_short_delisting/report.html": "a1421e7fc44684bcad16c8fc6d7ab8bd607ecacf9966466371bd87b22fefad2a",
-    "run_long_short_delisting/metrics.json": "f323ff04cb16ebd0316b8298b86e39d14a1d447fbc94151ec33babdd3212a75b",
-    "run_weights_benchmark/report.html": "40c755f3d477d5de738a12ed498aaaf68db1a96285556ac752116de4d2ecb784",
-    "run_weights_benchmark/metrics.json": "3f305680e5fdb3306df41c15e048c71094872eada67a1368bbd963ba31366dbd",
-    "run_weights/report.html": "816972d0dcf921cee3d869d7e30e390a7a0dc0b5879f4f2e537a80e88aeb1f48",
-    "run_weights/metrics.json": "b263a751733a6c054d03b557a86d6a9f69200a7d1cdcc8b13f598cc3f79874b4",
+    "run_long_short_delisting/report.html": "9ed16cc1fd6f5841da3eb28e15fe6b6953eeef81020ffe8b3f1e1cf3c9800e69",
+    "run_long_short_delisting/metrics.json": "89fb3857a8385a61426b4500110f83f1f2dc23adbfb004fe27239a8804a5a471",
+    "run_weights_benchmark/report.html": "8717fa2720ae066130e1846dca5f776acf693fb01d09ca67144d9670384b7d57",
+    "run_weights_benchmark/metrics.json": "e4e2737f39741cd366d78d457ad42917a73b8a3fb3fb706bf7b8300599a2187b",
+    "run_weights/report.html": "a7481a9607dd44cc797fbd7854427de28f76ff3dc604cbee2dffc2507b385907",
+    "run_weights/metrics.json": "dcd83d06ee58f1bd084d1cb110744ff6720b995cd2fb1879f8f90f7a55e1a545",
     "run_cv_benchmark/report.html": "c273e52dff3a4ff3ac8c99f3c22fab7136b6b0482c5bb2210a21d056393a566a",
     "run_cv_benchmark/metrics.json": "e4647a2efeded8bbd9d080a6084f67a91ac686ed36f179c75c42a077dd700b4b",
     "run_cv/report.html": "a2c27db8c8c8c9b20232909e1ae5a983ee994cd1450e990314d4b31930c60ac1",
@@ -328,12 +335,13 @@ EXPECTED: dict[str, str] = {
 #: The six reports as they were before the Holdings tab (#225), the hashes
 #: recorded for #215. A report written without holdings must still be these
 #: bytes; the two run_cv reports differ from them in their run_cv note alone
-#: (ADR 0033).
+#: (ADR 0033), and the three long-short reports in their max gross exposure
+#: alone (see above).
 WITHOUT_HOLDINGS: dict[str, str] = {
     "run_long_only_benchmark/report.html": "fb5a53725d966c9842b08e4ea5602bbee86d545b53ff531528e8054ad18ed343",
-    "run_long_short_delisting/report.html": "cd3369137f5a5d0ba802c2d359d595cd48097f3e1435c0197e80c97e0cc9dad2",
-    "run_weights_benchmark/report.html": "4ff31faeb0bf34241826527d22801654c11ee5d0e68e3d1dc6adae5d2ee5af3a",
-    "run_weights/report.html": "488d2bad3e4edaf8c040c37b7583f5f542650c08adaff6927aecd75e64bb6976",
+    "run_long_short_delisting/report.html": "e7cd19781ce3f06848e68886fc90b26a8ac1d23a9bbc2afde64bd3a460b55922",
+    "run_weights_benchmark/report.html": "27ed088f6b77094d5c0dc52ea0ece5a297490404320c954f923f6f1243f603e6",
+    "run_weights/report.html": "651d9b421fdee733ea3098e60ecc45b8a88d08d2d36e1cac3256070b0fc775ba",
     "run_cv_benchmark/report.html": "4286a0dd94205bd8902e0fedb58498ae1212398a8a75e654e3bdca0332495b76",
     "run_cv/report.html": "eec70caa37d5913c073c5391e59df4a6e4149d48e38ade93cee779517276a845",
 }

@@ -15,7 +15,7 @@ numbers are comparable.
 The module imports only numpy, pandas and xarray: no quantlab model or
 dataset layer, no vectorbt and no torch, so importing it is cheap and drags
 in no simulation engine. ``return_stats`` reimplements vectorbt's
-``ReturnsAccessor.stats`` (vectorbt 1.1) to the bit: every sum and product
+``ReturnsAccessor.stats`` (vectorbt 1.2.1) to the bit: every sum and product
 is accumulated in index order, as vectorbt's compiled kernels do, rather than
 with numpy's pairwise reductions, which round differently in the last bits.
 
@@ -149,6 +149,12 @@ def _nanmean(values: np.ndarray) -> float:
     return _seq_sum(kept) / kept.size
 
 
+def _is_constant(values: np.ndarray) -> bool:
+    """Whether the non-NaN values are all equal."""
+    kept = values[~np.isnan(values)]
+    return bool(kept.size == 0 or (kept == kept[0]).all())
+
+
 def _nanstd(values: np.ndarray, ddof: int) -> float:
     """The standard deviation of the non-NaN values, as vectorbt's ``nanstd_1d_nb``."""
     kept = values[~np.isnan(values)]
@@ -247,6 +253,10 @@ def return_stats(
     - ``Sharpe Ratio`` (mean over standard deviation times ``sqrt(ann)``),
       ``Calmar Ratio``, ``Omega Ratio`` and ``Sortino Ratio`` with a zero
       risk-free rate and required return; ``inf`` when the denominator is 0.
+      A constant series has no spread, whatever rounding leaves in its
+      standard deviation: its Sharpe ratio is NaN when the mean is 0 and
+      ``inf`` signed as the mean otherwise, and a Sortino ratio without
+      downside is NaN when the mean is 0 (vectorbt 1.2.1 and later).
     - ``Skew`` and ``Kurtosis`` (pandas, bias-corrected), ``Tail Ratio``
       (95th over 5th percentile, absolute), ``Common Sense Ratio`` (tail
       ratio times one plus the annualized return) and ``Value at Risk``
@@ -317,7 +327,11 @@ def return_stats(
         sharpe = nan
     else:
         std = _nanstd(r, 1)
-        sharpe = inf if std == 0.0 else _nanmean(r) / std * float(np.sqrt(ann))
+        mean = _nanmean(r)
+        if std == 0.0 or (not np.isnan(std) and _is_constant(r)):
+            sharpe = nan if mean == 0.0 else float(np.copysign(inf, mean))
+        else:
+            sharpe = mean / std * float(np.sqrt(ann))
 
     curve = growth * 100.0
     worst = float(np.min(curve / np.maximum.accumulate(curve) - 1))
@@ -340,7 +354,11 @@ def return_stats(
     else:
         downside = np.where(r > 0, 0.0, r)
         downside_risk = float(np.sqrt(_nanmean(downside**2)) * np.sqrt(ann))
-        sortino = inf if downside_risk == 0.0 else _nanmean(r) * ann / downside_risk
+        average = _nanmean(r) * ann
+        if downside_risk == 0.0:
+            sortino = nan if average == 0.0 else inf
+        else:
+            sortino = average / downside_risk
 
     kept = r[~np.isnan(r)]
     if kept.size:
@@ -1217,13 +1235,12 @@ def exposure_stats(fills: xr.Dataset, close: xr.DataArray, cash: xr.DataArray) -
 
     Gross exposure on a bar is the summed absolute value of the positions
     held after it (each position marked at its forward-filled ``close``)
-    over that sum plus the *free* cash, and the row is its maximum over the
-    bars, in percent (0 on a bar where the denominator is 0). Free cash is
-    vectorbt's: the cash balance minus twice the short debt, the debt being
-    what the open shorts were sold for (a cover repays its share of it at
-    the average short price). Without shorts it is the cash, so the row is
-    the largest share of the portfolio's value held in positions. On a
-    vectorbt run's own fills and cash the row equals vectorbt's to rounding.
+    over the portfolio's value (the cash plus the signed position values),
+    and the row is its maximum over the bars, in percent (0 on a bar where
+    the value is 0). It is the share of the portfolio's value held long plus
+    short, vectorbt's definition since 1.2.1 (earlier versions divided by the
+    gross plus the cash net of twice the short debt, which differs only with
+    shorts open).
 
     Parameters
     ----------
@@ -1265,38 +1282,13 @@ def exposure_stats(fills: xr.Dataset, close: xr.DataArray, cash: xr.DataArray) -
     """
     timestamps, symbols, marks = _close_axes(close)
     position_change = np.zeros(marks.shape, dtype=np.float64)
-    debt_change = np.zeros(marks.shape, dtype=np.float64)
     if _entries(fills):
         bar, column = _locate(fills, timestamps, symbols, "fill")
-        ts = np.asarray(fills["timestamp"].values)
-        sizes = np.asarray(fills["size"].values, dtype=np.float64)
-        prices = np.asarray(fills["price"].values, dtype=np.float64)
-        position = np.zeros(len(symbols))
-        debt = np.zeros(len(symbols))
-        for i in np.lexsort((np.arange(ts.size), bar, column)):
-            col, size = column[i], sizes[i]
-            before = position[col]
-            after = add(before, size)
-            if size > 0 and before < 0:
-                covered = size if after < 0 else abs(before)
-                repaid = covered * (debt[col] / abs(before))
-                debt[col] = add(debt[col], -repaid)
-                debt_change[bar[i], col] -= repaid
-            elif size < 0 and after < 0:
-                shorted = -size if before < 0 else abs(after)
-                debt[col] += shorted * prices[i]
-                debt_change[bar[i], col] += shorted * prices[i]
-            position[col] = after
-            position_change[bar[i], col] += size
-    held = np.cumsum(position_change, axis=0)
-    gross = np.zeros(timestamps.size)
-    for col in range(len(symbols)):
-        gross += np.abs(np.nan_to_num(held[:, col] * marks[:, col]))
-    free = np.asarray(cash.values, dtype=np.float64) - 2 * np.cumsum(debt_change, axis=0).sum(axis=1)
-    exposure = np.zeros(timestamps.size)
-    for i in range(timestamps.size):
-        denominator = add(gross[i], free[i])
-        exposure[i] = 0.0 if denominator == 0 else gross[i] / denominator
+        np.add.at(position_change, (bar, column), np.asarray(fills["size"].values, dtype=np.float64))
+    position_value = np.nan_to_num(np.cumsum(position_change, axis=0) * marks)
+    gross = np.abs(position_value).sum(axis=1)
+    value = np.asarray(cash.values, dtype=np.float64) + position_value.sum(axis=1)
+    exposure = np.divide(gross, value, out=np.zeros_like(gross), where=value != 0.0)
     return {"Max Gross Exposure [%]": float(np.nanmax(exposure)) * 100 if exposure.size else float("nan")}
 
 
