@@ -95,7 +95,9 @@ def test_repeated_runs_on_shared_executors_finish():
     except subprocess.TimeoutExpired:
         pytest.fail("KunQuant runs deadlocked: an executor was destroyed (issue #74)")
     assert done.returncode == 0, done.stderr
-    assert done.stdout.strip() == "finished"
+    # The C++ compiler's own output (a newer GCC warns about the vector flags
+    # it is given) can come before the end marker on stdout.
+    assert done.stdout.strip().splitlines()[-1:] == ["finished"], done.stdout
 
 
 class _ConstructorFinder(ast.NodeVisitor):

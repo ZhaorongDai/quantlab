@@ -38,6 +38,14 @@ compatibility shims or config migrations.
   endpoints kept by date.
 - REST pages, and the directories they land in, are synced to disk (`write_jsonl_atomically`,
   `make_directories_durably`), so a watermark cannot outlive its pages through a power loss.
+- `Max Gross Exposure [%]` is the summed absolute position value over the portfolio's value, as
+  in vectorbt 1.2.1, whatever vectorbt is installed: `exposure_stats` and the vectorbt engine's
+  `whole` block no longer divide by the gross plus the cash net of twice the short debt. Only
+  runs with shorts open change.
+- `return_stats` and the vectorbt engine's `whole` block give a series with no spread the Sharpe
+  ratio of vectorbt 1.2.1: NaN when the mean is 0 and `inf` signed as the mean otherwise, never a
+  large finite number from a rounded standard deviation. A Sortino ratio with no downside is NaN
+  when the mean is 0.
 - A page file where a pull's directory belongs raises `ValueError` instead of reading as no rows.
 
 ### Fixed
