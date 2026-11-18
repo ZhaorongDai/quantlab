@@ -31,6 +31,10 @@ compatibility shims or config migrations.
 
 ### Changed
 
+- `USEquityCrossectionSelectStockVectorBt` is renamed `USEquityVectorBt`, matching `WeightsVectorBt`
+  and `USEquityApproximateBacktest`. A saved run's config names its backtester class, so
+  `BacktestRun.rebuild_backtester` on a run saved under the old name raises until the name in its
+  `config.json` is changed.
 - The point-in-time release panels are vendor-neutral: `TradingCalendar`, `ReleaseSpec`,
   `ReleasePanelDataset`, `as_of`, `on_grid`, `shown_symbols` and `to_panel` moved from
   `quantlab.dataset.sharadar.point_in_time` to `quantlab.dataset._support.point_in_time`. The

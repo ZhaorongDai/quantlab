@@ -47,7 +47,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.runs.backtest_run import BacktestRun
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import GrinoldExpectedReturnConfig, RawExpectedReturnConfig
 from quantlab.portfolio.predefined.expected_return import GrinoldExpectedReturn, RawExpectedReturn
@@ -120,7 +120,7 @@ def _backtester(tmp_path, constructor, *, output_dir=None, fees=0.0, slippage=0.
     if not isinstance(constructor, PortfolioConstructor):
         constructor = constructor(dataset_config)
     return (
-        USEquityCrossectionSelectStockVectorBt(
+        USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=make_stock_dataset(dataset_config),
                 model=model,
@@ -417,7 +417,7 @@ def test_raw_expected_return_on_a_standardized_label_is_refused_when_the_backtes
     optimizer = _optimizer(expected_return=RawExpectedReturn(RawExpectedReturnConfig()))
 
     with pytest.raises(ValueError, match="'fwd_ret_1'.*standardized"):
-        USEquityCrossectionSelectStockVectorBt(
+        USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=make_stock_dataset(dataset_config),
                 model=model,

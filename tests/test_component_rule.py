@@ -342,7 +342,7 @@ def test_a_model_sharing_a_dataset_through_a_flattened_label_rebuilds_shared(sto
 # -- every other component: predictors, portfolio rules, trackers, backtesters (#131) -----
 
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.predefined.weights import WeightsVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig, WeightsBacktestConfig
 from quantlab.portfolio.config import GrinoldExpectedReturnConfig
@@ -391,7 +391,7 @@ def _mean_variance():
 
 
 def _cross_section(stock, tmp):
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=stock,
             model=_model(stock, tmp),

@@ -32,7 +32,7 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.config import ModelConfig
@@ -238,7 +238,7 @@ def main() -> None:
             train_start=day(0), train_end=day(179),
             test_start=day(180), test_end=day(199),
         )
-        long_only = USEquityCrossectionSelectStockVectorBt(
+        long_only = USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=fresh_dataset(prices),
                 model=make_model(root, prices, **dates),
@@ -274,7 +274,7 @@ def main() -> None:
 
         # --- 4. load mode, long/short ----------------------------------------
         checkpoint = result.metrics["trained_checkpoint"]
-        long_short = USEquityCrossectionSelectStockVectorBt(
+        long_short = USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=fresh_dataset(prices),
                 model=make_model(root, prices, **dates),
@@ -312,7 +312,7 @@ def main() -> None:
         )
         cv_model.collect()
         cv_project_dir = cv_model.train_cv(train_periods=100).path
-        cv_backtester = USEquityCrossectionSelectStockVectorBt(
+        cv_backtester = USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=fresh_dataset(prices),
                 model=make_model(root, prices, **dates),

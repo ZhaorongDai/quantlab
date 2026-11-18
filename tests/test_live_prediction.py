@@ -37,7 +37,7 @@ import xarray as xr
 from quantlab.backend.zarr import XrBackend
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.backtest.live import LivePredictionRefused, mirror_new_bars, predict_live_bar
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.dataset.config import ConstituentDatasetConfig, DatasetConfig
 from quantlab.dataset.roster import RosterDataset
 from quantlab.dataset.stock import StockDataset
@@ -156,7 +156,7 @@ class Fixture:
         model.estimate.build(_day(self.bars[40]), _day(last))
 
         self.checkpoint = train_checkpoint(self.model(root / "train"))
-        result = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+        result = USEquityVectorBt(CrossSectionBacktestConfig(
             price_dataset=self.prices(),
             model=MembershipMaskedPredictor(self.model(root / "run_model"), self.membership()),
             model_mode="load", checkpoint=str(self.checkpoint),

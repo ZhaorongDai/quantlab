@@ -50,7 +50,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -123,7 +123,7 @@ def _single_run_config(root: Path, *, benchmark: bool, **overrides) -> CrossSect
 
 
 def _run_long_only_benchmark(root: Path) -> Path:
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         _single_run_config(root, benchmark=True)
     ).run().run_dir
 
@@ -137,7 +137,7 @@ def _run_long_short_delisting(root: Path) -> Path:
         fees=0.002,
         delist_at={"CCC": 42},
     )
-    return USEquityCrossectionSelectStockVectorBt(config).run().run_dir
+    return USEquityVectorBt(config).run().run_dir
 
 
 def _weights(bars: np.ndarray, symbols: list[str]) -> xr.DataArray:
@@ -158,7 +158,7 @@ def _run_weights(root: Path, *, benchmark: bool) -> Path:
     config = _single_run_config(
         root, benchmark=benchmark, model=None, model_mode=None, checkpoint=None
     )
-    backtester = USEquityCrossectionSelectStockVectorBt(config)
+    backtester = USEquityVectorBt(config)
     prices = xr.open_zarr(config.price_dataset.config.zarr_file_path)
     bars = prices.timestamp.values[WINDOW_START : WINDOW_END + 1]
     return backtester.run_weights(_weights(bars, list(prices.symbol.values))).run_dir
@@ -207,7 +207,7 @@ def _run_cv(root: Path, cv_project, *, benchmark: bool) -> Path:
             else None
         ),
     )
-    return USEquityCrossectionSelectStockVectorBt(config).run_cv().run_dir
+    return USEquityVectorBt(config).run_cv().run_dir
 
 
 def normalized(text: str, roots: list[Path]) -> str:
@@ -316,18 +316,22 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: installed (100.19% for 102.73% on the weights runs, 105.59% for 102.95% on
 #: the long-short run); nothing else moved, and the long-only and run_cv bytes
 #: did not change.
+#: Every report, with its report without holdings, was re-recorded when
+#: ``USEquityCrossectionSelectStockVectorBt`` was renamed ``USEquityVectorBt``:
+#: the title and heading name the run directory, which starts with the class
+#: name; nothing else moved.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "07b54704ddf93aff3e5fa07147cfc0ac961cf2545118811584a501898d005f4f",
+    "run_long_only_benchmark/report.html": "f880a88cdc6ce4f0739ccc0f32aaf101b823be8ac2a6721c8e3b63141611a8b5",
     "run_long_only_benchmark/metrics.json": "7a47c7e6b252b22784792d033878219752397b6b1bc9530325f5f18ce44d1850",
-    "run_long_short_delisting/report.html": "9ed16cc1fd6f5841da3eb28e15fe6b6953eeef81020ffe8b3f1e1cf3c9800e69",
+    "run_long_short_delisting/report.html": "4e36348ccf364b201ba6462389754bb842ae2d3a902baab2ab52e0225c6a2acd",
     "run_long_short_delisting/metrics.json": "89fb3857a8385a61426b4500110f83f1f2dc23adbfb004fe27239a8804a5a471",
-    "run_weights_benchmark/report.html": "8717fa2720ae066130e1846dca5f776acf693fb01d09ca67144d9670384b7d57",
+    "run_weights_benchmark/report.html": "f1c03ca8e90e61f03763e5ba883b759879f2eb9f90adb90886a1a48616f4c86d",
     "run_weights_benchmark/metrics.json": "e4e2737f39741cd366d78d457ad42917a73b8a3fb3fb706bf7b8300599a2187b",
-    "run_weights/report.html": "a7481a9607dd44cc797fbd7854427de28f76ff3dc604cbee2dffc2507b385907",
+    "run_weights/report.html": "ff9a3c5f85a49853c420f99bdee25cc6b6efda0ef63634c5e6de49581c3292fa",
     "run_weights/metrics.json": "dcd83d06ee58f1bd084d1cb110744ff6720b995cd2fb1879f8f90f7a55e1a545",
-    "run_cv_benchmark/report.html": "c273e52dff3a4ff3ac8c99f3c22fab7136b6b0482c5bb2210a21d056393a566a",
+    "run_cv_benchmark/report.html": "6a7ff58ec6bc87572c5526ad4fc4f1f411449019befc9aca247715453a13477c",
     "run_cv_benchmark/metrics.json": "e4647a2efeded8bbd9d080a6084f67a91ac686ed36f179c75c42a077dd700b4b",
-    "run_cv/report.html": "a2c27db8c8c8c9b20232909e1ae5a983ee994cd1450e990314d4b31930c60ac1",
+    "run_cv/report.html": "473e89562129841e262214338ec326437974d3468e7216901ce0a8d3b7283278",
     "run_cv/metrics.json": "d6358f0aacd579f909a63dc67065973809927fbe5386d3763cbdf816c69eab1c",
 }
 
@@ -338,12 +342,12 @@ EXPECTED: dict[str, str] = {
 #: (ADR 0033), and the three long-short reports in their max gross exposure
 #: alone (see above).
 WITHOUT_HOLDINGS: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "fb5a53725d966c9842b08e4ea5602bbee86d545b53ff531528e8054ad18ed343",
-    "run_long_short_delisting/report.html": "e7cd19781ce3f06848e68886fc90b26a8ac1d23a9bbc2afde64bd3a460b55922",
-    "run_weights_benchmark/report.html": "27ed088f6b77094d5c0dc52ea0ece5a297490404320c954f923f6f1243f603e6",
-    "run_weights/report.html": "651d9b421fdee733ea3098e60ecc45b8a88d08d2d36e1cac3256070b0fc775ba",
-    "run_cv_benchmark/report.html": "4286a0dd94205bd8902e0fedb58498ae1212398a8a75e654e3bdca0332495b76",
-    "run_cv/report.html": "eec70caa37d5913c073c5391e59df4a6e4149d48e38ade93cee779517276a845",
+    "run_long_only_benchmark/report.html": "8385642abdbfaeefd3dbf89d25b58eaf80272e7265d1ba0a2afb5881da3a0b77",
+    "run_long_short_delisting/report.html": "c38416a6cf8d37625ca8d57e897621924050cbc2c23758af8c7fcfdc82118ace",
+    "run_weights_benchmark/report.html": "9f9ab0e4ea86cbb038d1751a2a31c46fd0c29c89a8a90992d3249fe3584df4b5",
+    "run_weights/report.html": "cde616462a86fb7e07c5f7150d84d5c7a5f4d2539a95e8822455de8b16d3141a",
+    "run_cv_benchmark/report.html": "d6e1bc0f3227f5f720678a8956925729299ba510b4c38435c2f39e350595cbac",
+    "run_cv/report.html": "0cd61be9ad3d01ce1169cec0f5afcb2ca6fd81eb2b6dd8ac0e201f475f8296e3",
 }
 
 

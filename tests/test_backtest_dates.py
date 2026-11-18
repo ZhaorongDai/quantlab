@@ -49,7 +49,7 @@ from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.config import ModelConfig, ModelConfig
 from quantlab.factor.config import PolarsFactorConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.model.collected_panel import FEATURE_DTYPE
 from tests.torch_heads import MeanContextHead
@@ -107,8 +107,8 @@ def _backtester(
     end_bar: int,
     model_mode: str = "load",
     checkpoint=None,
-) -> USEquityCrossectionSelectStockVectorBt:
-    return USEquityCrossectionSelectStockVectorBt(
+) -> USEquityVectorBt:
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(price_config),
             model=model,

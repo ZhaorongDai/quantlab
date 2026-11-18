@@ -74,7 +74,7 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -92,7 +92,7 @@ from tests.backtest_fixtures import (
 N_BARS = 60
 BARS = pd.bdate_range("2024-01-01", periods=N_BARS)
 TRAIN_END_BAR = 24
-MARKET = USEquityCrossectionSelectStockVectorBt.MARKET
+MARKET = USEquityVectorBt.MARKET
 
 # The shared overlapping run: window bars 20..40 overlap the training window
 # (bars 0..22 fitted after the purge, plus a 2-bar label lookahead), and the symbol picked at the first
@@ -166,7 +166,7 @@ def _backtester(
     window_start_bar: int,
     window_end_bar: int,
     **overrides,
-) -> USEquityCrossectionSelectStockVectorBt:
+) -> USEquityVectorBt:
     """A fresh backtester (own datasets and model objects) in load mode."""
     kwargs = dict(
         price_dataset=make_stock_dataset(dataset_config),
@@ -180,7 +180,7 @@ def _backtester(
         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     )
     kwargs.update(overrides)
-    return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs))
+    return USEquityVectorBt(CrossSectionBacktestConfig(**kwargs))
 
 
 def _picked_at(root: Path, start_bar: int) -> str:
@@ -669,8 +669,8 @@ def test_train_mode_records_no_training_data(tmp_path, warnings_sink):
     """
     dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
 
-    def _train_mode(tag: str) -> USEquityCrossectionSelectStockVectorBt:
-        return USEquityCrossectionSelectStockVectorBt(
+    def _train_mode(tag: str) -> USEquityVectorBt:
+        return USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=make_stock_dataset(dataset_config),
                 model=make_model(

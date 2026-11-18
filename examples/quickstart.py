@@ -36,7 +36,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.config import ModelConfig
@@ -191,7 +191,7 @@ def main() -> None:
         # and restores the trained booster from the checkpoint. The label at
         # bar t looks n + 1 bars ahead, so the training data reaches a few bars
         # past train_end; starting at bar 260 keeps the window out of sample.
-        backtester = USEquityCrossectionSelectStockVectorBt(
+        backtester = USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=StockDataset(dataclasses.replace(dataset_config)),
                 model=make_model(root, dataset_config, dates),

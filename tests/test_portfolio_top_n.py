@@ -50,7 +50,7 @@ from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.portfolio.predefined.top_n import TopNConstructor
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.runs.backtest_run import BacktestRun
 from tests.decision_fixtures import decide_panel, schedule
 from tests.backtest_fixtures import FirstFeatureHead, make_model, make_stock_dataset, write_price_store
@@ -615,7 +615,7 @@ def test_a_tied_backtest_reports_the_event_in_metrics_and_the_report(tmp_path):
         start_date=day(0), end_date=day(29), train_start=day(0), train_end=day(24),
         test_start=day(25), test_end=day(29),
     )
-    result = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+    result = USEquityVectorBt(CrossSectionBacktestConfig(
         price_dataset=make_stock_dataset(dataset_config), model=model, model_mode="train",
         start_date=day(30), end_date=day(55), output_dir=str(tmp_path / "runs"),
         rebalance_periods=5, constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),

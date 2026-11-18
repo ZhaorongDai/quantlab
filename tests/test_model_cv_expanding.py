@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.config import ModelConfig
@@ -218,7 +218,7 @@ def test_an_expanding_walk_forward_unit_replays_with_run_cv(tmp_path):
     assert len(cv.folds) == BT_N_FOLDS
     assert {_day(f.fitted_train_window[0]) for f in cv.folds} == {_day(stamps[0])}
 
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=make_model(

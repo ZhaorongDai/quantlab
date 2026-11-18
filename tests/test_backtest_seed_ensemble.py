@@ -25,7 +25,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -74,7 +74,7 @@ def _ensemble(root, dataset_config, bars, *, train_end_bar=24, head=SeededHead):
 
 
 def _backtester(tmp_path, dataset_config, model, bars, *, name, checkpoint=None):
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=model,

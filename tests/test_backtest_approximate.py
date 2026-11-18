@@ -86,7 +86,7 @@ from loguru import logger
 from quantlab.backtest.config import ApproximateBacktestConfig, CrossSectionBacktestConfig
 from quantlab.backtest.predefined.us_equity import (
     USEquityApproximateBacktest,
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.core.component import rebuild
 from quantlab.factor.config import PolarsFactorConfig
@@ -167,7 +167,7 @@ def _run(store, top_n_config: TopNConfig, rebalance_periods: int, tag: str):
         test_start=_day(bars[50]),
         test_end=_day(bars[59]),
     )
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=model,
@@ -438,7 +438,7 @@ def benchmark_case(request, store):
         test_start=_day(bars[50]),
         test_end=_day(bars[59]),
     )
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=model,
@@ -500,7 +500,7 @@ def test_trading_the_same_weights_the_blocks_equal_the_runs(store):
     account = _approximate(
         store, rebalance_periods, cost=0.0, benchmark_dataset=_benchmark_dataset(store)
     ).run(predictions, TopNConstructor(top_n_config))
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             start_date=_day(bars[WINDOW[0]]),
@@ -705,7 +705,7 @@ def _mvo_run(store, constructor, rebalance_periods, tag, n_forward_periods, fees
         test_start=_day(bars[50]),
         test_end=_day(bars[59]),
     )
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=model,
@@ -1294,7 +1294,7 @@ def _tight_run(store, constructor, tag, fees, model=None):
         patch.setattr(cvxpy.Problem, "solve", _tightly_solved(cvxpy.Problem.solve))
         if model is None:
             return _mvo_run(store, constructor, 1, tag, 1, fees=fees)
-        return USEquityCrossectionSelectStockVectorBt(
+        return USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=make_stock_dataset(dataset_config),
                 model=model,

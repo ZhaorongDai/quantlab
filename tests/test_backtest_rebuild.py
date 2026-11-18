@@ -42,7 +42,7 @@ from loguru import logger
 import quantlab.core.component as component_rule
 from quantlab.backtest.base import BaseBacktester
 import quantlab.core.component as component_rule
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.config import ModelConfig
@@ -128,7 +128,7 @@ def _backtester(
     model_mode: str = "load",
     checkpoint=None,
     **overrides,
-) -> USEquityCrossectionSelectStockVectorBt:
+) -> USEquityVectorBt:
     kwargs = dict(
         price_dataset=make_stock_dataset(dataset_config),
         model=make_model(root / "backtest", dataset_config, **_model_dates()),
@@ -144,7 +144,7 @@ def _backtester(
         init_cash=INIT_CASH,
     )
     kwargs.update(overrides)
-    return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs))
+    return USEquityVectorBt(CrossSectionBacktestConfig(**kwargs))
 
 
 def _trained(root: Path):
@@ -155,7 +155,7 @@ def _trained(root: Path):
     return dataset_config, checkpoint
 
 
-def _rebuilt(run_dir: Path, **overrides) -> USEquityCrossectionSelectStockVectorBt:
+def _rebuilt(run_dir: Path, **overrides) -> USEquityVectorBt:
     """The backtester a run directory records, rebuilt through `BacktestRun`."""
     return BacktestRun.open(run_dir).rebuild_backtester(**overrides)
 
@@ -174,7 +174,7 @@ def _fingerprint_warnings(messages: list[str]) -> list[str]:
     return [m for m in messages if FINGERPRINT_WARNING in m]
 
 
-def _cv_original(tmp_path: Path) -> USEquityCrossectionSelectStockVectorBt:
+def _cv_original(tmp_path: Path) -> USEquityVectorBt:
     """The run_cv setup: a CV-sized store, a `train_cv` project, and a backtester over it.
 
     Writes `CV_N_BARS` bars, trains one `train_cv` project (its walk-forward unit), and returns a backtester pointed at that
@@ -194,7 +194,7 @@ def _cv_original(tmp_path: Path) -> USEquityCrossectionSelectStockVectorBt:
     trainer.collect()
     cv = trainer.train_cv(train_periods=CV_TRAIN_PERIODS)
 
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
@@ -226,7 +226,7 @@ def test_rebuilt_backtester_has_the_same_class_config_class_and_config(tmp_path)
 
     rebuilt = component_rule.rebuild(saved, expected=BaseBacktester)
 
-    assert type(rebuilt) is USEquityCrossectionSelectStockVectorBt
+    assert type(rebuilt) is USEquityVectorBt
     assert type(rebuilt.config) is CrossSectionBacktestConfig
     assert type(rebuilt.config.model.config) is ModelConfig
     assert rebuilt.expected_fingerprint is None
@@ -724,7 +724,7 @@ def test_run_cv_rebuild_names_the_fold_whose_data_changed(tmp_path, warning_mess
     changed = _fingerprint_warnings(warning_messages)
     named = {i for i in range(len(first.folds)) if any(f"fold {i}:" in m for m in changed)}
     assert named == {3, 4}, changed
-    assert any(m.startswith("USEquityCrossectionSelectStockVectorBt: data") for m in changed)
+    assert any(m.startswith("USEquityVectorBt: data") for m in changed)
 
 
 # --------------------------------------------------------------- shared components

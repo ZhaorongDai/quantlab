@@ -46,7 +46,7 @@ import xarray as xr
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import (
@@ -86,7 +86,7 @@ def test_run_load_mode_end_to_end_long_only(tmp_path):
         make_model(tmp_path / "train", dataset_config, **model_dates)
     )
 
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
@@ -180,6 +180,6 @@ def test_run_load_mode_end_to_end_long_only(tmp_path):
     assert "Benchmark Return [%]" not in metrics["whole"]
 
     # --- the recipe ----------------------------------------------------------
-    assert type(run.rebuild_backtester()) is USEquityCrossectionSelectStockVectorBt
+    assert type(run.rebuild_backtester()) is USEquityVectorBt
     assert type(run.rebuild("model")).__qualname__ == "FirstFeatureHead"
     assert type(run.rebuild("price_dataset")).__name__ == "StockDataset"

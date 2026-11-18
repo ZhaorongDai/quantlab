@@ -6,7 +6,7 @@ it keeps the architecture plan 03.7-01 built from eroding silently. The layer is
 - `BaseBacktester` (`quantlab/backtest/base.py`) -- the ONLY home of `run()`;
 - `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`) -- the engine
   layer, still abstract;
-- `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`)
+- `USEquityVectorBt` (`quantlab/backtest/predefined/us_equity.py`)
   -- a named composition of a market spec, a selector and an engine.
 
 What is locked here, the decision each lock enforces, and what turns it red:
@@ -65,7 +65,7 @@ import pytest
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.backtest.base import BaseBacktester
 from quantlab.backtest.config import BacktestConfig
@@ -118,7 +118,7 @@ def test_abstract_method_sets_are_exact():
     assert VectorBtBacktester.__abstractmethods__ == frozenset(
         {"config_cls", "_generate_signals"}
     )
-    assert USEquityCrossectionSelectStockVectorBt.__abstractmethods__ == frozenset()
+    assert USEquityVectorBt.__abstractmethods__ == frozenset()
 
 
 def test_run_lives_only_on_base_backtester():
@@ -131,7 +131,7 @@ def test_run_lives_only_on_base_backtester():
     for entry in _ENTRY_POINTS:
         assert entry in vars(BaseBacktester), entry
 
-    mro = USEquityCrossectionSelectStockVectorBt.__mro__
+    mro = USEquityVectorBt.__mro__
     above = mro[: mro.index(BaseBacktester)]
     assert above, "the concrete backtester must inherit from BaseBacktester"
 
@@ -184,11 +184,11 @@ def test_backtest_configs_are_constructed_with_their_own_classes():
     with pytest.raises(
         TypeError,
         match=(
-            r"^USEquityCrossectionSelectStockVectorBt requires a "
+            r"^USEquityVectorBt requires a "
             r"CrossSectionBacktestConfig, got BacktestConfig$"
         ),
     ):
-        USEquityCrossectionSelectStockVectorBt(config)
+        USEquityVectorBt(config)
 
 
 # --------------------------------------------------------------------------

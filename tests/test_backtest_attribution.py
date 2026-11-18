@@ -6,7 +6,7 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_attribution import (
@@ -239,7 +239,7 @@ def _log_growth(curve) -> float:
 
 
 def test_a_run_splits_its_excess_over_the_benchmark_into_parts_that_add_up(tmp_path):
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         benchmark_config(tmp_path, fees=0.001, slippage=0.001)
     ).run()
     attribution = result.metrics["attribution"]
@@ -254,7 +254,7 @@ def test_a_run_splits_its_excess_over_the_benchmark_into_parts_that_add_up(tmp_p
 
 
 def test_without_costs_the_cost_part_is_zero(tmp_path):
-    result = USEquityCrossectionSelectStockVectorBt(benchmark_config(tmp_path)).run()
+    result = USEquityVectorBt(benchmark_config(tmp_path)).run()
     assert result.metrics["attribution"]["decomposition"]["costs"] == 0.0
 
 
@@ -269,7 +269,7 @@ def test_run_cv_attributes_the_stitched_curve(tmp_path):
     model = make_model(tmp_path / "train", dataset_config, **dates)
     model.collect()
     cv_unit = model.train_cv(train_periods=train_periods, expanding=True)
-    cv = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+    cv = USEquityVectorBt(CrossSectionBacktestConfig(
         price_dataset=make_stock_dataset(dataset_config),
         model=make_model(tmp_path / "backtest", dataset_config, **dates),
         model_mode="load", cv_project_dir=str(cv_unit.path),
@@ -296,7 +296,7 @@ def test_run_cv_attributes_the_stitched_curve(tmp_path):
 
 
 def test_the_run_directory_records_the_attribution_curves_and_the_report_draws_them(tmp_path):
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         benchmark_config(tmp_path, fees=0.001, slippage=0.001)
     ).run()
     run = BacktestRun.open(result.run_dir)

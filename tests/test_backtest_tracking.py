@@ -30,7 +30,7 @@ from tests.test_backtest_run_cv import _backtester as _cv_backtester
 from tests.test_backtest_run_cv import cv_project  # noqa: F401 (module fixture)
 from tests.tracking_fixtures import RecordingTracker
 
-PROJECT = "USEquityCrossectionSelectStockVectorBt_backtest"
+PROJECT = "USEquityVectorBt_backtest"
 
 
 @pytest.fixture(scope="module")
@@ -116,7 +116,7 @@ def test_a_run_kept_in_memory_is_tracked_without_the_report(tmp_path, trained):
 
     assert result.run_dir is None
     (run,) = tracker.runs
-    assert run.name.startswith("USEquityCrossectionSelectStockVectorBt_")
+    assert run.name.startswith("USEquityVectorBt_")
     assert "whole/Total Return [%]" in run.summary
     assert run.files == []
     assert run.finished and not run.failed

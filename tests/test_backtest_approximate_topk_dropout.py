@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.portfolio.config import TopkDropoutConfig
 from quantlab.portfolio.predefined.topk_dropout import TopkDropoutConstructor
 from quantlab.runs.backtest_run import BacktestRun
@@ -43,7 +43,7 @@ def _run(store, config: TopkDropoutConfig, rebalance_periods: int, fees: float, 
         start_date=_day(bars[0]), end_date=_day(bars[59]), train_start=_day(bars[0]),
         train_end=_day(bars[49]), test_start=_day(bars[50]), test_end=_day(bars[59]),
     )
-    return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+    return USEquityVectorBt(CrossSectionBacktestConfig(
         price_dataset=make_stock_dataset(dataset_config), model=model, model_mode="train",
         start_date=_day(bars[WINDOW[0]]), end_date=_day(bars[WINDOW[1]]),
         output_dir=str(root / f"tkd_runs_{tag}"), rebalance_periods=rebalance_periods,

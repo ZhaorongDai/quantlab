@@ -23,7 +23,7 @@ Equity backtest
    :toctree: generated
    :nosignatures:
 
-   quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt
+   quantlab.backtest.predefined.us_equity.USEquityVectorBt
 
 Saved runs
 ----------

@@ -22,7 +22,7 @@ import xarray as xr
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.model.collected_panel import FEATURE_DTYPE
 from tests.backtest_fixtures import (
@@ -69,7 +69,7 @@ def _backtester(tmp_path, price_dataset, model, bars, **overrides):
         init_cash=1_000_000.0,
     )
     config.update(overrides)
-    return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**config))
+    return USEquityVectorBt(CrossSectionBacktestConfig(**config))
 
 
 def _snapshot(config) -> dict:

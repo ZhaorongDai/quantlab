@@ -79,7 +79,7 @@ class MembershipMaskedPredictor(PredictorView):
     ``CrspSP500ConstituentDataset`` over the same roster::
 
         >>> masked = MembershipMaskedPredictor(model, membership)
-        >>> backtester = USEquityCrossectionSelectStockVectorBt(
+        >>> backtester = USEquityVectorBt(
         ...     CrossSectionBacktestConfig(
         ...         price_dataset=crsp_index_dataset,  # unmasked prices
         ...         model=masked, model_mode="load", checkpoint=checkpoint,

@@ -1,6 +1,6 @@
-"""The US-equity cross-sectional stock-selection backtester.
+"""The daily US-equity backtester: a portfolio construction rule simulated with vectorbt.
 
-``USEquityCrossectionSelectStockVectorBt`` is the concrete backtester of the
+``USEquityVectorBt`` is the concrete backtester of the
 pipeline for daily US equities. It composes the ``US_EQUITY_MARKET`` price
 conventions, the portfolio construction rule of its config that turns
 predictions into target weights, and the vectorbt simulation engine
@@ -32,7 +32,7 @@ US_EQUITY_MARKET = MarketSpec(
 )
 
 
-class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
+class USEquityVectorBt(VectorBtBacktester):
     """Daily US-equity backtester: a portfolio construction rule simulated with vectorbt.
 
     On every rebalance bar the config's ``constructor`` turns the
@@ -63,7 +63,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     >>> from quantlab.backtest.config import CrossSectionBacktestConfig
     >>> from quantlab.portfolio.config import TopNConfig
     >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
-    >>> backtester = USEquityCrossectionSelectStockVectorBt(
+    >>> backtester = USEquityVectorBt(
     ...     CrossSectionBacktestConfig(
     ...         price_dataset=prices,  # a StockDataset over a Zarr store
     ...         model=model,  # a model whose checkpoint is given below
@@ -164,7 +164,7 @@ class USEquityApproximateBacktest(ApproximateBacktest):
     """The approximate backtest of daily US equities: ``ApproximateBacktest`` on ``US_EQUITY_MARKET``.
 
     Fills at the adjusted open, values at the adjusted close, as
-    ``USEquityCrossectionSelectStockVectorBt`` does, so the same rule and
+    ``USEquityVectorBt`` does, so the same rule and
     predictions can be confirmed with a backtest run.
 
     Examples

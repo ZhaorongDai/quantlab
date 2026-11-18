@@ -1194,7 +1194,7 @@ for annualizing:
 Everything after `_generate_signals` is inherited: execution at the next bar's open,
 rejected orders, delisting settlements, metrics and the run directory. Smaller variations
 need less code: to reuse top-N selection on another market, subclass
-{py:class}`~quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt`
+{py:class}`~quantlab.backtest.predefined.us_equity.USEquityVectorBt`
 and set only `MARKET`; to reuse a selection rule with another engine, call
 `DecisionInputs(...).weights(predictions)`, or `rule.decide(inputs.context(t, ...))` one
 bar at a time; the portfolio layer depends on no simulation engine.

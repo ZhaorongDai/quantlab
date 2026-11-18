@@ -21,7 +21,7 @@ Everything is synthetic, CPU-only and offline.
 import numpy as np
 import pytest
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -33,7 +33,7 @@ from tests.topn_reference import BACKTEST, CASES, REFERENCE, scenario
 def _backtester(tmp_path, case, *, output_dir=None):
     direction, top_n, _ = CASES[case]
     dataset_config, model, start, end = scenario(tmp_path, case)
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=model,
@@ -89,7 +89,7 @@ def test_the_constructor_round_trips_through_the_run_and_reruns_identically(tmp_
 def test_a_constructor_that_is_not_a_portfolio_constructor_is_refused(tmp_path):
     dataset_config, model, start, end = scenario(tmp_path, "long_only")
     with pytest.raises(TypeError, match="PortfolioConstructor"):
-        USEquityCrossectionSelectStockVectorBt(
+        USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=make_stock_dataset(dataset_config),
                 model=model,

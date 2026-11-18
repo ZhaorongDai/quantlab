@@ -200,19 +200,19 @@ in [models](../user-guide/models.md).
 
 ## Step 4: backtest the model
 
-{py:class}`~quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt`
+{py:class}`~quantlab.backtest.predefined.us_equity.USEquityVectorBt`
 asks its constructor for weights every `rebalance_periods` bars;
 {py:class}`~quantlab.portfolio.predefined.top_n.TopNConstructor` holds the `top_n` symbols
 with the highest predictions in equal weights. Orders decided at bar t's close fill at bar
 t+1's open; vectorbt simulates them.
 
 ```python
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
-backtester = USEquityCrossectionSelectStockVectorBt(
+backtester = USEquityVectorBt(
     CrossSectionBacktestConfig(
         price_dataset=StockDataset(dataclasses.replace(dataset_config)),
         model=type(model)(dataclasses.replace(model.config)),  # fresh instance, same settings
