@@ -50,7 +50,7 @@ A study in quantlab runs through six stages. Each stage is a root class in its o
 | 3. Factors and labels | Compiled factor graphs (Alpha158, Alpha101, Barra-style exposures, neutralization) and forward-return labels | `Alpha158Stock`, `BarraStyle`, `Return` | Factor panel |
 | 4. Return model | Tree models and neural networks behind one interface, seed and model ensembles, purged walk-forward CV | `XGBoostRegressor`, `RealMLPRegressor`, `GATsRegressor`, `SeedEnsemble` | Checkpoint, `run.json` |
 | 5. Portfolio | Predictions to target weights: TopN, or mean-variance with a Ledoit-Wolf or USE4 factor risk model | `TopNConstructor`, `MeanVarianceOptimizer` | Target weights |
-| 6. Backtest | vectorbt simulation with next-bar fills, fees, delisting settlement and a benchmark | `USEquityCrossectionSelectStockVectorBt` | Run directory, `report.html` |
+| 6. Backtest | vectorbt simulation with next-bar fills, fees, delisting settlement and a benchmark | `USEquityVectorBt` | Run directory, `report.html` |
 
 Research is rarely a straight line, so evaluation is built into three of the stages:
 `Factor.analyze()` writes an IC and quantile report for every factor, `train_cv` scores
@@ -179,7 +179,7 @@ the ten stocks with the highest predicted return are held in equal weights, agai
 buy-and-hold SPY.
 
 ```python
-backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+backtester = USEquityVectorBt(CrossSectionBacktestConfig(
     price_dataset=prices,
     benchmark_dataset=FrameDataset(spy, columns=COLUMNS),
     model=..., model_mode="load", checkpoint=str(checkpoint),
@@ -201,7 +201,7 @@ Price panel: {'timestamp': 2414, 'symbol': 30}
 Total Return [%]       35.02     57.11
 Sharpe Ratio            1.28      1.84
 Max Drawdown [%]        9.54      9.97
-Run directory, with the HTML report: output/yahoo_us_equity/backtests/USEquityCrossectionSelectStockVectorBt_<time>
+Run directory, with the HTML report: output/yahoo_us_equity/backtests/USEquityVectorBt_<time>
 Rebuilt from its run directory, same equity curve: True
 ```
 

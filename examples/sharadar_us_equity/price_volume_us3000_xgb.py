@@ -55,7 +55,7 @@ from loguru import logger
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.backtest.predefined.us_equity import (
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.config import get_data_root
 from quantlab.core.store_folder import load_component
@@ -168,7 +168,7 @@ def constructor(top_n: int, direction: str, n_drop: int | None):
 def backtest(variant: str, top_n: int = TOP_N, direction: str = DIRECTION, n_drop: int | None = None) -> Path:
     """Replay the CV's checkpoints over their test segments as one top-N account; returns the run directory."""
     record = json.loads(cv_record_path(variant).read_text())
-    result = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+    result = USEquityVectorBt(CrossSectionBacktestConfig(
         price_dataset=prices(),
         model=MembershipMaskedPredictor(model(variant), membership),
         model_mode="load", cv_project_dir=record["path"],

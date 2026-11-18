@@ -31,7 +31,7 @@ import pytest
 import vectorbt as vbt
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.runs.backtest_stats import (
     bar_label,
     drawdown_span,
@@ -126,7 +126,7 @@ def test_a_series_without_spread_has_no_finite_sharpe_ratio(values, sharpe, sort
 
 def test_a_runs_metrics_rows_are_the_functions_output(stores):  # noqa: F811
     # A window that starts inside the training window, so every slice exists.
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         _config(stores, with_model=True, start_date=_day(_bars()[10]))
     ).run()
     metrics, simulation, benchmark = result.metrics, result.simulation, result.benchmark

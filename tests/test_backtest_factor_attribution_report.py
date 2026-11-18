@@ -27,7 +27,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.runs.factor_attribution_report import _groups, _risk_over_time, factor_attribution_section
 from tests.backtest_fixtures import make_model, train_checkpoint
@@ -61,7 +61,7 @@ def tracked(store, risk_model):  # noqa: F811
     )
     checkpoint = train_checkpoint(make_model(root / "report_train", dataset_config, **dates))
     tracker = RecordingTracker()
-    result = USEquityCrossectionSelectStockVectorBt(_config(
+    result = USEquityVectorBt(_config(
         dataset_config,
         make_model(root / "report_backtest", dataset_config, **dates),
         risk_model,

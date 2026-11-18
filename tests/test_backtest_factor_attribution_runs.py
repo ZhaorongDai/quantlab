@@ -24,7 +24,7 @@ import xarray as xr
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.backtest.predefined.us_equity import (
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.dataset.memory import FrameDataset
 from quantlab.factor.config import BaseFactorConfig
@@ -140,7 +140,7 @@ def run(store, risk_model):
         test_start=_day(25), test_end=_day(29),
     )
     checkpoint = train_checkpoint(make_model(root / "train", dataset_config, **dates))
-    return USEquityCrossectionSelectStockVectorBt(_config(
+    return USEquityVectorBt(_config(
         dataset_config,
         make_model(root / "backtest", dataset_config, **dates),
         risk_model,
@@ -161,7 +161,7 @@ def cv(store, risk_model):
     model = make_model(root / "cv_train", dataset_config, **dates)
     model.collect()
     unit = model.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
-    return USEquityCrossectionSelectStockVectorBt(_config(
+    return USEquityVectorBt(_config(
         dataset_config,
         make_model(root / "cv_backtest", dataset_config, **dates),
         risk_model,

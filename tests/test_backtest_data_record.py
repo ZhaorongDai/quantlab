@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import GrinoldExpectedReturnConfig
 from quantlab.portfolio.predefined.expected_return import GrinoldExpectedReturn
@@ -74,7 +74,7 @@ def _backtester(price_dataset, model=None, constructor=None, **overrides):
         constructor=constructor or TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     )
     config.update(overrides)
-    return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**config))
+    return USEquityVectorBt(CrossSectionBacktestConfig(**config))
 
 
 def test_the_rules_price_history_before_the_window_is_recorded(tmp_path):

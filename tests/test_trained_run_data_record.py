@@ -18,7 +18,7 @@ import xarray as xr
 import zarr
 from loguru import logger
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -112,7 +112,7 @@ def test_a_walk_forward_unit_records_and_its_folds_record_none(tmp_path):
 
 def _train_mode_run(tmp_path, dataset_config, bars):
     """A train-mode backtest over bars 30..50, written to a run directory."""
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=make_model(tmp_path / "backtest", dataset_config, **_dates(bars)),
@@ -165,7 +165,7 @@ def test_a_train_mode_rebuild_warns_on_changed_training_data_and_completes(
 def test_a_load_mode_backtest_records_and_compares_no_training_data(tmp_path, warnings_logged):
     dataset_config, bars = _store(tmp_path)
     checkpoint = train_checkpoint(make_model(tmp_path / "train", dataset_config, **_dates(bars)))
-    first = USEquityCrossectionSelectStockVectorBt(
+    first = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=make_model(tmp_path / "backtest", dataset_config, **_dates(bars)),

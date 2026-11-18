@@ -28,7 +28,7 @@ import xarray as xr
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.backtest.predefined.us_equity import (
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -247,7 +247,7 @@ def test_run_cv_replays_an_assembled_walk_forward_unit(runs, tmp_path):
     )
     ensemble = _ensemble(runs, "backtest")
 
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(runs["dataset_config"]),
             model=ensemble,

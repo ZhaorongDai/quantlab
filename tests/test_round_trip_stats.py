@@ -172,14 +172,14 @@ def test_no_fills_give_vectorbts_rows():
 
 
 def test_a_quantlab_runs_own_fills_give_its_whole_blocks_trade_rows(tmp_path):
-    from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+    from quantlab.backtest.predefined.us_equity import USEquityVectorBt
     from quantlab.backtest.config import CrossSectionBacktestConfig
     from quantlab.portfolio.config import TopNConfig
     from quantlab.portfolio.predefined.top_n import TopNConstructor
     from tests.backtest_fixtures import make_stock_dataset, write_price_store
 
     dataset_config = write_price_store(tmp_path / "store", n_bars=60, delist_at={"CCC": 42})
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             start_date="2024-02-12",

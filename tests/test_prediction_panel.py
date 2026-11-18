@@ -169,7 +169,7 @@ def _model_run(root, *, frame=False):
     from quantlab.backtest.config import CrossSectionBacktestConfig
     from quantlab.portfolio.config import TopNConfig
     from quantlab.backtest.predefined.us_equity import (
-        USEquityCrossectionSelectStockVectorBt,
+        USEquityVectorBt,
     )
     from quantlab.portfolio.predefined.top_n import TopNConstructor
     from tests.backtest_fixtures import (
@@ -192,7 +192,7 @@ def _model_run(root, *, frame=False):
         test_end=_day(bars[29]),
     )
     checkpoint = train_checkpoint(make_model(root / "train", dataset_config, **dates))
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=(
                 FrameDataset(xr.open_zarr(dataset_config.zarr_file_path).load())

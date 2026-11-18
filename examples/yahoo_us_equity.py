@@ -46,7 +46,7 @@ import yfinance as yf
 from loguru import logger
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.dataset.memory import FrameDataset
 from quantlab.factor.config import FactorConfig
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
@@ -162,7 +162,7 @@ def main() -> None:
     print(f"2022 test: IC {test['test_ic']:.4f}, RankIC {test['test_rank_ic']:.4f}")
 
     # 4. Backtest out of sample against buy-and-hold SPY -----------------------
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=prices,
             benchmark_dataset=FrameDataset(spy, columns=COLUMNS),

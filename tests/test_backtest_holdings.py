@@ -32,7 +32,7 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
@@ -81,7 +81,7 @@ def _run(root: Path, **overrides):
         init_cash=INIT_CASH,
     )
     kwargs.update(overrides)
-    result = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs)).run()
+    result = USEquityVectorBt(CrossSectionBacktestConfig(**kwargs)).run()
     prices = xr.open_zarr(dataset_config.zarr_file_path).load()
     return result, prices
 

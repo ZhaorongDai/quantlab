@@ -25,7 +25,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.api as qa
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.dataset.memory import FrameDataset
@@ -172,7 +172,7 @@ def test_a_run_on_a_zarr_backed_dataset_writes_no_inputs(tmp_path):
         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     )
 
-    run_dir = USEquityCrossectionSelectStockVectorBt(config).run_weights(weights).run_dir
+    run_dir = USEquityVectorBt(config).run_weights(weights).run_dir
 
     assert not (run_dir / "inputs").exists()
     assert BacktestRun.open(run_dir).rebuild("price_dataset") == prices

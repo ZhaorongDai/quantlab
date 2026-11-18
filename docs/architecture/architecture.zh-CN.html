@@ -1067,7 +1067,7 @@ model.collect()
 checkpoint = model.train()          <span class="c"># 写出一个训练运行目录</span>
 
 <span class="c"># 4. 组合规则与回测：组合规则是配置里的一个组件</span>
-backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+backtester = USEquityVectorBt(CrossSectionBacktestConfig(
     price_dataset=prices, model=..., model_mode=<span class="s">"load"</span>, checkpoint=str(checkpoint),
     start_date=<span class="s">"2023-01-01"</span>, end_date=<span class="s">"2024-12-31"</span>, output_dir=<span class="s">".../backtests"</span>,
     rebalance_periods=5,

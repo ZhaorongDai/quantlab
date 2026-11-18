@@ -48,7 +48,7 @@ quantlab 是一个用于量化股票研究的 Python 后端。它用一条流水
 | 3. 因子与标签 | 编译执行的因子图（Alpha158、Alpha101、Barra 风格暴露、中性化）和未来收益标签 | `Alpha158Stock`、`BarraStyle`、`Return` | 因子面板 |
 | 4. 收益模型 | 树模型和神经网络共用一套接口，多种子与多模型集成，带 purge 的滚动交叉验证 | `XGBoostRegressor`、`RealMLPRegressor`、`GATsRegressor`、`SeedEnsemble` | 模型文件、`run.json` |
 | 5. 组合构建 | 把预测变成目标权重：TopN，或配合 Ledoit-Wolf / USE4 因子风险模型的均值-方差优化 | `TopNConstructor`、`MeanVarianceOptimizer` | 目标权重 |
-| 6. 回测 | 基于 vectorbt 的模拟：下一根 bar 成交、手续费、退市结算、基准对比 | `USEquityCrossectionSelectStockVectorBt` | 运行目录、`report.html` |
+| 6. 回测 | 基于 vectorbt 的模拟：下一根 bar 成交、手续费、退市结算、基准对比 | `USEquityVectorBt` | 运行目录、`report.html` |
 
 研究很少是一条直线，所以其中三个阶段内置了评估：`Factor.analyze()` 为每个因子生成 IC 与分层收益报告，
 `train_cv` 给每一折滚动验证和留出集打分，每次回测都把收益拆成股票池、选股和成本三部分。
@@ -162,7 +162,7 @@ checkpoint = model.train()
 等权持有预测收益最高的 10 只股票，以买入持有 SPY 为基准。
 
 ```python
-backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+backtester = USEquityVectorBt(CrossSectionBacktestConfig(
     price_dataset=prices,
     benchmark_dataset=FrameDataset(spy, columns=COLUMNS),
     model=..., model_mode="load", checkpoint=str(checkpoint),
@@ -184,7 +184,7 @@ Price panel: {'timestamp': 2414, 'symbol': 30}
 Total Return [%]       35.02     57.11
 Sharpe Ratio            1.28      1.84
 Max Drawdown [%]        9.54      9.97
-Run directory, with the HTML report: output/yahoo_us_equity/backtests/USEquityCrossectionSelectStockVectorBt_<time>
+Run directory, with the HTML report: output/yahoo_us_equity/backtests/USEquityVectorBt_<time>
 Rebuilt from its run directory, same equity curve: True
 ```
 

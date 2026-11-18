@@ -38,7 +38,7 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.runs.backtest_report import write_backtest_report
@@ -118,7 +118,7 @@ def _config(tmp_path, benchmark_config=None, **overrides) -> CrossSectionBacktes
 
 @pytest.fixture
 def benchmark_run(tmp_path):
-    backtester = USEquityCrossectionSelectStockVectorBt(_config(tmp_path))
+    backtester = USEquityVectorBt(_config(tmp_path))
     return backtester, backtester.run()
 
 
@@ -151,13 +151,13 @@ def test_a_multi_symbol_benchmark_is_refused(tmp_path):
         ),
     )
     with pytest.raises(ValueError, match="exactly one symbol"):
-        USEquityCrossectionSelectStockVectorBt(config).run()
+        USEquityVectorBt(config).run()
 
 
 def test_a_benchmark_that_starts_after_the_window_is_refused(tmp_path):
     config = _config(tmp_path, benchmark_config=_benchmark_store(tmp_path, list_at={"QQQ": 40}))
     with pytest.raises(ValueError, match="must cover the whole backtest window"):
-        USEquityCrossectionSelectStockVectorBt(config).run()
+        USEquityVectorBt(config).run()
 
 
 def test_missing_benchmark_bars_carry_the_previous_price_with_one_warning(
@@ -169,7 +169,7 @@ def test_missing_benchmark_bars_carry_the_previous_price_with_one_warning(
     holes = store.timestamp.values[[WINDOW_START + 5, WINDOW_START + 6]]
     store.drop_sel(timestamp=holes).to_zarr(benchmark_config.zarr_file_path, mode="w")
 
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         _config(tmp_path, benchmark_config=benchmark_config)
     ).run()
 
@@ -241,7 +241,7 @@ def test_the_benchmark_is_named_by_its_dataset_ticker_lookup(tmp_path, monkeypat
 
     monkeypatch.setattr(StockDataset, "ticker_lookup", lambda self: Named())
 
-    result = USEquityCrossectionSelectStockVectorBt(_config(tmp_path)).run()
+    result = USEquityVectorBt(_config(tmp_path)).run()
 
     assert result.metrics["benchmark"]["symbol"] == "QQQ-NAMED"
     assert result.metrics["benchmark"]["axis_symbol"] == "QQQ"
@@ -300,7 +300,7 @@ def test_relative_stats_by_hand(benchmark_run):
 
 def test_a_run_without_a_benchmark_is_unchanged(tmp_path):
     config = _config(tmp_path, benchmark_dataset=None)
-    result = USEquityCrossectionSelectStockVectorBt(config).run()
+    result = USEquityVectorBt(config).run()
     assert result.benchmark is None
     assert "benchmark" not in result.metrics and "relative" not in result.metrics
     # A model run adds its attribution curves; nothing of the benchmark's.
@@ -443,7 +443,7 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path, expanding):
         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         benchmark_dataset=make_stock_dataset(_benchmark_store(tmp_path, n_bars=n_bars)),
     )
-    cv = USEquityCrossectionSelectStockVectorBt(config).run_cv()
+    cv = USEquityVectorBt(config).run_cv()
 
     assert cv.benchmark is not None
     stitched = cv.metrics["stitched"]

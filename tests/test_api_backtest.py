@@ -2,7 +2,7 @@
 
 Tested only through the public function and the report it returns (ADR 0011). Numerical
 correctness is parity with the library path: the same weights backtested through the API
-on a frame and through `USEquityCrossectionSelectStockVectorBt.run_weights` on the
+on a frame and through `USEquityVectorBt.run_weights` on the
 equivalent Zarr store give the same equity, orders and metrics, and `scores` + `top_n`
 equals selecting with `TopNConstructor` first and backtesting the weights. The
 weight-frame rules (long or wide, a symbol missing on a given bar is 0, a bar missing
@@ -25,7 +25,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.api as qa
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import BacktestConfig, CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.decision_inputs import DecisionInputs
@@ -105,7 +105,7 @@ def _library_run(stores, weights: xr.Dataset, *, benchmark: bool = False):
         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         benchmark_dataset=StockDataset(stores["benchmark"]) if benchmark else None,
     )
-    return USEquityCrossectionSelectStockVectorBt(config).run_weights(weights)
+    return USEquityVectorBt(config).run_weights(weights)
 
 
 def _scores(seed: int = 3) -> xr.DataArray:

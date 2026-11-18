@@ -30,7 +30,7 @@ import xarray as xr
 from quantlab.backtest.config import ApproximateBacktestConfig, CrossSectionBacktestConfig
 from quantlab.backtest.predefined.us_equity import (
     USEquityApproximateBacktest,
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.portfolio.base import CovarianceEstimate, CovarianceEstimator
 from quantlab.portfolio.config import (
@@ -161,13 +161,13 @@ def _mean_variance():
 @pytest.mark.parametrize("rule", ["top_n", "mean_variance"])
 def test_a_run_keeps_only_the_predicted_symbols_and_equals_the_whole_axis_run(store, monkeypatch, rule):
     constructor = {"top_n": _top_n, "mean_variance": _mean_variance}[rule]
-    cut = USEquityCrossectionSelectStockVectorBt(_config(store, constructor(), f"{rule}_cut")).run()
+    cut = USEquityVectorBt(_config(store, constructor(), f"{rule}_cut")).run()
 
     assert cut.weights.symbol.values.tolist() == SYMBOLS
     if rule == "mean_variance":
         assert cut.simulation.settlements  # CCC delists while held; X03 is off the axis
     _every_symbol(monkeypatch)
-    whole = USEquityCrossectionSelectStockVectorBt(_config(store, constructor(), f"{rule}_whole")).run()
+    whole = USEquityVectorBt(_config(store, constructor(), f"{rule}_whole")).run()
     assert whole.weights.sizes["symbol"] == len(SYMBOLS) + len(EXTRA)
     _assert_same_run(cut, whole, SYMBOLS)
 
@@ -185,13 +185,13 @@ def _ledoit_wolf_mean_variance():
 def test_a_ledoit_wolf_rule_keeps_the_whole_price_axis(store, monkeypatch):
     """Ledoit-Wolf's shrinkage is estimated over every symbol the context holds,
     so a run keeps the whole axis and its estimate is the whole-axis one."""
-    cut = USEquityCrossectionSelectStockVectorBt(
+    cut = USEquityVectorBt(
         _config(store, _ledoit_wolf_mean_variance(), "lw_cut")
     ).run()
 
     assert cut.weights.symbol.values.tolist() == SYMBOLS + EXTRA
     _every_symbol(monkeypatch)
-    whole = USEquityCrossectionSelectStockVectorBt(
+    whole = USEquityVectorBt(
         _config(store, _ledoit_wolf_mean_variance(), "lw_whole")
     ).run()
     _assert_same_run(cut, whole, SYMBOLS + EXTRA)
@@ -217,17 +217,17 @@ def _active(bars):
 
 def test_a_benchmark_symbol_without_a_prediction_stays_on_the_axis(store, monkeypatch):
     bars = store[3]
-    cut = USEquityCrossectionSelectStockVectorBt(_config(store, _active(bars), "active_cut")).run()
+    cut = USEquityVectorBt(_config(store, _active(bars), "active_cut")).run()
 
     assert cut.weights.symbol.values.tolist() == SYMBOLS + ["X00"]
     _every_symbol(monkeypatch)
-    whole = USEquityCrossectionSelectStockVectorBt(_config(store, _active(bars), "active_whole")).run()
+    whole = USEquityVectorBt(_config(store, _active(bars), "active_whole")).run()
     _assert_same_run(cut, whole, SYMBOLS + ["X00"])
 
 
 def test_the_approximate_backtest_keeps_the_same_axis(store, monkeypatch):
     _, _, price_config, bars, _ = store
-    run = USEquityCrossectionSelectStockVectorBt(_config(store, _top_n(), "approximate_source")).run()
+    run = USEquityVectorBt(_config(store, _top_n(), "approximate_source")).run()
     predictions = BacktestRun.open(run.run_dir).predictions()
 
     def approximate():
@@ -271,7 +271,7 @@ def test_run_cv_keeps_the_symbols_any_fold_predicts(store, cv_store, monkeypatch
     root, model_config, project = cv_store
 
     def run_cv(tag):
-        return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+        return USEquityVectorBt(CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(price_config),
             model=make_model(root / f"model_{tag}", model_config, **_cv_dates(bars)),
             model_mode="load",

@@ -11,8 +11,8 @@ The classes involved are:
 - {py:class}`~quantlab.backtest.base.BaseBacktester`: the steps that do not depend on a
   simulation engine (dates, warm-up, the in-sample split, metrics, persistence).
 - {py:class}`~quantlab.backtest.engine_vectorbt.VectorBtBacktester`: the simulation.
-- {py:class}`~quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt`:
-  the US-equity cross-sectional stock-selection backtester, configured with a
+- {py:class}`~quantlab.backtest.predefined.us_equity.USEquityVectorBt`:
+  the daily US-equity backtester, configured with a
   {py:class}`~quantlab.backtest.config.CrossSectionBacktestConfig`. Its `constructor` field
   holds the portfolio rule.
 - {py:class}`~quantlab.backtest.predefined.weights.WeightsVectorBt`: backtests given weights
@@ -171,7 +171,7 @@ shown.
 >>> import pandas as pd
 >>> import xarray as xr
 >>> from demo_parts import *
->>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+>>> from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 >>> from quantlab.backtest.config import CrossSectionBacktestConfig
 >>> from quantlab.portfolio.config import TopNConfig
 >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -179,7 +179,7 @@ shown.
 >>> cfg = write_price_store(root, delist={"FFF": 36})
 >>> days = pd.bdate_range("2024-01-01", periods=60)
 >>> checkpoint = train_checkpoint(make_model(root / "train", cfg, days))
->>> backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+>>> backtester = USEquityVectorBt(CrossSectionBacktestConfig(
 ...     price_dataset=prices_of(cfg),
 ...     model=make_model(root / "backtest", cfg, days),
 ...     model_mode="load",
@@ -207,7 +207,7 @@ needed; the window never changes the training dates. The checkpoint is recorded 
 also switches to a long-short book with one name per side:
 
 ```python
->>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+>>> trained = USEquityVectorBt(dataclasses.replace(
 ...     backtester.config, model=make_model(root / "train_mode", cfg, days),
 ...     model_mode="train", checkpoint=None,
 ...     constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=1)),
@@ -298,16 +298,16 @@ declares `fill_delay_bars` (1 for vectorbt), and `run()` and `run_cv()` refuse, 
 training, loading or simulating anything, a label whose `delay` differs:
 
 ```python
->>> USEquityCrossectionSelectStockVectorBt.fill_delay_bars
+>>> USEquityVectorBt.fill_delay_bars
 1
 >>> label = make_label(cfg)
 >>> label.config.delay, label.span_bars(), label.lookahead_bars()
 (1, 1, 2)
 >>> same_bar = dataclasses.replace(backtester.config, model=make_model(root / "same_bar", cfg, days, delay=0))
->>> USEquityCrossectionSelectStockVectorBt(same_bar).run()
+>>> USEquityVectorBt(same_bar).run()
 Traceback (most recent call last):
   ...
-ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret_1',) has delay=0, but the engine fills a weight fill_delay_bars=1 bar(s) after the bar it forms on; the model would learn a return the backtest never trades
+ValueError: USEquityVectorBt: labels[0] Forward ('open_ret_1',) has delay=0, but the engine fills a weight fill_delay_bars=1 bar(s) after the bar it forms on; the model would learn a return the backtest never trades
 ```
 
 ### Costs and sizing
@@ -455,7 +455,7 @@ from cash on any bar.
 ...     end_date=str(days2[77].date()),
 ...     rebalance_periods=2,
 ... )
->>> cv = USEquityCrossectionSelectStockVectorBt(cv_config).run_cv()
+>>> cv = USEquityVectorBt(cv_config).run_cv()
 >>> len(cv.folds), dict(cv.weights.sizes), sorted(cv.metrics)
 (8, {'timestamp': 48, 'symbol': 6}, ['folds', 'notes', 'stitched'])
 >>> cv_run = BacktestRun.open(cv.run_dir)
@@ -521,7 +521,7 @@ run, it reproduces that run:
 
 ```python
 >>> weights_config = dataclasses.replace(backtester.config, model=None, model_mode=None, checkpoint=None)
->>> weights_backtester = USEquityCrossectionSelectStockVectorBt(weights_config)
+>>> weights_backtester = USEquityVectorBt(weights_config)
 >>> replay = weights_backtester.run_weights(result.weights)
 >>> sorted(replay.metrics), replay.predictions is None
 (['execution', 'notes', 'whole'], True)
@@ -537,7 +537,7 @@ Weights that break the contract are refused, naming the bar:
 >>> weights_backtester.run_weights(broken)
 Traceback (most recent call last):
   ...
-ValueError: USEquityCrossectionSelectStockVectorBt: weight row at 2024-02-19 has gross exposure 1.9 > 1
+ValueError: USEquityVectorBt: weight row at 2024-02-19 has gross exposure 1.9 > 1
 ```
 
 `WeightsVectorBt` backtests given weights on any market: its
@@ -589,7 +589,7 @@ is a single-symbol buy and hold; there is no weighted or multi-asset benchmark.
 
 ```python
 config = CrossSectionBacktestConfig(..., benchmark_dataset=spy)
-benchmarked = USEquityCrossectionSelectStockVectorBt(config).run()
+benchmarked = USEquityVectorBt(config).run()
 sorted(benchmarked.metrics["relative"]["whole"])[:4]
 # ['Annualized Excess Return [%]', 'Bars', 'Benchmark Total Return [%]', 'Beta']
 ```
@@ -634,7 +634,7 @@ return and risk of its own holdings to the model's factors. `run()`, `run_weight
 `run_cv()` (the stitched curve) all take it.
 
 ```python
-attributed = USEquityCrossectionSelectStockVectorBt(
+attributed = USEquityVectorBt(
     dataclasses.replace(backtester.config, risk_model=model)
 ).run()
 block = attributed.metrics["factor_attribution"]
@@ -707,7 +707,7 @@ recorded as failed.
 >>> backtester.config.tracker
 NullTracker(project=None)
 >>> from quantlab.tracking.wandb import WandbTracker
->>> tracked = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+>>> tracked = USEquityVectorBt(dataclasses.replace(
 ...     backtester.config, tracker=WandbTracker(project="momentum_backtests", mode="offline")
 ... )).run()
 >>> BacktestRun.open(tracked.run_dir).rebuild("tracker")

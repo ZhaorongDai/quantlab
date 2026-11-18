@@ -39,7 +39,7 @@ import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
@@ -120,7 +120,7 @@ def trained(tmp_path):
 def _load_mode(tmp_path, trained, **overrides):
     dataset_config, checkpoint = trained
     model = make_model(tmp_path / "bt", dataset_config, **_dates(BARS, 24, 29))
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         _config(
             tmp_path,
             make_stock_dataset(dataset_config),
@@ -209,7 +209,7 @@ def test_rebuild_rebuilds_one_component_field(tmp_path, trained):
 def test_a_train_mode_run_records_the_unit_it_trained(tmp_path, trained):
     dataset_config, _ = trained
     model = make_model(tmp_path / "bt", dataset_config, **_dates(BARS, 24, 29))
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         _config(tmp_path, make_stock_dataset(dataset_config), model, model_mode="train")
     )
     result = backtester.run()
@@ -229,7 +229,7 @@ def test_a_run_cv_run_opens_with_its_folds_as_child_runs(tmp_path):
     dates = _dates(CV_BARS, CV_TRAIN_PERIODS - 1, CV_N_BARS - 1)
     trainer = make_model(tmp_path / "train", dataset_config, **dates).collect()
     walk = trainer.train_cv(train_periods=CV_TRAIN_PERIODS)
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         _config(
             tmp_path,
             make_stock_dataset(dataset_config),
@@ -302,7 +302,7 @@ def _frame_backtester(tmp_path, trained, *, shared: bool = True):
         )
     )
     prices = frame if shared else make_stock_dataset(dataset_config)
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         _config(tmp_path, prices, model, checkpoint=str(checkpoint))
     )
 

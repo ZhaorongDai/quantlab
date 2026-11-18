@@ -47,7 +47,7 @@ from loguru import logger
 
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.runs.backtest_run import BacktestRun
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -105,7 +105,7 @@ def _model_dates(train_end_bar: int = TRAIN_END_BAR) -> dict:
 
 def _unit_backtester(
     tmp_path, *, n_forward_periods: int = 1, **model_dates
-) -> USEquityCrossectionSelectStockVectorBt:
+) -> USEquityVectorBt:
     """A backtester that is only constructed, never run: the checkpoint need not exist."""
     dataset_config = write_price_store(tmp_path / "store", n_bars=40)
     dates = _model_dates()
@@ -113,7 +113,7 @@ def _unit_backtester(
     model = make_model(
         tmp_path / "unit", dataset_config, n_forward_periods=n_forward_periods, **dates
     )
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=model,
@@ -130,7 +130,7 @@ def _unit_backtester(
 
 def _run_backtester(
     tmp_path, *, window_start_bar: int, window_end_bar: int, **overrides
-) -> USEquityCrossectionSelectStockVectorBt:
+) -> USEquityVectorBt:
     """Load mode over a checkpoint trained on bars 0..TRAIN_END_BAR (lookahead 2 bars)."""
     dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
     checkpoint = train_checkpoint(
@@ -148,7 +148,7 @@ def _run_backtester(
         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     )
     kwargs.update(overrides)
-    return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs))
+    return USEquityVectorBt(CrossSectionBacktestConfig(**kwargs))
 
 
 # --------------------------------------------------------------------------

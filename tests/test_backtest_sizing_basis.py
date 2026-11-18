@@ -26,7 +26,7 @@ import xarray as xr
 
 from quantlab.backtest.predefined.weights import WeightsVectorBt
 from quantlab.backtest.config import WeightsBacktestConfig
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.dataset.memory import FrameDataset
 from tests.test_backtest_run_weights import _config, stores  # noqa: F401
 
@@ -135,13 +135,13 @@ def test_a_model_run_sizes_on_the_valuation_basis(stores):  # noqa: F811
     # basis (#118), so run() accepts the valuation basis (#119): its curve is
     # the weights backtest of its weights on that basis, and differs from the
     # fill basis's.
-    by_close = USEquityCrossectionSelectStockVectorBt(
+    by_close = USEquityVectorBt(
         _config(stores, with_model=True, sizing_basis="valuation")
     ).run()
-    replayed = USEquityCrossectionSelectStockVectorBt(
+    replayed = USEquityVectorBt(
         _config(stores, with_model=False, sizing_basis="valuation", output_dir=None)
     ).run_weights(by_close.weights)
-    by_open = USEquityCrossectionSelectStockVectorBt(
+    by_open = USEquityVectorBt(
         _config(stores, with_model=True, output_dir=None)
     ).run()
 

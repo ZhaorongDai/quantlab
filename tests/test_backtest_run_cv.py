@@ -63,7 +63,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.backtest.engine_vectorbt as engine_module
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.base import PortfolioConstructor
@@ -164,9 +164,9 @@ def _backtester(
     start_bar: int = FIRST_TEST_BAR,
     end_bar: int = LAST_TEST_BAR,
     sizing_basis: str = "fill",
-) -> USEquityCrossectionSelectStockVectorBt:
+) -> USEquityVectorBt:
     project_dir = cv.project_dir if cv_project_dir is _UNSET else cv_project_dir
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(cv.dataset_config),
             model=make_model(

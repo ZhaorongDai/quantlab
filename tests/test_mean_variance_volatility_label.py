@@ -29,7 +29,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import GrinoldExpectedReturnConfig
 from quantlab.portfolio.predefined.expected_return import GrinoldExpectedReturn
@@ -253,7 +253,7 @@ def test_an_ensemble_of_a_return_and_a_volatility_model_backtests_and_rebuilds(t
             weight_cap=0.4,
         )
     )
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=ensemble,
@@ -316,7 +316,7 @@ def test_a_backtest_whose_labels_differ_in_span_is_refused_when_it_is_built(tmp_
     )
 
     with pytest.raises(ValueError, match="span"):
-        USEquityCrossectionSelectStockVectorBt(
+        USEquityVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=make_stock_dataset(dataset_config),
                 model=ensemble,

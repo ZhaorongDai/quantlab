@@ -1228,7 +1228,7 @@ class BaseBacktester(Component, ABC):
         30 bars from 2024-02-12 to 2024-03-22 (here the weights of an
         earlier ``run()``):
 
-        >>> backtester = USEquityCrossectionSelectStockVectorBt(
+        >>> backtester = USEquityVectorBt(
         ...     CrossSectionBacktestConfig(
         ...         price_dataset=prices,
         ...         start_date="2024-02-12",

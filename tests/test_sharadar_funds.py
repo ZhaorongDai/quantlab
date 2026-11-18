@@ -140,7 +140,7 @@ def test_an_etf_benchmark_config_selects_one_fund():
 
 def test_a_backtest_takes_an_sfp_fund_as_its_benchmark(tmp_path):
     from quantlab.backtest.predefined.us_equity import (
-        USEquityCrossectionSelectStockVectorBt,
+        USEquityVectorBt,
     )
     from quantlab.dataset.config import SharadarDatasetConfig
     from quantlab.dataset.sharadar.stock import SharadarStockDataset
@@ -160,7 +160,7 @@ def test_a_backtest_takes_an_sfp_fund_as_its_benchmark(tmp_path):
     SharadarStockDataset(benchmark).from_raw_data().save()
 
     config = _config(tmp_path, benchmark_dataset=SharadarStockDataset(benchmark))
-    run = USEquityCrossectionSelectStockVectorBt(config).run()
+    run = USEquityVectorBt(config).run()
     assert str(run.metrics["benchmark"]["axis_symbol"]) == "118691"
     assert "Total Return [%]" in run.metrics["benchmark"]["whole"]
     assert run.metrics["relative"]["whole"] is not None

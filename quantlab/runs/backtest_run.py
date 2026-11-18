@@ -462,7 +462,7 @@ class BacktestRun:
         Examples
         --------
         >>> BacktestRun.open(run_dir).backtester_class.rsplit(".", 1)[-1]
-        'USEquityCrossectionSelectStockVectorBt'
+        'USEquityVectorBt'
         """
         return str(self._config()["name"])
 

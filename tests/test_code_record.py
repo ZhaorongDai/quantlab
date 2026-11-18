@@ -20,7 +20,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.runs.record as code_record_module
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -67,7 +67,7 @@ def _dates(bars) -> dict:
 
 def _backtester(tmp_path, dataset_config, bars, constructor=None, *, mode="train", checkpoint=None):
     """A backtest over bars 30..50 writing its run under ``tmp_path / "runs"``."""
-    return USEquityCrossectionSelectStockVectorBt(
+    return USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=make_model(tmp_path / "backtest", dataset_config, **_dates(bars)),

@@ -312,7 +312,7 @@ def test_a_backtest_on_a_sharadar_store_names_holdings_and_settlements_by_ticker
     built, tmp_path
 ):
     from quantlab.backtest.config import CrossSectionBacktestConfig
-    from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+    from quantlab.backtest.predefined.us_equity import USEquityVectorBt
     from quantlab.portfolio.config import TopNConfig
     from quantlab.portfolio.predefined.top_n import TopNConstructor
     from quantlab.runs.backtest_run import BacktestRun
@@ -330,7 +330,7 @@ def test_a_backtest_on_a_sharadar_store_names_holdings_and_settlements_by_ticker
         },
         coords={"timestamp": bars, "symbol": [101, 202, 303]},
     )
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=dataset,
             start_date=DAYS[0],

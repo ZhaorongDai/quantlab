@@ -34,7 +34,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.runs.backtest_run import BacktestRun, Market
@@ -133,7 +133,7 @@ def _config(stores, *, with_model: bool, **overrides) -> CrossSectionBacktestCon
 
 
 def _run_weights(stores, weights, **overrides):
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         _config(stores, with_model=False, **overrides)
     )
     return backtester.run_weights(weights)
@@ -154,7 +154,7 @@ def _assert_same_block(got: dict, want: dict) -> None:
 
 
 def test_run_weights_reproduces_the_run_that_produced_the_weights(stores):
-    run_result = USEquityCrossectionSelectStockVectorBt(
+    run_result = USEquityVectorBt(
         _config(stores, with_model=True)
     ).run()
 
@@ -188,7 +188,7 @@ def test_run_weights_reproduces_the_run_that_produced_the_weights(stores):
 
 def test_the_report_timeline_of_given_weights_is_one_row_of_traded_bars(stores):
     """No model, so no training window: one row, the window the weights traded."""
-    run_result = USEquityCrossectionSelectStockVectorBt(
+    run_result = USEquityVectorBt(
         _config(stores, with_model=True)
     ).run()
     result = _run_weights(
@@ -204,7 +204,7 @@ def test_the_report_timeline_of_given_weights_is_one_row_of_traded_bars(stores):
 
 
 def test_run_weights_accepts_a_data_array_in_any_axis_order(stores):
-    reference = USEquityCrossectionSelectStockVectorBt(
+    reference = USEquityVectorBt(
         _config(stores, with_model=True, output_dir=None)
     ).run()
     shuffled = (
@@ -229,7 +229,7 @@ def test_run_weights_accepts_a_data_array_in_any_axis_order(stores):
 
 
 def test_run_refuses_a_config_without_a_model(stores):
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         _config(stores, with_model=False)
     )
     with pytest.raises(ValueError, match=r"run\(\) requires config\.model.*run_weights"):
@@ -237,7 +237,7 @@ def test_run_refuses_a_config_without_a_model(stores):
 
 
 def test_run_cv_refuses_a_config_without_a_model(stores):
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         _config(stores, with_model=False, cv_project_dir=str(stores["root"]))
     )
     with pytest.raises(ValueError, match=r"run_cv\(\) requires config\.model"):
@@ -251,7 +251,7 @@ def test_a_model_without_a_model_mode_is_refused_at_construction(stores):
         match=r"model and model_mode must be both set or both None, got "
         r"model=FirstFeatureHead and model_mode=None",
     ):
-        USEquityCrossectionSelectStockVectorBt(config)
+        USEquityVectorBt(config)
 
 
 def test_a_model_mode_without_a_model_is_refused_at_construction(stores):
@@ -259,11 +259,11 @@ def test_a_model_mode_without_a_model_is_refused_at_construction(stores):
     with pytest.raises(
         ValueError, match=r"got model=None and model_mode='load'"
     ):
-        USEquityCrossectionSelectStockVectorBt(config)
+        USEquityVectorBt(config)
 
 
 def test_config_without_a_model_serializes_and_rebuilds(stores):
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         _config(stores, with_model=False)
     )
     config = backtester.get_config()
@@ -337,7 +337,7 @@ def test_output_dir_none_writes_nothing_for_run_and_run_weights(stores, monkeypa
     monkeypatch.chdir(workdir)
     before = _files_under(stores["root"])
 
-    run_result = USEquityCrossectionSelectStockVectorBt(
+    run_result = USEquityVectorBt(
         _config(stores, with_model=True, output_dir=None)
     ).run()
     weights_result = _run_weights(stores, run_result.weights, output_dir=None)
@@ -348,7 +348,7 @@ def test_output_dir_none_writes_nothing_for_run_and_run_weights(stores, monkeypa
 
 
 def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stores):
-    run_result = USEquityCrossectionSelectStockVectorBt(
+    run_result = USEquityVectorBt(
         _config(stores, with_model=True, output_dir=None)
     ).run()
 
@@ -380,7 +380,7 @@ def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stor
 
 
 def _weights_result(stores, **overrides):
-    backtester = USEquityCrossectionSelectStockVectorBt(
+    backtester = USEquityVectorBt(
         _config(stores, with_model=False, output_dir=None, **overrides)
     )
     return backtester, backtester.run_weights(_hold_everywhere(stores))
@@ -405,7 +405,7 @@ def test_report_figure_draws_a_result_of_its_own_backtester(stores):
 )
 def test_report_figure_refuses_a_result_of_another_config(stores, overrides, message):
     _, result = _weights_result(stores)
-    other = USEquityCrossectionSelectStockVectorBt(
+    other = USEquityVectorBt(
         _config(stores, with_model=False, output_dir=None, **overrides)
     )
 

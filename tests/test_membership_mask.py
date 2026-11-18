@@ -214,7 +214,7 @@ def test_bars_outside_the_membership_panel_are_refused(scenario):
 
 def test_run_cv_masks_every_fold_and_the_stitched_predictions(tmp_path):
     from quantlab.backtest.predefined.us_equity import (
-        USEquityCrossectionSelectStockVectorBt,
+        USEquityVectorBt,
     )
     from quantlab.backtest.config import CrossSectionBacktestConfig
     from quantlab.portfolio.config import TopNConfig
@@ -238,7 +238,7 @@ def test_run_cv_masks_every_fold_and_the_stitched_predictions(tmp_path):
         [(s, COVERAGE_START, None) for s in ["BBB", "CCC", "DDD", "EEE", "FFF"]],
         as_of="2024-06-28",
     )
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=MembershipMaskedPredictor(

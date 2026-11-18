@@ -40,7 +40,7 @@ have done. A change in engine semantics -- a lost one-bar shift, a long-only
 direction, a dropped forward-fill -- therefore turns these tests red.
 
 Price panels are tiny hand-built ``xr.Dataset``s whose variable names come
-from ``USEquityCrossectionSelectStockVectorBt.MARKET``, never from literal
+from ``USEquityVectorBt.MARKET``, never from literal
 column names, so D-04's single source of truth is kept even in tests.
 Everything is synthetic, CPU-only and offline.
 """
@@ -61,7 +61,7 @@ from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from tests.decision_fixtures import schedule
 from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
-    USEquityCrossectionSelectStockVectorBt,
+    USEquityVectorBt,
 )
 from quantlab.backtest.base import BaseBacktester, SimulationResult
 from quantlab.backtest.config import CrossSectionBacktestConfig
@@ -76,7 +76,7 @@ from tests.backtest_fixtures import (
     write_price_store,
 )
 
-MARKET = USEquityCrossectionSelectStockVectorBt.MARKET
+MARKET = USEquityVectorBt.MARKET
 
 
 def _day(ts) -> str:
@@ -122,8 +122,8 @@ def _config(tmp_path, **overrides) -> CrossSectionBacktestConfig:
     return CrossSectionBacktestConfig(**kwargs)
 
 
-def _backtester(tmp_path, **overrides) -> USEquityCrossectionSelectStockVectorBt:
-    return USEquityCrossectionSelectStockVectorBt(_config(tmp_path, **overrides))
+def _backtester(tmp_path, **overrides) -> USEquityVectorBt:
+    return USEquityVectorBt(_config(tmp_path, **overrides))
 
 
 def _timestamps(n: int) -> pd.DatetimeIndex:
@@ -731,7 +731,7 @@ def test_end_to_end_delisting_run_records_the_settlement(tmp_path):
     dataset_config = write_price_store(
         tmp_path / "store", n_bars=RUN_BARS, delist_at={picked: delist_bar}
     )
-    result = USEquityCrossectionSelectStockVectorBt(
+    result = USEquityVectorBt(
         _trained_run_config(
             tmp_path,
             dataset_config,
@@ -811,7 +811,7 @@ def test_us_equity_market_uses_adjusted_columns():
     from quantlab.enums.data import TiingoColumns
 
     eod_columns = TiingoColumns.EOD.split(",")
-    assert USEquityCrossectionSelectStockVectorBt.MARKET is US_EQUITY_MARKET
+    assert USEquityVectorBt.MARKET is US_EQUITY_MARKET
     assert US_EQUITY_MARKET.fill_price_column == "adjOpen"
     assert US_EQUITY_MARKET.valuation_price_column == "adjClose"
     assert US_EQUITY_MARKET.fill_price_column in eod_columns
@@ -828,7 +828,7 @@ def test_unknown_score_label_fails_at_construction_before_training(tmp_path):
     )
 
     with pytest.raises(ValueError, match="no_such_label"):
-        USEquityCrossectionSelectStockVectorBt(config)
+        USEquityVectorBt(config)
 
     assert config.model.model is None
     assert not list(Path(config.model.config.model_save_dir).rglob("*.joblib"))
@@ -851,7 +851,7 @@ def test_engine_stats_carry_no_benchmark_metric_and_warn_nothing(tmp_path, recwa
         tmp_path, write_price_store(tmp_path / "store", n_bars=RUN_BARS)
     )
 
-    result = USEquityCrossectionSelectStockVectorBt(config).run()
+    result = USEquityVectorBt(config).run()
 
     whole = result.metrics["whole"]
     assert "Total Return [%]" in whole
