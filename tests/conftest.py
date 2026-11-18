@@ -266,6 +266,11 @@ def isolated_registry(monkeypatch):
     """
     from quantlab.acquisition.base import DataSourceRegistry
 
+    # Register every shipped source before the snapshot: a vendor module first
+    # imported inside the test would register into the patched tuple, and the
+    # restore would drop it for the rest of the session.
+    import quantlab.acquisition.registry  # noqa: F401
+
     monkeypatch.setattr(
         DataSourceRegistry,
         "SOURCES",
@@ -293,6 +298,7 @@ _CREDENTIAL_ENV_NAMES = (
     "APCA_API_SECRET_KEY",
     "WRDS_USERNAME",
     "SHARADAR_API_KEY",
+    "STOCKFIT_API_KEY",
 )
 
 

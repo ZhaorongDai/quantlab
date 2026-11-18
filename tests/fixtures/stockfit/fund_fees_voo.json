@@ -1,0 +1,53 @@
+{
+ "page": 1,
+ "pageSize": 3,
+ "totalPages": 6,
+ "totalResults": 17,
+ "data": [
+  {
+   "filedDate": "2026-04-28",
+   "accessionNumber": "0000036405-26-000181",
+   "symbol": "VOO",
+   "managementFee": 0.0002,
+   "distribution12b1Fee": null,
+   "otherExpenses": 0.0001,
+   "acquiredFundFees": null,
+   "totalExpenseRatio": 0.0003,
+   "feeWaiver": null,
+   "netExpenseRatio": null,
+   "maxSalesChargePurchase": null,
+   "maxDeferredSalesCharge": null,
+   "redemptionFee": null
+  },
+  {
+   "filedDate": "2025-04-28",
+   "accessionNumber": "0001683863-25-004078",
+   "symbol": "VOO",
+   "managementFee": 0.0002,
+   "distribution12b1Fee": null,
+   "otherExpenses": 0.0001,
+   "acquiredFundFees": null,
+   "totalExpenseRatio": 0.0003,
+   "feeWaiver": null,
+   "netExpenseRatio": null,
+   "maxSalesChargePurchase": null,
+   "maxDeferredSalesCharge": null,
+   "redemptionFee": null
+  },
+  {
+   "filedDate": "2024-04-25",
+   "accessionNumber": "0001683863-24-002986",
+   "symbol": "VOO",
+   "managementFee": 0.0002,
+   "distribution12b1Fee": null,
+   "otherExpenses": 0.0001,
+   "acquiredFundFees": null,
+   "totalExpenseRatio": 0.0003,
+   "feeWaiver": null,
+   "netExpenseRatio": null,
+   "maxSalesChargePurchase": null,
+   "maxDeferredSalesCharge": null,
+   "redemptionFee": null
+  }
+ ]
+}

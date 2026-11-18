@@ -458,11 +458,15 @@ timestamp
 2024-01-04  True   True
 ```
 
-A Sharadar table whose rows become public on some day (a filing, a 13F quarter) subclasses
-{py:class}`~quantlab.dataset.sharadar.point_in_time.ReleasePanelDataset` and supplies only
-`RAW_TABLES`, its rows with an available date (`_released`, placed by
+A table whose rows become public on some day (a filing, a 13F quarter) subclasses
+`ReleasePanelDataset` (in `quantlab.dataset._support.point_in_time`) and supplies only its
+trading calendar (`_trading_calendar`, a `TradingCalendar`, for example
+`TradingCalendar.of_nyse`), its rows with an available date (`_released`, placed by
 `self._trading_calendar().place`) and a `ReleaseSpec` (`_spec`); the base class holds the
-point-in-time rule, the trading calendar, the axes and the windows.
+point-in-time rule, the axes and the windows. A Sharadar table subclasses
+{py:class}`~quantlab.dataset.sharadar.point_in_time.SepReleasePanelDataset` instead and
+names its `RAW_TABLES`: the calendar is then SEP's trading days. See
+[Release panels](internals.md#release-panels).
 
 ### Datasets that build nothing
 

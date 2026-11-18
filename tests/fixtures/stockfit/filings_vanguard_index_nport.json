@@ -1,0 +1,138 @@
+{
+ "page": 1,
+ "pageSize": 30,
+ "totalPages": 12,
+ "totalResults": 337,
+ "data": [
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000483",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000483/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:17:20Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000482",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000482/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:17:11Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000481",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000481/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:17:00Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000480",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000480/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:16:46Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000479",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000479/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:16:40Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000478",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000478/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:16:34Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000477",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000477/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:16:24Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000476",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000476/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:16:19Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000475",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000475/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:16:10Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000474",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000474/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:16:02Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000473",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000473/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:15:41Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000472",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000472/primary_doc.xml",
+   "dateFiled": "2026-08-28",
+   "acceptedAt": "2026-08-28T20:15:39Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-06-30"
+  },
+  {
+   "type": "NPORT-P",
+   "accessionNumber": "0000036405-26-000325",
+   "url": "https://www.sec.gov/Archives/edgar/data/36405/000003640526000325/primary_doc.xml",
+   "dateFiled": "2026-05-28",
+   "acceptedAt": "2026-05-28T20:39:55Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-03-31"
+  }
+ ]
+}

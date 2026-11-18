@@ -1,0 +1,20 @@
+{
+ "symbols": [
+  "PLUG"
+ ],
+ "exchanges": [
+  "Nasdaq"
+ ],
+ "name": "PLUG POWER INC",
+ "cik": 1093691,
+ "seriesId": 0,
+ "type": "stock",
+ "sector": "Energy",
+ "industry": "Clean Energy & Fuel Cells",
+ "industryGroup": null,
+ "compositeFigi": "BBG000C1XSP8",
+ "ein": 223672377,
+ "formerNames": [],
+ "status": "operating",
+ "priorTickers": []
+}

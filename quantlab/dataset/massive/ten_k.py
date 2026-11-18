@@ -54,9 +54,10 @@ import polars as pl
 import scipy.sparse as sp
 from joblib import Parallel, delayed
 
+from quantlab.dataset._support.point_in_time import ReleaseSpec
 from quantlab.dataset.config import DatasetConfig, MassiveTenKChangesConfig
 from quantlab.dataset.massive.raw import rest_page_files
-from quantlab.dataset.sharadar.point_in_time import ReleasePanelDataset, ReleaseSpec
+from quantlab.dataset.sharadar.point_in_time import SepReleasePanelDataset
 from quantlab.dataset.sharadar.tables import scan_raw_table, table
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.utils.timer import Timer
@@ -191,7 +192,7 @@ def section_changes(keys: pl.DataFrame, counts: sp.csr_matrix) -> pl.DataFrame:
     )
 
 
-class MassiveTenKChangesDataset(ReleasePanelDataset):
+class MassiveTenKChangesDataset(SepReleasePanelDataset):
     """Daily panel of how much each security's latest 10-K changed from the year before.
 
     Parameters

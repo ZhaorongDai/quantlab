@@ -1,0 +1,44 @@
+{
+ "symbols": [
+  "VOO"
+ ],
+ "exchanges": [
+  "NYSE Arca"
+ ],
+ "name": "500 Index Fund",
+ "cik": 36405,
+ "seriesId": 2839,
+ "type": "mf",
+ "sector": null,
+ "industry": null,
+ "industryGroup": null,
+ "compositeFigi": "BBG000BHTMY2",
+ "ein": 231999755,
+ "formerNames": [
+  "VANGUARD INDEX FUNDS/",
+  "VANGUARD INDEX TRUST"
+ ],
+ "status": "operating",
+ "priorTickers": [
+  {
+   "symbol": "VFFSX",
+   "exchange": "NYSE Arca",
+   "lastSeen": "2026-08-05"
+  },
+  {
+   "symbol": "VFIAX",
+   "exchange": "NYSE Arca",
+   "lastSeen": "2026-08-05"
+  },
+  {
+   "symbol": "VFINX",
+   "exchange": "NYSE Arca",
+   "lastSeen": "2026-08-05"
+  },
+  {
+   "symbol": "VIFSX",
+   "exchange": "NYSE Arca",
+   "lastSeen": "2026-08-05"
+  }
+ ]
+}

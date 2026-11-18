@@ -1,0 +1,22 @@
+{
+ "symbols": [
+  "TSM",
+  "TSMWF"
+ ],
+ "exchanges": [
+  "NYSE",
+  "OTC"
+ ],
+ "name": "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD",
+ "cik": 1046179,
+ "seriesId": 0,
+ "type": "stock",
+ "sector": "Information Technology",
+ "industry": "Semiconductors",
+ "industryGroup": "Semiconductors",
+ "compositeFigi": "BBG000BD8ZK0",
+ "ein": null,
+ "formerNames": [],
+ "status": "operating",
+ "priorTickers": []
+}

@@ -1,0 +1,116 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "operating": {
+   "currency": "USD",
+   "rightOfUseAsset": 15221000000,
+   "liabilityCurrent": 3209000000,
+   "liabilityNoncurrent": 12744000000,
+   "liabilityTotal": 15954000000,
+   "payments": {
+    "year1": 3275000000,
+    "year2": 3082000000,
+    "year3": 2510000000,
+    "year4": 2061000000,
+    "year5": 1669000000,
+    "thereafter": 5654000000,
+    "total": 18251000000,
+    "discountExcess": 2297000000
+   },
+   "cost": {
+    "operating": 3345000000,
+    "variable": 1739000000
+   },
+   "cashPaid": 3370000000,
+   "discountRate": 0.036
+  },
+  "finance": {
+   "currency": "USD",
+   "rightOfUseAsset": 4797000000,
+   "liabilityCurrent": 441000000,
+   "liabilityNoncurrent": 2059000000,
+   "liabilityTotal": 2500000000,
+   "payments": {
+    "year1": 491000000,
+    "year2": 345000000,
+    "year3": 335000000,
+    "year4": 314000000,
+    "year5": 241000000,
+    "thereafter": 1143000000,
+    "total": 2869000000,
+    "discountExcess": 369000000
+   },
+   "cost": {
+    "amortization": 553000000,
+    "interest": 65000000
+   },
+   "principalPaid": 1988000000,
+   "interestPaid": 65000000,
+   "discountRate": 0.031
+  },
+  "dateFiled": "2026-02-05",
+  "leaseNotYetCommenced": {
+   "currency": "USD",
+   "total": 58500000000
+  }
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "operating": {
+   "currency": "USD",
+   "rightOfUseAsset": 13588000000,
+   "liabilityCurrent": 2887000000,
+   "liabilityNoncurrent": 11691000000,
+   "liabilityTotal": 14578000000,
+   "payments": {
+    "year1": 3162000000,
+    "year2": 2824000000,
+    "year3": 2311000000,
+    "year4": 1838000000,
+    "year5": 1448000000,
+    "thereafter": 5455000000,
+    "total": 17038000000,
+    "discountExcess": 2460000000
+   },
+   "cost": {
+    "operating": 3304000000,
+    "variable": 1425000000
+   },
+   "cashPaid": 3425000000,
+   "discountRate": 0.034
+  },
+  "finance": {
+   "currency": "USD",
+   "rightOfUseAsset": 2585000000,
+   "liabilityCurrent": 235000000,
+   "liabilityNoncurrent": 1442000000,
+   "liabilityTotal": 1677000000,
+   "payments": {
+    "year1": 257000000,
+    "year2": 208000000,
+    "year3": 208000000,
+    "year4": 197000000,
+    "year5": 166000000,
+    "thereafter": 852000000,
+    "total": 1888000000,
+    "discountExcess": 211000000
+   },
+   "cost": {
+    "amortization": 413000000,
+    "interest": 31000000
+   },
+   "principalPaid": 405000000,
+   "interestPaid": 31000000,
+   "discountRate": 0.028
+  },
+  "dateFiled": "2025-02-05",
+  "leaseNotYetCommenced": {
+   "currency": "USD",
+   "total": 7273000000
+  }
+ }
+]

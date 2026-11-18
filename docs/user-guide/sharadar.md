@@ -187,8 +187,8 @@ SharadarFundamentalsDataset(config).update()
 panel = SharadarFundamentalsDataset(config).panel("2024-01-02", "2024-12-31")
 ```
 
-The release panels (SF1, EVENTS, SF2, SF3A) share one point-in-time rule
-({py:mod}`quantlab.dataset.sharadar.point_in_time`): a row is available from the first trading day
+The release panels (SF1, EVENTS, SF2, SF3A) share one point-in-time rule, placed on SEP's
+trading days ({py:mod}`quantlab.dataset.sharadar.point_in_time`): a row is available from the first trading day
 on or after its release date, and on each day a security shows its latest available row, until
 that row is `stale_after_days` old. A weekend filing shows on Monday. Points worth knowing:
 
@@ -241,6 +241,23 @@ lookup.listings([194817], date(2026, 10, 7))  # [Listing(ticker='META', exchange
 
 {py:func}`~quantlab.dataset.sharadar.stores.write_ticker_sidecars` writes the sidecars of existing
 stores from the raw tier without downloading.
+
+## Company panels on the CIK axis
+
+A company panel keyed by SEC CIK, such as StockFit's statements, reads on permatickers through
+{py:class}`~quantlab.dataset.sharadar.cik_map.CikMapDataset`, the CIK map. Each SEP security's CIK
+is the `CIK=` of its TICKERS `secfilings` URL, and a company's value lands on every security its CIK
+has on the day: both classes of a two-class company carry its statements. A security shows its
+CIK's values only between its `firstpricedate` and `lastpricedate`; a CIK with no security on a day
+contributes nothing that day. The map is a view: it keeps no store, and a factor given it in place
+of a permaticker panel changes nothing else.
+
+```python
+from quantlab.dataset.sharadar.cik_map import CikMapDataset
+
+statements = CikMapDataset(StockFitStatementsDataset(config), "/data/downloads/sharadar")
+statements.panel("2024-01-02", "2024-12-31")["revenue"].sel(symbol=195146)  # GOOGL: Alphabet's revenue
+```
 
 ## Keeping the stores current
 

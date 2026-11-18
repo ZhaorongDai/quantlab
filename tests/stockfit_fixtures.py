@@ -1,0 +1,277 @@
+"""A fake StockFit vendor that replays the recorded responses in ``tests/fixtures/stockfit``.
+
+``FakeVendor`` is a transport for ``StockFitClient(http_get=...)``: it is
+called as ``vendor(url, params=..., headers=...)`` and returns an
+``HttpResponse`` the way ``https://api.stockfit.io/v1`` would:
+
+- a per-entity request (``/api/financials/income-statement?cik=...&period=...``)
+  is answered with the recorded body whose path and identifying parameters
+  (every parameter but ``page``, ``pageSize`` and ``limit``) match, and with
+  404 when nothing was recorded for it; a recorded paged object (one page
+  of a longer list) is served as the list's last page, so a pull of it
+  stops after that page;
+- a market-wide list (``/api/symbols``, ``/api/company/delisted``, the
+  declared split and dividend calendars, the Congress ``trades/recent``
+  feeds) is served
+  from ``vendor.lists[path]``, filtered on the query parameters that are
+  fields of its rows (``status``, ``type``) and paged by ``page`` and
+  ``pageSize`` like the vendor's paged objects;
+- every response carries the ``X-RateLimit-*`` headers, computed from the
+  calls made in the last 60 seconds of ``clock`` and from a daily budget; a
+  call past either limit gets 429;
+- a request without ``Authorization: Bearer <KEY>`` gets 401.
+
+``vendor.bodies`` and ``vendor.lists`` can be edited to make the vendor serve
+a changed response (a restatement, a new company). ``replies`` are canned
+answers served first, an exception being raised instead of answered.
+
+Every value written here (the key, the list rows) is SYNTHETIC; the recorded
+bodies are VERBATIM StockFit responses.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from urllib.parse import urlsplit
+
+FIXTURES = Path(__file__).parent / "fixtures" / "stockfit"
+
+KEY = "synthetic-stockfit-key"  # SYNTHETIC
+
+#: Parameters that page or bound a response rather than say what it is of.
+PAGING = frozenset({"page", "pageSize", "limit"})
+
+#: The CIKs of the recorded companies.
+PLUG, TSM, TWTR, GOOGL = 1093691, 1046179, 1418091, 1652044
+
+
+#: The 13F endpoints: per company and quarter since 2013, too many pulls for a test of the rest.
+THIRTEEN_F_ENDPOINTS = ("institutional_holders", "manager_13f_filings", "manager_portfolio")
+
+
+def all_but_13f() -> list[str]:
+    """Return every endpoint of ``ENDPOINTS`` but the 13F ones, in table order."""
+    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
+
+    return [name for name in ENDPOINTS if name not in THIRTEEN_F_ENDPOINTS]
+
+
+#: The API paths of the three normalized statements.
+STATEMENT_PATHS = (
+    "/api/financials/income-statement",
+    "/api/financials/balance-sheet",
+    "/api/financials/cash-flow-statement",
+)
+
+
+def statement_endpoints() -> list[str]:
+    """Return the endpoints of ``ENDPOINTS`` that pull a normalized statement, in table order."""
+    from quantlab.acquisition.stockfit.endpoints import ENDPOINTS
+
+    return [name for name, endpoint in ENDPOINTS.items() if endpoint.path in STATEMENT_PATHS]
+
+
+def list_requests(names) -> int:
+    """Return the requests a run makes for the market-wide lists among ``names``: one per variant.
+
+    ``FakeVendor`` serves every list and feed it holds in one page, so each
+    variant (entity) of a ``MarketList`` row costs one request.
+    """
+    from quantlab.acquisition.stockfit.endpoints import (
+        ENDPOINTS,
+        MarketList,
+        PullContext,
+    )
+
+    context = PullContext(Path("/nonexistent/stockfit"))
+    return sum(
+        len(ENDPOINTS[name].entities(context)) for name in names if isinstance(ENDPOINTS[name], MarketList)
+    )
+
+
+def fixture(name: str):
+    """Return one recorded response body."""
+    return json.loads((FIXTURES / f"{name}.json").read_text())
+
+
+def company_row(cik: int, name: str, status: str = "operating", kind: str = "stock") -> dict:
+    """Return one row of ``/api/symbols`` in the vendor's shape."""
+    return {  # SYNTHETIC values, VERBATIM field names
+        "symbols": [] if status == "delisted" else [name[:4].upper()],
+        "exchanges": [] if status == "delisted" else ["Nasdaq"],
+        "name": name,
+        "cik": cik,
+        "seriesId": 0,
+        "type": kind,
+        "sector": "Industrials",
+        "industry": "Electrical Equipment",
+        "industryGroup": None,
+        "compositeFigi": None,
+        "ein": None,
+        "formerNames": [],
+        "status": status,
+        "priorTickers": [],
+    }
+
+
+#: The form types ``/api/filings/latest`` accepts (VERBATIM from its HTTP 400 on another type).
+FEED_TYPES = frozenset({"10-K", "10-Q", "20-F", "8-K", "DEF 14A", "DEFA14A", "13D", "13G", "3", "4", "5",
+                        "13F-HR", "NPORT-P", "N-CEN", "EFFECT", "25-NSE", "ARS"})
+
+
+def filing_row(form: str, cik: int, filed: str, accepted: str | None = None) -> dict:
+    """Return one row of ``/api/filings/latest`` in the vendor's shape; the filer's CIK is in its URL."""
+    row = {  # SYNTHETIC values, VERBATIM field names
+        "type": form,
+        "accessionNumber": f"{cik:010d}-26-000001",
+        "url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{cik:010d}26000001/primary_doc.htm",
+        "dateFiled": filed,
+        "xbrl": form in {"10-K", "10-Q", "20-F"},
+        "amendment": False,
+    }
+    if accepted is not None:
+        row["acceptedAt"] = accepted
+    return row
+
+
+def _identity(params) -> frozenset:
+    return frozenset((str(k), str(v)) for k, v in params.items() if k not in PAGING)
+
+
+class FakeClock:
+    """A UTC clock that only moves when slept on or advanced."""
+
+    def __init__(self, start: datetime = datetime(2026, 11, 16, 14, tzinfo=UTC)):
+        self.at = start
+        self.sleeps: list[float] = []
+
+    def now(self) -> datetime:
+        return self.at
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.at += timedelta(seconds=seconds)
+
+    def advance(self, **delta) -> None:
+        self.at += timedelta(**delta)
+
+
+class FakeVendor:
+    """StockFit's API over the recorded fixtures; see the module docstring."""
+
+    def __init__(
+        self,
+        clock: FakeClock,
+        *,
+        companies: list[dict] | None = None,
+        per_minute: int = 60,
+        per_day: int = 25_000,
+        replies: list | None = None,
+    ):
+        index = json.loads((FIXTURES / "index.json").read_text())
+        self.clock = clock
+        self.bodies: dict[tuple[str, frozenset], object] = {
+            (entry["path"], _identity(entry["params"])): fixture(name) for name, entry in index.items()
+        }
+        default = [
+            company_row(PLUG, "Plug Power Inc"),
+            company_row(TSM, "Taiwan Semiconductor Manufacturing Co Ltd"),
+            company_row(TWTR, "Twitter, Inc.", "delisted"),
+        ]
+        rows = default if companies is None else companies
+        self.lists: dict[str, list[dict]] = {
+            "/api/symbols": rows,
+            "/api/company/delisted": [dict(row, delistedAt="2022-11-08") for row in rows if row["status"] == "delisted"],
+            # The declared split and dividend calendars: the recorded first page's rows.
+            "/api/company/upcoming-stock-splits": fixture("upcoming_stock_splits_page1")["data"],
+            "/api/earnings/upcoming-dividends": fixture("earnings_upcoming_dividends_page1")["data"],
+            "/api/congress/house/trades/recent": fixture("congress_house_trades_recent")["data"],
+            "/api/congress/senate/trades/recent": fixture("congress_senate_trades_recent")["data"],
+            "/api/filings/latest": [],
+            # Forward snapshots: empty unless a test fills them.
+            "/api/earnings/upcoming": [],
+            "/api/company/ipo-calendar": [],
+            "/api/filings/recent-offerings": [],
+        }
+        self.per_minute = per_minute
+        self.per_day = per_day
+        self.used_today = 0
+        self._day = clock.now().date()
+        self.replies = list(replies or [])
+        self.calls: list[tuple[str, dict, dict]] = []
+        self.statuses: list[int] = []
+        self._times: list[datetime] = []
+
+    def client(self, **kwargs):
+        """Return a ``StockFitClient`` over this vendor that sleeps on and reads the vendor's clock.
+
+        A client on another clock would wait out a 429 without the vendor's
+        minute window ever rolling, so every test client is made here.
+        """
+        from quantlab.acquisition.stockfit.client import StockFitClient
+
+        return StockFitClient(http_get=self, sleep=self.clock.sleep, now=self.clock.now, **kwargs)
+
+    def requested(self, path: str) -> list[dict]:
+        """Return the parameters of every call made to ``path``, in order."""
+        return [params for url, params, _ in self.calls if urlsplit(url).path.endswith(path)]
+
+    def _limits(self) -> dict[str, str]:
+        recent = [t for t in self._times if self.clock.now() - t < timedelta(seconds=60)]
+        return {
+            "X-RateLimit-Limit-Minute": str(self.per_minute),
+            "X-RateLimit-Remaining-Minute": str(max(self.per_minute - len(recent), 0)),
+            "X-RateLimit-Limit-Day": str(self.per_day),
+            "X-RateLimit-Remaining-Day": str(max(self.per_day - self.used_today, 0)),
+        }
+
+    def __call__(self, url, *, params, headers):
+        response = self._answer(url, params, headers)
+        self.statuses.append(response.status)
+        return response
+
+    def _answer(self, url, params, headers):
+        from quantlab.acquisition._support.http import HttpResponse
+
+        self.calls.append((url, dict(params), dict(headers)))
+        if self.replies:
+            reply = self.replies.pop(0)
+            if isinstance(reply, BaseException):
+                raise reply
+            return HttpResponse(*reply)
+        if headers.get("Authorization") != f"Bearer {KEY}":
+            return HttpResponse(401, b'{"error":"Unauthorized"}')
+        now = self.clock.now()
+        if now.date() != self._day:  # the daily cap resets at 00:00 UTC
+            self._day, self.used_today = now.date(), 0
+        recent = [t for t in self._times if now - t < timedelta(seconds=60)]
+        if len(recent) >= self.per_minute or self.used_today >= self.per_day:
+            return HttpResponse(429, b'{"error":"Too Many Requests"}', self._limits())
+        self._times.append(now)
+        self.used_today += 1
+        path = urlsplit(url).path.removeprefix("/v1")
+        if path == "/api/filings/latest" and params.get("type") not in FEED_TYPES:
+            return HttpResponse(400, b'{"error":"Param \\"type\\" not one of the feed types"}', self._limits())
+        if path in self.lists:
+            body = self._page(self.lists[path], params)
+        else:
+            body = self.bodies.get((path, _identity(params)))
+            if body is None:
+                return HttpResponse(404, b'{"error":"Not found"}', self._limits())
+            if isinstance(body, dict) and "totalPages" in body:
+                body = dict(body, totalPages=body.get("page", 1))
+        return HttpResponse(200, json.dumps(body).encode(), self._limits())
+
+    @staticmethod
+    def _page(rows: list[dict], params) -> dict:
+        rows = [r for r in rows if all(str(r[k]) == str(v) for k, v in params.items() if k in r)]
+        page, size = int(params.get("page", 1)), int(params.get("pageSize", 100))
+        return {
+            "page": page,
+            "pageSize": size,
+            "totalPages": max(-(-len(rows) // size), 1),
+            "totalResults": len(rows),
+            "data": rows[(page - 1) * size : page * size],
+        }

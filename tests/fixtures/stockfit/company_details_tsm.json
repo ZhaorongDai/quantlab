@@ -1,0 +1,31 @@
+{
+ "name": "TAIWAN SEMICONDUCTOR MANUFACTURING CO LTD",
+ "cik": 1046179,
+ "description": "## Business Overview\nTaiwan Semiconductor Manufacturing Company Limited (**TSMC**) is a pure‑play semiconductor **foundry** that manufactures **logic** and related chips for **fabless** and integrated-device customers on a contract basis, monetizing primarily through **wafer sales** priced by process node/technology options and volume commitments. It also provides **advanced packaging** and related manufacturing services (e.g., chip integration/assembly flows) that are often sold alongside wafer production.\n\n## Market Position\nTSMC is widely regarded as the leading advanced-node foundry, with scale advantages in leading-edge manufacturing, yield/quality, and ecosystem enablement; it also reports a **34%** market share of its defined **“Foundry 2.0”** industry. Differentiators include deep process/R&D execution, high-volume leading-edge capacity, and integrated offerings spanning manufacturing and advanced packaging.\n\n## Key Segments\nTSMC reports end-market platforms including **HPC**, **Smartphone**, **IoT**, **Automotive**, and **DCE/Other**; in **2024** it reported net revenue mix of **51% HPC** and **35% Smartphone** (with remaining revenue across IoT, Automotive, DCE, and other categories).",
+ "sic": "3674",
+ "sector": "Information Technology",
+ "industry": "Semiconductors",
+ "industryGroup": "Semiconductors",
+ "fiscalYearEndMonth": 12,
+ "fiscalYearEndDay": 31,
+ "exchanges": [
+  "NYSE",
+  "OTC"
+ ],
+ "symbols": [
+  "TSM",
+  "TSMWF"
+ ],
+ "address": "NO. 8, LI-HSIN ROAD 6 HSINCHU SCIENCE PARK",
+ "city": "HSINCHU",
+ "state": "",
+ "zip": "",
+ "country": "Taiwan",
+ "phone": "886-3-5636688",
+ "webUrl": null,
+ "investorRelationsUrl": "https://investor.tsmc.com/english",
+ "logoUrl": null,
+ "type": "stock",
+ "status": "operating",
+ "ipoDate": "1997-10-08"
+}

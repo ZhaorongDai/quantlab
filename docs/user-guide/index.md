@@ -27,6 +27,7 @@ datasets
 universes
 sharadar
 massive
+stockfit
 wrds
 ```
 

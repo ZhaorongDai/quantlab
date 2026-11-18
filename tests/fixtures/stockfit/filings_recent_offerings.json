@@ -1,0 +1,47 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 18,
+ "totalResults": 90,
+ "data": [
+  {
+   "cik": 839470,
+   "filedDate": "2026-11-13",
+   "isPriced": false,
+   "symbol": "WWR",
+   "name": "WESTWATER RESOURCES, INC."
+  },
+  {
+   "cik": 1854963,
+   "filedDate": "2026-11-13",
+   "isPriced": true,
+   "symbol": "SHFS",
+   "name": "SHF Holdings, Inc.",
+   "priceRangeLow": 18.6336,
+   "priceRangeHigh": 7.8
+  },
+  {
+   "cik": 2125056,
+   "filedDate": "2026-11-13",
+   "isPriced": false,
+   "symbol": "WELA",
+   "name": "Wella Co"
+  },
+  {
+   "cik": 1660851,
+   "filedDate": "2026-11-12",
+   "isPriced": true,
+   "symbol": "FFLY",
+   "name": "FireFly Automatix, Inc.",
+   "priceRangeLow": 5.5674,
+   "priceRangeHigh": 10.58
+  },
+  {
+   "cik": 1849820,
+   "filedDate": "2026-11-12",
+   "isPriced": false,
+   "symbol": "KITT",
+   "name": "Nauticus Robotics, Inc."
+  }
+ ]
+}

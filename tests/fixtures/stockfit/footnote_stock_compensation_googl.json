@@ -1,0 +1,90 @@
+[
+ {
+  "period": "2025-12-31",
+  "fiscalYear": 2025,
+  "fiscalPeriod": "FY",
+  "awards": [
+   {
+    "member": "us-gaap:RestrictedStockUnitsRSUMember",
+    "name": "Restricted Stock Units RSU",
+    "currency": "USD",
+    "unrecognizedCost": 42900000000,
+    "rollForward": {
+     "granted": {
+      "shares": 198000000,
+      "waGrantDateFairValue": 188.82
+     },
+     "vested": {
+      "shares": 181000000,
+      "waGrantDateFairValue": 133.9
+     },
+     "forfeited": {
+      "shares": 34000000,
+      "waGrantDateFairValue": 142.33
+     },
+     "nonvested": {
+      "shares": 282000000,
+      "waGrantDateFairValue": 159.75
+     },
+     "reconciles": true
+    }
+   }
+  ],
+  "planTotals": {
+   "currency": "USD",
+   "expense": 27100000000,
+   "rollForward": {
+    "vested": {
+     "totalFairValue": 39700000000
+    },
+    "nonvested": {
+     "shares": 282000000,
+     "waGrantDateFairValue": 159.75
+    }
+   }
+  },
+  "dateFiled": "2026-07-23"
+ },
+ {
+  "period": "2024-12-31",
+  "fiscalYear": 2024,
+  "fiscalPeriod": "FY",
+  "awards": [
+   {
+    "member": "us-gaap:RestrictedStockUnitsRSUMember",
+    "name": "Restricted Stock Units RSU",
+    "currency": "USD",
+    "unrecognizedCost": 34800000000,
+    "rollForward": {
+     "granted": {
+      "shares": 195000000,
+      "waGrantDateFairValue": 140.04
+     },
+     "vested": {
+      "shares": 199000000,
+      "waGrantDateFairValue": 110.89
+     },
+     "forfeited": {
+      "shares": 35000000,
+      "waGrantDateFairValue": 113.52
+     },
+     "nonvested": {
+      "shares": 299000000,
+      "waGrantDateFairValue": 122.77
+     },
+     "reconciles": true
+    }
+   }
+  ],
+  "planTotals": {
+   "currency": "USD",
+   "expense": 22800000000,
+   "rollForward": {
+    "vested": {
+     "totalFairValue": 33300000000
+    }
+   }
+  },
+  "dateFiled": "2026-02-05"
+ }
+]

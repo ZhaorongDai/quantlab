@@ -1,0 +1,901 @@
+{
+ "as_reported_plug_annual": {
+  "params": {
+   "cik": 1093691,
+   "limit": 10,
+   "period": "annual"
+  },
+  "path": "/api/financials/as-reported",
+  "status": 200,
+  "trimmed": "kept the FY2025 and FY2018 periods of the 10 returned"
+ },
+ "as_reported_plug_quarter": {
+  "params": {
+   "cik": 1093691,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/financials/as-reported",
+  "status": 200,
+  "trimmed": "kept the first 2 of the 4 returned periods"
+ },
+ "balance_sheet_plug_annual": {
+  "params": {
+   "cik": 1093691,
+   "limit": 10,
+   "period": "annual"
+  },
+  "path": "/api/financials/balance-sheet",
+  "status": 200
+ },
+ "balance_sheet_plug_quarter": {
+  "params": {
+   "cik": 1093691,
+   "limit": 12,
+   "period": "quarter"
+  },
+  "path": "/api/financials/balance-sheet",
+  "status": 200
+ },
+ "balance_sheet_plug_ttm": {
+  "params": {
+   "cik": 1093691,
+   "limit": 4,
+   "period": "ttm"
+  },
+  "path": "/api/financials/balance-sheet",
+  "status": 200
+ },
+ "balance_sheet_tsm_annual": {
+  "params": {
+   "cik": 1046179,
+   "limit": 3,
+   "period": "annual"
+  },
+  "path": "/api/financials/balance-sheet",
+  "status": 200
+ },
+ "balance_sheet_twtr_quarter": {
+  "params": {
+   "cik": 1418091,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/financials/balance-sheet",
+  "status": 200
+ },
+ "beneficial_owners_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/ownership/beneficial-owners",
+  "status": 200
+ },
+ "beneficial_owners_history_plug": {
+  "params": {
+   "cik": 1093691
+  },
+  "path": "/api/ownership/beneficial-owners/history",
+  "status": 200
+ },
+ "cash_flow_statement_plug_annual": {
+  "params": {
+   "cik": 1093691,
+   "limit": 10,
+   "period": "annual"
+  },
+  "path": "/api/financials/cash-flow-statement",
+  "status": 200
+ },
+ "cash_flow_statement_plug_quarter": {
+  "params": {
+   "cik": 1093691,
+   "limit": 12,
+   "period": "quarter"
+  },
+  "path": "/api/financials/cash-flow-statement",
+  "status": 200
+ },
+ "cash_flow_statement_plug_ttm": {
+  "params": {
+   "cik": 1093691,
+   "limit": 4,
+   "period": "ttm"
+  },
+  "path": "/api/financials/cash-flow-statement",
+  "status": 200
+ },
+ "cash_flow_statement_tsm_annual": {
+  "params": {
+   "cik": 1046179,
+   "limit": 3,
+   "period": "annual"
+  },
+  "path": "/api/financials/cash-flow-statement",
+  "status": 200
+ },
+ "cash_flow_statement_twtr_quarter": {
+  "params": {
+   "cik": 1418091,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/financials/cash-flow-statement",
+  "status": 200
+ },
+ "company_delisted_page1": {
+  "params": {
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/company/delisted",
+  "status": 200
+ },
+ "company_details_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/company/details",
+  "status": 200
+ },
+ "company_details_google_inc": {
+  "params": {
+   "cik": 1288776
+  },
+  "path": "/api/company/details",
+  "status": 200
+ },
+ "company_details_plug": {
+  "params": {
+   "cik": 1093691
+  },
+  "path": "/api/company/details",
+  "status": 200
+ },
+ "company_details_tsm": {
+  "params": {
+   "cik": 1046179
+  },
+  "path": "/api/company/details",
+  "status": 200
+ },
+ "company_details_twtr": {
+  "params": {
+   "cik": 1418091
+  },
+  "path": "/api/company/details",
+  "status": 200
+ },
+ "company_ipo_calendar_upcoming": {
+  "params": {
+   "page": 1,
+   "pageSize": 5,
+   "status": "upcoming"
+  },
+  "path": "/api/company/ipo-calendar",
+  "status": 200
+ },
+ "congress_house_trades_nvda": {
+  "params": {
+   "cik": 1045810,
+   "page": 1,
+   "pageSize": 3
+  },
+  "path": "/api/congress/house/trades",
+  "status": 200
+ },
+ "congress_house_trades_recent": {
+  "params": {
+   "page": 1,
+   "pageSize": 3,
+   "since": "2026-11-01"
+  },
+  "path": "/api/congress/house/trades/recent",
+  "status": 200
+ },
+ "congress_senate_trades_nvda": {
+  "params": {
+   "cik": 1045810,
+   "page": 1,
+   "pageSize": 3
+  },
+  "path": "/api/congress/senate/trades",
+  "status": 200
+ },
+ "congress_senate_trades_recent": {
+  "params": {
+   "page": 1,
+   "pageSize": 3,
+   "since": "2026-11-01"
+  },
+  "path": "/api/congress/senate/trades/recent",
+  "status": 200
+ },
+ "dividend_history_googl_quarter": {
+  "params": {
+   "cik": 1652044,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/earnings/dividend-history",
+  "status": 200
+ },
+ "earnings_calendar_googl_aapl": {
+  "params": {
+   "symbols": "GOOGL,AAPL"
+  },
+  "path": "/api/earnings/calendar",
+  "status": 200
+ },
+ "earnings_date_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/earnings/date",
+  "status": 200
+ },
+ "earnings_dividend_date_ko": {
+  "params": {
+   "cik": 21344
+  },
+  "path": "/api/earnings/dividend-date",
+  "status": 200
+ },
+ "earnings_upcoming_dividends_page1": {
+  "params": {
+   "days": 7,
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/earnings/upcoming-dividends",
+  "status": 200
+ },
+ "earnings_upcoming_page1": {
+  "params": {
+   "days": 7,
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/earnings/upcoming",
+  "status": 200
+ },
+ "eps_history_googl_quarter": {
+  "params": {
+   "cik": 1652044,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/earnings/eps-history",
+  "status": 200
+ },
+ "executives_compensation_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/executives/compensation",
+  "status": 200
+ },
+ "executives_governance_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/executives/governance",
+  "status": 200
+ },
+ "executives_officers_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/executives/officers",
+  "status": 200
+ },
+ "executives_performance_measures_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/executives/performance-measures",
+  "status": 200
+ },
+ "filings_berkshire_13f": {
+  "params": {
+   "cik": 1067983,
+   "page": 1,
+   "pageSize": 100,
+   "type": "13F-HR"
+  },
+  "path": "/api/filings",
+  "status": 200,
+  "trimmed": "kept the rows for periods 2023-09-30 and 2023-12-31 (originals and amendments) of the 100 returned"
+ },
+ "filings_by_accession_googl_13g": {
+  "params": {
+   "accessionNumber": "0001193125-26-055590"
+  },
+  "path": "/api/filings/search-by-accession-number",
+  "status": 200
+ },
+ "filings_calendar_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/filings/calendar",
+  "status": 200
+ },
+ "filings_googl_8k_earnings": {
+  "params": {
+   "cik": 1652044,
+   "event": "earnings",
+   "page": 1,
+   "pageSize": 3,
+   "type": "8-K"
+  },
+  "path": "/api/filings",
+  "status": 200
+ },
+ "filings_googl_page1": {
+  "params": {
+   "cik": 1652044,
+   "page": 1,
+   "pageSize": 10
+  },
+  "path": "/api/filings",
+  "status": 200
+ },
+ "filings_item_list_googl_10q": {
+  "params": {
+   "accessionNumber": "0001652044-26-000084"
+  },
+  "path": "/api/filings/item-list",
+  "status": 200
+ },
+ "filings_latest_10q": {
+  "params": {
+   "page": 1,
+   "pageSize": 5,
+   "type": "10-Q"
+  },
+  "path": "/api/filings/latest",
+  "status": 200
+ },
+ "filings_latest_page1": {
+  "params": {
+   "page": 1,
+   "pageSize": 10
+  },
+  "path": "/api/filings/latest",
+  "status": 200
+ },
+ "filings_offering_googl": {
+  "params": {
+   "cik": 1652044,
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/filings/offering",
+  "status": 200
+ },
+ "filings_offering_wela": {
+  "params": {
+   "cik": 2125056,
+   "page": 1,
+   "pageSize": 2
+  },
+  "path": "/api/filings/offering",
+  "status": 200
+ },
+ "filings_recent_offerings": {
+  "params": {
+   "days": 30,
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/filings/recent-offerings",
+  "status": 200
+ },
+ "filings_vanguard_index_nport": {
+  "params": {
+   "cik": 36405,
+   "page": 1,
+   "pageSize": 30,
+   "type": "NPORT-P"
+  },
+  "path": "/api/filings",
+  "status": 200,
+  "trimmed": "kept the first 13 of the 30 returned rows (two quarters)"
+ },
+ "footnote_asset_composition_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/asset-composition",
+  "status": 200
+ },
+ "footnote_backlog_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/backlog",
+  "status": 200
+ },
+ "footnote_business_segmentation_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/business-segmentation",
+  "status": 200
+ },
+ "footnote_buybacks_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/buybacks",
+  "status": 200
+ },
+ "footnote_buybacks_googl_quarter": {
+  "params": {
+   "cik": 1652044,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/footnotes/buybacks",
+  "status": 200
+ },
+ "footnote_concentration_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/concentration",
+  "status": 200
+ },
+ "footnote_credit_facilities_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/credit-facilities",
+  "status": 200
+ },
+ "footnote_debt_structure_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/debt-structure",
+  "status": 200
+ },
+ "footnote_fair_value_hierarchy_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/fair-value-hierarchy",
+  "status": 200
+ },
+ "footnote_leases_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/leases",
+  "status": 200
+ },
+ "footnote_reit_properties_o": {
+  "params": {
+   "cik": 726728,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/reit-properties",
+  "status": 200,
+  "trimmed": "kept the first 3 properties of each period (5785/5154 returned)"
+ },
+ "footnote_restructuring_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/restructuring",
+  "status": 200
+ },
+ "footnote_retirement_plans_ba": {
+  "params": {
+   "cik": 12927,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/retirement-plans",
+  "status": 200
+ },
+ "footnote_revenue_segmentation_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/revenue-segmentation",
+  "status": 200
+ },
+ "footnote_stock_compensation_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/stock-compensation",
+  "status": 200
+ },
+ "footnote_subsidiary_financials_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/subsidiary-financials",
+  "status": 200
+ },
+ "footnote_supplier_finance_ba": {
+  "params": {
+   "cik": 12927,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/supplier-finance",
+  "status": 200
+ },
+ "footnote_workforce_cost_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 2,
+   "period": "annual"
+  },
+  "path": "/api/footnotes/workforce-cost",
+  "status": 200
+ },
+ "fund_fees_voo": {
+  "params": {
+   "page": 1,
+   "pageSize": 3,
+   "symbol": "VOO"
+  },
+  "path": "/api/fund/fees",
+  "status": 200
+ },
+ "fund_flows_voo": {
+  "params": {
+   "symbol": "VOO"
+  },
+  "path": "/api/fund/flows",
+  "status": 200
+ },
+ "fund_holdings_daily_voo_page1": {
+  "params": {
+   "page": 1,
+   "pageSize": 5,
+   "symbol": "VOO"
+  },
+  "path": "/api/fund/holdings/daily",
+  "status": 200
+ },
+ "fund_holdings_voo_page1": {
+  "params": {
+   "page": 1,
+   "pageSize": 5,
+   "symbol": "VOO"
+  },
+  "path": "/api/fund/holdings",
+  "status": 200
+ },
+ "fund_performance_voo": {
+  "params": {
+   "page": 1,
+   "pageSize": 3,
+   "symbol": "VOO"
+  },
+  "path": "/api/fund/performance",
+  "status": 200
+ },
+ "fund_profile_voo": {
+  "params": {
+   "symbol": "VOO"
+  },
+  "path": "/api/fund/profile",
+  "status": 200
+ },
+ "growth_googl_quarter": {
+  "params": {
+   "cik": 1652044,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/financials/growth",
+  "status": 200
+ },
+ "income_statement_googl_quarter_source_details": {
+  "params": {
+   "cik": 1652044,
+   "includeSourceDetails": "true",
+   "limit": 2,
+   "period": "quarter"
+  },
+  "path": "/api/financials/income-statement",
+  "status": 200
+ },
+ "income_statement_plug_annual": {
+  "params": {
+   "cik": 1093691,
+   "limit": 10,
+   "period": "annual"
+  },
+  "path": "/api/financials/income-statement",
+  "status": 200
+ },
+ "income_statement_plug_quarter": {
+  "params": {
+   "cik": 1093691,
+   "limit": 12,
+   "period": "quarter"
+  },
+  "path": "/api/financials/income-statement",
+  "status": 200
+ },
+ "income_statement_plug_ttm": {
+  "params": {
+   "cik": 1093691,
+   "limit": 4,
+   "period": "ttm"
+  },
+  "path": "/api/financials/income-statement",
+  "status": 200
+ },
+ "income_statement_tsm_annual": {
+  "params": {
+   "cik": 1046179,
+   "limit": 3,
+   "period": "annual"
+  },
+  "path": "/api/financials/income-statement",
+  "status": 200
+ },
+ "income_statement_twtr_quarter": {
+  "params": {
+   "cik": 1418091,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/financials/income-statement",
+  "status": 200
+ },
+ "insider_transactions_googl_page1": {
+  "params": {
+   "cik": 1652044,
+   "page": 1,
+   "pageSize": 10
+  },
+  "path": "/api/insider-transactions",
+  "status": 200
+ },
+ "institutional_holders_cb_2023q3": {
+  "params": {
+   "cusip": "H1467J104",
+   "page": 1,
+   "pageSize": 25,
+   "reportDate": "2023-09-30"
+  },
+  "path": "/api/ownership/institutional-holders",
+  "status": 200,
+  "trimmed": "kept Berkshire Hathaway's row (from a 13F-HR/A) and 2 other rows of the 25 returned"
+ },
+ "institutional_holders_googl_class_a_page1": {
+  "params": {
+   "cusip": "02079K305",
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/ownership/institutional-holders",
+  "status": 200
+ },
+ "institutional_holders_history_googl_class_a": {
+  "params": {
+   "composite_figi": "BBG009DVP7F8"
+  },
+  "path": "/api/ownership/institutional-holders/history",
+  "status": 200
+ },
+ "key_metrics_googl_quarter": {
+  "params": {
+   "cik": 1652044,
+   "limit": 4,
+   "period": "quarter"
+  },
+  "path": "/api/financials/key-metrics",
+  "status": 200
+ },
+ "lookup_cik_twtr": {
+  "params": {
+   "cik": 1418091
+  },
+  "path": "/api/lookup/cik",
+  "status": 200
+ },
+ "lookup_cik_voo": {
+  "params": {
+   "cik": 36405,
+   "seriesId": 2839
+  },
+  "path": "/api/lookup/cik",
+  "status": 200
+ },
+ "lookup_cusip_goog_class_c": {
+  "params": {
+   "cusip": "02079K107"
+  },
+  "path": "/api/lookup/cusip",
+  "status": 200
+ },
+ "lookup_cusip_tsm_adr": {
+  "params": {
+   "cusip": "874039100"
+  },
+  "path": "/api/lookup/cusip",
+  "status": 200
+ },
+ "lookup_figi_goog_class_c": {
+  "params": {
+   "figi": "BBG009S3NB30"
+  },
+  "path": "/api/lookup/figi",
+  "status": 200
+ },
+ "lookup_symbol_brk_b": {
+  "params": {
+   "symbol": "BRK-B"
+  },
+  "path": "/api/lookup/symbol",
+  "status": 200
+ },
+ "lookup_symbol_goog": {
+  "params": {
+   "symbol": "GOOG"
+  },
+  "path": "/api/lookup/symbol",
+  "status": 200
+ },
+ "lookup_symbol_googl": {
+  "params": {
+   "symbol": "GOOGL"
+  },
+  "path": "/api/lookup/symbol",
+  "status": 200
+ },
+ "lookup_symbol_plug": {
+  "params": {
+   "symbol": "PLUG"
+  },
+  "path": "/api/lookup/symbol",
+  "status": 200
+ },
+ "lookup_symbol_tsm": {
+  "params": {
+   "symbol": "TSM"
+  },
+  "path": "/api/lookup/symbol",
+  "status": 200
+ },
+ "lookup_symbol_voo": {
+  "params": {
+   "symbol": "VOO"
+  },
+  "path": "/api/lookup/symbol",
+  "status": 200
+ },
+ "news_googl": {
+  "params": {
+   "cik": 1652044,
+   "limit": 5
+  },
+  "path": "/api/lookup/news",
+  "status": 200
+ },
+ "ownership_portfolio_berkshire_page1": {
+  "params": {
+   "cik": 1067983,
+   "page": 1,
+   "pageSize": 10
+  },
+  "path": "/api/ownership/portfolio",
+  "status": 200
+ },
+ "recent_stock_splits_page1": {
+  "params": {
+   "days": 90,
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/company/recent-stock-splits",
+  "status": 200
+ },
+ "scores_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/financials/scores",
+  "status": 200
+ },
+ "share_classes_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/ownership/share-classes",
+  "status": 200
+ },
+ "stock_splits_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/company/stock-splits",
+  "status": 200
+ },
+ "symbols_delisted_page1": {
+  "params": {
+   "page": 1,
+   "pageSize": 5,
+   "status": "delisted"
+  },
+  "path": "/api/symbols",
+  "status": 200
+ },
+ "symbols_exchanges": {
+  "params": {},
+  "path": "/api/symbols/exchanges",
+  "status": 200
+ },
+ "symbols_industries": {
+  "params": {},
+  "path": "/api/symbols/industries",
+  "status": 200
+ },
+ "symbols_operating_page1": {
+  "params": {
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/symbols",
+  "status": 200
+ },
+ "symbols_sectors": {
+  "params": {},
+  "path": "/api/symbols/sectors",
+  "status": 200
+ },
+ "trends_googl": {
+  "params": {
+   "cik": 1652044
+  },
+  "path": "/api/earnings/trends",
+  "status": 200
+ },
+ "upcoming_stock_splits_page1": {
+  "params": {
+   "days": 28,
+   "page": 1,
+   "pageSize": 5
+  },
+  "path": "/api/company/upcoming-stock-splits",
+  "status": 200
+ }
+}

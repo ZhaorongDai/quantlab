@@ -1,0 +1,58 @@
+{
+ "page": 1,
+ "pageSize": 100,
+ "totalPages": 3,
+ "totalResults": 211,
+ "data": [
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0000950123-24-005664",
+   "url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005664/xslForm13F_X02/primary_doc.xml",
+   "dateFiled": "2024-05-15",
+   "acceptedAt": "2024-05-15T20:16:06Z",
+   "xbrl": false,
+   "amendment": true,
+   "periodEndDate": "2023-12-31"
+  },
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0000950123-24-005653",
+   "url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324005653/xslForm13F_X02/primary_doc.xml",
+   "dateFiled": "2024-05-15",
+   "acceptedAt": "2024-05-15T20:11:06Z",
+   "xbrl": false,
+   "amendment": true,
+   "periodEndDate": "2023-09-30"
+  },
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0000950123-24-002518",
+   "url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012324002518/xslForm13F_X02/primary_doc.xml",
+   "dateFiled": "2024-02-14",
+   "acceptedAt": "2024-02-14T21:02:18Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2023-12-31"
+  },
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0000950123-23-011029",
+   "url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323011029/xslForm13F_X02/primary_doc.xml",
+   "dateFiled": "2023-11-16",
+   "acceptedAt": "2023-11-16T21:46:50Z",
+   "xbrl": false,
+   "amendment": true,
+   "periodEndDate": "2023-09-30"
+  },
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0000950123-23-010898",
+   "url": "https://www.sec.gov/Archives/edgar/data/1067983/000095012323010898/xslForm13F_X02/primary_doc.xml",
+   "dateFiled": "2023-11-14",
+   "acceptedAt": "2023-11-14T21:05:04Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2023-09-30"
+  }
+ ]
+}

@@ -1,0 +1,29 @@
+[
+ {
+  "className": "Class A",
+  "classMember": "us-gaap:CommonClassAMember",
+  "sharesOutstanding": 5888000000,
+  "sharesAuthorized": 180000000000,
+  "periodEnd": "2026-09-30",
+  "year": 2026,
+  "fp": "Q3"
+ },
+ {
+  "className": "Class C",
+  "classMember": "us-gaap:CommonClassCMember",
+  "sharesOutstanding": 5578000000,
+  "sharesAuthorized": 60000000000,
+  "periodEnd": "2026-09-30",
+  "year": 2026,
+  "fp": "Q3"
+ },
+ {
+  "className": "Class B",
+  "classMember": "us-gaap:CommonClassBMember",
+  "sharesOutstanding": 828000000,
+  "sharesAuthorized": 60000000000,
+  "periodEnd": "2026-09-30",
+  "year": 2026,
+  "fp": "Q3"
+ }
+]

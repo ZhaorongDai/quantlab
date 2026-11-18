@@ -1,0 +1,76 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 21,
+ "totalResults": 103,
+ "data": [
+  {
+   "symbols": [
+    "ASST",
+    "SATA",
+    "SATS"
+   ],
+   "name": "Strive, Inc.",
+   "exDate": "2026-11-16",
+   "paymentDate": "2026-11-17",
+   "recordDate": "2026-11-16",
+   "announcementDate": "2026-10-12",
+   "dividendPerShare": 0.0571,
+   "indicatedAnnualDividend": 14.2179,
+   "currency": "USD"
+  },
+  {
+   "symbols": [
+    "ASTE"
+   ],
+   "name": "ASTEC INDUSTRIES INC",
+   "exDate": "2026-11-16",
+   "paymentDate": "2026-12-04",
+   "recordDate": "2026-11-16",
+   "announcementDate": "2026-10-30",
+   "dividendPerShare": 0.13,
+   "indicatedAnnualDividend": 0.52,
+   "currency": "USD"
+  },
+  {
+   "symbols": [
+    "BRBI"
+   ],
+   "name": "BRBI BR Partners S.A.",
+   "exDate": "2026-11-16",
+   "paymentDate": "2026-12-04",
+   "recordDate": "2026-11-16",
+   "announcementDate": "2026-11-06",
+   "dividendPerShare": 0.08786,
+   "indicatedAnnualDividend": 0,
+   "currency": "USD"
+  },
+  {
+   "symbols": [
+    "BUSE",
+    "BUSEP"
+   ],
+   "name": "FIRST BUSEY CORP /NV/",
+   "exDate": "2026-11-16",
+   "paymentDate": "2026-12-01",
+   "recordDate": "2026-11-16",
+   "announcementDate": "2026-11-06",
+   "dividendPerShare": 0.515625,
+   "indicatedAnnualDividend": 2.0625,
+   "currency": "USD"
+  },
+  {
+   "symbols": [
+    "CEG"
+   ],
+   "name": "Constellation Energy Corp",
+   "exDate": "2026-11-16",
+   "paymentDate": "2026-12-04",
+   "recordDate": "2026-11-16",
+   "announcementDate": "2026-10-30",
+   "dividendPerShare": 0.4265,
+   "indicatedAnnualDividend": 1.706,
+   "currency": "USD"
+  }
+ ]
+}

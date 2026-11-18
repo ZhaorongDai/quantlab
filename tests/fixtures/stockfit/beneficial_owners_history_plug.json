@@ -1,0 +1,123 @@
+[
+ {
+  "reportingPersonName": "BlackRock, Inc.",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 12.8,
+  "aggregateAmountOwned": 178091159,
+  "reportDate": "2026-07-29 00:00:00",
+  "accessionNumber": "0002012383-26-002858",
+  "filingType": "13G",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "Vanguard Capital Management",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 5.23,
+  "aggregateAmountOwned": 73043212,
+  "reportDate": "2026-04-30 00:00:00",
+  "accessionNumber": "0002100119-26-000952",
+  "filingType": "13G",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "The Vanguard Group",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 0,
+  "aggregateAmountOwned": 0,
+  "reportDate": "2026-03-28 05:19:13.361",
+  "accessionNumber": "0000102909-26-002096",
+  "filingType": "13G",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "Norges Bank",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 0.4,
+  "aggregateAmountOwned": 5006031,
+  "reportDate": "2025-07-24 15:11:41",
+  "accessionNumber": "0001374170-25-000063",
+  "filingType": "13G",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "Grove Energy Capital LLC",
+  "reportingPersonCik": 1844540,
+  "activist": false,
+  "percentOfClass": 4.8,
+  "aggregateAmountOwned": 54966188,
+  "reportDate": "2025-06-26 00:59:45",
+  "accessionNumber": "0001829655-25-000009",
+  "filingType": "13D",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "PNES Investments, LLC",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 4.8,
+  "aggregateAmountOwned": 54966188,
+  "reportDate": "2025-06-26 00:59:45",
+  "accessionNumber": "0001829655-25-000009",
+  "filingType": "13D",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "PRISM Energy International Americas, Inc. (formerly known as SK E&S Americas, Inc.)",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 4.8,
+  "aggregateAmountOwned": 54966188,
+  "reportDate": "2025-06-26 00:59:45",
+  "accessionNumber": "0001829655-25-000009",
+  "filingType": "13D",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "PassKey, Inc.",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 4.8,
+  "aggregateAmountOwned": 54966188,
+  "reportDate": "2025-06-26 00:59:45",
+  "accessionNumber": "0001829655-25-000009",
+  "filingType": "13D",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "Plutus Capital NY, Inc.",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 4.8,
+  "aggregateAmountOwned": 0,
+  "reportDate": "2025-06-26 00:59:45",
+  "accessionNumber": "0001829655-25-000009",
+  "filingType": "13D",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "SK Inc. (formerly known as SK Holdings Co., Ltd.)",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 4.8,
+  "aggregateAmountOwned": 54966188,
+  "reportDate": "2025-06-26 00:59:45",
+  "accessionNumber": "0001829655-25-000009",
+  "filingType": "13D",
+  "intent": null
+ },
+ {
+  "reportingPersonName": "SK Innovation Co., Ltd.",
+  "reportingPersonCik": null,
+  "activist": false,
+  "percentOfClass": 4.8,
+  "aggregateAmountOwned": 54966188,
+  "reportDate": "2025-06-26 00:59:45",
+  "accessionNumber": "0001829655-25-000009",
+  "filingType": "13D",
+  "intent": null
+ }
+]

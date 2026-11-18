@@ -40,18 +40,27 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.core.store_folder import COMPONENT_FILE, README_FILE, load_component, save_component
-from quantlab.dataset.config import DatasetConfig, MassiveRestPanelConfig, TickerMapConfig
-from quantlab.dataset.massive.placement import UNPLACED_SUFFIX
-from quantlab.dataset.massive.raw import VENDOR_DIR, read_rest_watermark
-from quantlab.dataset.massive.ticker_map import TickerMap
-from quantlab.dataset.sharadar.point_in_time import (
+from quantlab.core.store_folder import (
+    COMPONENT_FILE,
+    README_FILE,
+    load_component,
+    save_component,
+)
+from quantlab.dataset._support.point_in_time import (
     ReleasePanelDataset,
     ReleaseSpec,
     TradingCalendar,
     on_grid,
     to_panel,
 )
+from quantlab.dataset.config import (
+    DatasetConfig,
+    MassiveRestPanelConfig,
+    TickerMapConfig,
+)
+from quantlab.dataset.massive.placement import UNPLACED_SUFFIX
+from quantlab.dataset.massive.raw import VENDOR_DIR, read_rest_watermark
+from quantlab.dataset.massive.ticker_map import TickerMap
 from quantlab.dataset.sharadar.tables import raw_through, trading_days
 from quantlab.dataset.sharadar.universe import normalize_universe
 
@@ -75,7 +84,7 @@ class MassiveRestPanel:
     --------
     ``MassiveDisclosureDataset`` is one::
 
-        class MassiveDisclosureDataset(MassiveRestPanel, FilingPanelDataset):
+        class MassiveDisclosureDataset(MassiveRestPanel, SharadarFilingPanelDataset):
             REST_ENDPOINTS = ("8k_disclosures",)
     """
 

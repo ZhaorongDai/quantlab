@@ -1,0 +1,51 @@
+[
+ {
+  "name": "Sundar Pichai",
+  "role": "ceo",
+  "title": "Chief Executive Officer",
+  "firstSeen": "2015-10-28",
+  "lastSeen": "2026-10-27"
+ },
+ {
+  "name": "Anat Ashkenazi",
+  "role": "officer",
+  "title": "SVP, Chief Financial Officer",
+  "firstSeen": "2024-08-09",
+  "lastSeen": "2026-10-27"
+ },
+ {
+  "name": "John Walker",
+  "role": "officer",
+  "title": "President, Global Affairs, CLO",
+  "firstSeen": "2020-12-28",
+  "lastSeen": "2026-10-27"
+ },
+ {
+  "name": "Marsida Saraci",
+  "role": "officer",
+  "title": "VP, Chief Accounting Officer",
+  "firstSeen": "2026-06-05",
+  "lastSeen": "2026-10-27"
+ },
+ {
+  "name": "Philipp Schindler",
+  "role": "officer",
+  "title": "SVP, Chief Business Officer",
+  "firstSeen": "2020-12-28",
+  "lastSeen": "2026-10-27"
+ },
+ {
+  "name": "Ruth Porat",
+  "role": "officer",
+  "title": "President and CIO",
+  "firstSeen": "2015-12-29",
+  "lastSeen": "2026-10-27"
+ },
+ {
+  "name": "Amie O'Toole",
+  "role": "officer",
+  "title": "VP, Chief Accounting Officer",
+  "firstSeen": "2018-04-27",
+  "lastSeen": "2026-04-03"
+ }
+]

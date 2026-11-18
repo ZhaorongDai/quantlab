@@ -1,0 +1,63 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 2,
+ "totalResults": 10,
+ "data": [
+  {
+   "status": "upcoming",
+   "companyName": "MetaOptics Ltd",
+   "proposedTicker": "MOT",
+   "exchange": "NASDAQ Capital",
+   "priceRangeLow": 5,
+   "priceRangeHigh": 7,
+   "sharesOffered": 3000000,
+   "dollarValue": 24150000,
+   "expectedPriceDate": "2026-08-14"
+  },
+  {
+   "status": "upcoming",
+   "companyName": "Bamboo Insurance Services, Inc.",
+   "proposedTicker": "BMB",
+   "exchange": "NYSE",
+   "priceRangeLow": 18,
+   "priceRangeHigh": 20,
+   "sharesOffered": 35000000,
+   "dollarValue": 805000000,
+   "expectedPriceDate": "2026-09-23"
+  },
+  {
+   "status": "upcoming",
+   "companyName": "Oura Inc.",
+   "proposedTicker": "OURA",
+   "exchange": "NASDAQ Global Select",
+   "priceRangeLow": 40,
+   "priceRangeHigh": 44,
+   "sharesOffered": 50000000,
+   "dollarValue": 2530000000,
+   "expectedPriceDate": "2026-09-30"
+  },
+  {
+   "status": "upcoming",
+   "companyName": "AfterNext Acquisition I Corp.",
+   "proposedTicker": "AFNXU",
+   "exchange": "NASDAQ Global",
+   "priceRangeLow": 10,
+   "priceRangeHigh": 10,
+   "sharesOffered": 10000000,
+   "dollarValue": 115000000,
+   "expectedPriceDate": "2026-10-07"
+  },
+  {
+   "status": "upcoming",
+   "companyName": "OPAY Ltd",
+   "proposedTicker": "OPAY",
+   "exchange": "NYSE",
+   "priceRangeLow": 19,
+   "priceRangeHigh": 21,
+   "sharesOffered": 16000000,
+   "dollarValue": 386400000,
+   "expectedPriceDate": "2026-10-30"
+  }
+ ]
+}

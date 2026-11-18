@@ -1,0 +1,39 @@
+{
+ "symbol": "GOOGL",
+ "latestPeriod": "2025-12-31",
+ "margins": {
+  "gross": {
+   "latest": 59.7,
+   "threeYearAgo": 55.4,
+   "direction": "expanding"
+  },
+  "operating": {
+   "latest": 32,
+   "threeYearAgo": 26.5,
+   "direction": "expanding"
+  },
+  "net": {
+   "latest": 32.8,
+   "threeYearAgo": 21.2,
+   "direction": "expanding"
+  }
+ },
+ "netMarginStdDev": 5.2,
+ "netMarginStdDevRecent": 4.1,
+ "historicalMaxNetMargin": 32.8,
+ "cagr": {
+  "revenue3yr": 12.5,
+  "revenue5yr": 17.2,
+  "netIncome3yr": 30.1,
+  "netIncome5yr": 26.8,
+  "eps3yr": 33.5,
+  "eps5yr": 29.8,
+  "freeCashFlow3yr": 6.9
+ },
+ "quality": {
+  "fcfToNetIncome": 55.4,
+  "interestCoverage": 175.3,
+  "debtToOperatingIncome": 0.5,
+  "roe": 31.8
+ }
+}

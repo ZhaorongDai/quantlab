@@ -1,0 +1,112 @@
+{
+ "page": 1,
+ "pageSize": 10,
+ "totalPages": 6097,
+ "totalResults": 60969,
+ "data": [
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0002164997-26-000001",
+   "url": "https://www.sec.gov/Archives/edgar/data/2164997/000216499726000001/primary_doc.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T17:50:31Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-09-30"
+  },
+  {
+   "type": "13G",
+   "accessionNumber": "0002164989-26-000001",
+   "url": "https://www.sec.gov/Archives/edgar/data/1009891/000216498926000001/primary_doc.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T15:45:54Z",
+   "xbrl": false,
+   "amendment": false,
+   "symbol": "AIRI",
+   "companyName": "AIR INDUSTRIES GROUP"
+  },
+  {
+   "type": "13G",
+   "accessionNumber": "0002164989-26-000001",
+   "url": "https://www.sec.gov/Archives/edgar/data/2164989/000216498926000001/primary_doc.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T15:45:54Z",
+   "xbrl": false,
+   "amendment": false
+  },
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0002164859-26-000001",
+   "url": "https://www.sec.gov/Archives/edgar/data/2164859/000216485926000001/primary_doc.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T21:39:51Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-09-30"
+  },
+  {
+   "type": "13G",
+   "accessionNumber": "0002163771-26-000001",
+   "url": "https://www.sec.gov/Archives/edgar/data/1721484/000216377126000001/primary_doc.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T18:44:12Z",
+   "xbrl": false,
+   "amendment": false,
+   "symbol": "LGVN",
+   "companyName": "Longeveron Inc."
+  },
+  {
+   "type": "13G",
+   "accessionNumber": "0002163771-26-000001",
+   "url": "https://www.sec.gov/Archives/edgar/data/2163771/000216377126000001/primary_doc.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T18:44:12Z",
+   "xbrl": false,
+   "amendment": false
+  },
+  {
+   "type": "3",
+   "accessionNumber": "0002162958-26-000002",
+   "url": "https://www.sec.gov/Archives/edgar/data/40533/000216295826000002/ownership.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T21:20:26Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-11-03",
+   "symbol": "GD",
+   "companyName": "GENERAL DYNAMICS CORP"
+  },
+  {
+   "type": "3",
+   "accessionNumber": "0002162958-26-000002",
+   "url": "https://www.sec.gov/Archives/edgar/data/2162958/000216295826000002/ownership.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T21:20:26Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-11-03"
+  },
+  {
+   "type": "13F-HR",
+   "accessionNumber": "0002162591-26-000002",
+   "url": "https://www.sec.gov/Archives/edgar/data/2162591/000216259126000002/primary_doc.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-13T21:37:18Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-09-30"
+  },
+  {
+   "type": "4",
+   "accessionNumber": "0002161365-26-000011",
+   "url": "https://www.sec.gov/Archives/edgar/data/1698991/000216136526000011/wk-form4_1794616529.xml",
+   "dateFiled": "2026-11-13",
+   "acceptedAt": "2026-11-14T00:35:31Z",
+   "xbrl": false,
+   "amendment": false,
+   "periodEndDate": "2026-11-09",
+   "symbol": "ACEL",
+   "companyName": "Accel Entertainment, Inc."
+  }
+ ]
+}

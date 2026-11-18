@@ -9,7 +9,7 @@ list, the ``EVENTCODES`` rows of INDICATORS.
 ``event_<code>``, whose ``title`` attribute is the code's title. A cell is
 True on the available date of a filing that lists the code (the first SEP
 trading day on or after the filing date) and False on every other day
-(``quantlab.dataset.sharadar.filings.FilingPanelDataset``). A code missing
+(``quantlab.dataset.sharadar.filings.SharadarFilingPanelDataset``). A code missing
 from the list is refused rather than dropped: re-pull INDICATORS.
 
 TICKERS has no rows of EVENTS, which covers SF1's filers, so its tickers are
@@ -37,7 +37,7 @@ from __future__ import annotations
 import polars as pl
 
 from quantlab.dataset.config import SharadarEventsConfig
-from quantlab.dataset.sharadar.filings import FilingPanelDataset
+from quantlab.dataset.sharadar.filings import SharadarFilingPanelDataset
 from quantlab.dataset.sharadar.tables import scan_raw_table
 
 #: The INDICATORS ``table`` value of the published event codes.
@@ -47,7 +47,7 @@ EVENTCODES_LABEL = "EVENTCODES"
 VARIABLE_PREFIX = "event_"
 
 
-class SharadarEventsDataset(FilingPanelDataset):
+class SharadarEventsDataset(SharadarFilingPanelDataset):
     """Daily panel of 8-K event codes, True on each filing's available date.
 
     Parameters

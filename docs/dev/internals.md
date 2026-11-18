@@ -53,6 +53,7 @@ corrupt file. The module knows no vendor; each raw tier's writer passes its own 
 | `sharadar/<table>/_watermark.json` | `table`, `through` | {py:func}`~quantlab.acquisition.sharadar.raw_tier.write_table_watermark` |
 | `massive/<type>/_watermark.json` | `data_type`, `through` | {py:func}`~quantlab.acquisition.massive.raw_tier.write_day_file_watermark` |
 | `massive/rest/<endpoint>/_watermark.json` | `endpoint`, `field`, `through` | {py:func}`~quantlab.acquisition.massive.raw_tier.write_rest_watermark` |
+| `sec_edgar/full_index/<YYYY>QTR<n>/_watermark.json` | `quarter`, `pulled_at`, `through` | {py:func}`~quantlab.acquisition.sec_edgar.refresh_raw_tier` |
 
 A snapshot endpoint's watermark has `field` `"snapshot"` and `through` the day of the last
 snapshot. The readers stay in the dataset layer; the writers, like every other raw-tier
@@ -272,6 +273,39 @@ column names mapped to the shared ones) declares the leaf and is not an override
 `tests/test_dataset_leaf_overrides.py` holds the frozen table of every leaf's overrides,
 each with its reason, and fails on an override the table does not list; writing a leaf is
 described in [Extending quantlab](extending.md#a-dataset).
+
+## Release panels
+
+A *release* is a vendor row that became public on some day: a filing on its SEC filing
+date, a 13F quarter 45 days after its end, an 8-K on its filing date. The rule that turns
+releases into a point-in-time panel belongs to no vendor and lives in
+`quantlab.dataset._support.point_in_time`:
+
+- `TradingCalendar` is the trading days up to the day the raw data is complete through.
+  Its `place` gives each row its *available date*, the first trading day on or after its
+  date (plus an optional lag), and drops a row the calendar does not reach yet.
+  `TradingCalendar.of_nyse(through, start=..., end=...)` builds it from NYSE's sessions
+  (the `exchange_calendars` XNYS calendar behind
+  `quantlab.dataset._support.session_calendar.XnysSessionCalendar`, from 1993, when EDGAR's
+  electronic filings start), for a vendor with no price table of its own.
+- `as_of` shows, on every day and symbol, the latest row available by then, until
+  `stale_after_days` after its release; `shown_symbols`, `on_grid` and `to_panel` build
+  the symbol axis, the `(timestamp, symbol)` grid and the `xarray.Dataset`. The symbol
+  axis is int64 when every symbol is an integer or a digit string (a permaticker, a CIK)
+  and text otherwise (a Composite FIGI, a fund series); `axis_symbols` holds that rule.
+- `ReleasePanelDataset` is the leaf of a release table: a subclass supplies its calendar
+  (`_trading_calendar`), its rows (`_released`) and a `ReleaseSpec` (`_spec`).
+  `FilingPanelDataset` is the leaf of an event table, where a filing shows on its own day
+  only and every other day holds an empty value (`_empty`).
+
+Sharadar's side is `quantlab.dataset.sharadar.point_in_time`: `sep_calendar` builds the
+calendar from SEP's trading days through the day every raw table a panel reads is
+complete through, so a Sharadar panel lines up bar for bar with the Sharadar prices, and
+`SepReleasePanelDataset` is a release panel on that calendar (a subclass names its
+`RAW_TABLES`). `quantlab.dataset.sharadar.filings.SharadarFilingPanelDataset` is the
+filing panel of one Sharadar table. Massive's REST panels, placed on Sharadar's
+permaticker axis, build on these too. A vendor that must not depend on Sharadar imports
+the support module only.
 
 ## Dataset views
 

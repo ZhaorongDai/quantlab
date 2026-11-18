@@ -1,0 +1,141 @@
+{
+ "page": 1,
+ "pageSize": 5,
+ "totalPages": 1097,
+ "totalResults": 5485,
+ "data": [
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "Ultimate Products CORP",
+   "cik": 1438095,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Industrials",
+   "industry": "Building Products Distribution",
+   "industryGroup": null,
+   "compositeFigi": null,
+   "ein": 770713267,
+   "formerNames": [],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "ULPC",
+     "exchange": "Unknown",
+     "lastSeen": "2201-12-31"
+    }
+   ],
+   "delistedAt": "2201-12-31"
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "Cadeler A/S",
+   "cik": 1978867,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Energy",
+   "industry": "Offshore Support & Subsea Services",
+   "industryGroup": null,
+   "compositeFigi": "BBG01KFX5H11",
+   "ein": null,
+   "formerNames": [
+    "Cadeler A/S"
+   ],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "CDLR",
+     "exchange": "NYSE",
+     "lastSeen": "2026-11-10"
+    }
+   ],
+   "delistedAt": "2026-11-10"
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "NAVIENT CORP",
+   "cik": 1593538,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Financials",
+   "industry": "Consumer Finance",
+   "industryGroup": null,
+   "compositeFigi": "BBG000JSPTH8",
+   "ein": 464054283,
+   "formerNames": [
+    "NAVIENT CORP",
+    "New Corp"
+   ],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "NAVI",
+     "exchange": "Nasdaq",
+     "lastSeen": "2026-11-03"
+    },
+    {
+     "symbol": "JSM",
+     "exchange": "Nasdaq",
+     "lastSeen": "2026-11-03"
+    }
+   ],
+   "delistedAt": "2026-11-03"
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "Origin Bancorp, Inc.",
+   "cik": 1516912,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Financials",
+   "industry": "Banks",
+   "industryGroup": null,
+   "compositeFigi": "BBG000BFNLP4",
+   "ein": 721192928,
+   "formerNames": [
+    "Origin Bancorp, Inc. Attn: Chase Anderson",
+    "Community Trust Financial Corp"
+   ],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "OBK",
+     "exchange": "NYSE",
+     "lastSeen": "2026-10-29"
+    },
+    {
+     "symbol": "OBNK",
+     "exchange": "Nasdaq",
+     "lastSeen": "2026-11-15"
+    }
+   ],
+   "delistedAt": "2026-10-29"
+  },
+  {
+   "symbols": [],
+   "exchanges": [],
+   "name": "GOLD RESOURCE CORP",
+   "cik": 1160791,
+   "seriesId": 0,
+   "type": "stock",
+   "sector": "Materials",
+   "industry": "Precious Metals Mining",
+   "industryGroup": null,
+   "compositeFigi": "BBG000J0LC17",
+   "ein": 841473173,
+   "formerNames": [],
+   "status": "delisted",
+   "priorTickers": [
+    {
+     "symbol": "GORO",
+     "exchange": "NYSE",
+     "lastSeen": "2026-10-06"
+    }
+   ],
+   "delistedAt": "2026-10-06"
+  }
+ ]
+}

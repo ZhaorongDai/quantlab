@@ -40,7 +40,7 @@ Examples
 >>> import quantlab.acquisition.registry
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']
+['alpaca', 'fred', 'massive', 'sec_edgar', 'sharadar', 'stockfit', 'tiingo', 'wrds']
 """
 
 import dataclasses
@@ -494,10 +494,13 @@ def convert(
 # vendor module first, that module is only partly initialised while this code
 # runs, and reading an attribute from it would fail. `wrds` holds the single
 # WRDS descriptor and imports the TAQ and CRSP modules itself; `sharadar`
-# holds the Sharadar descriptor, as WRDS does, and `massive` the Massive one.
+# holds the Sharadar descriptor, as WRDS does, `massive` the Massive one,
+# `stockfit` the StockFit one and `sec_edgar` the SEC EDGAR one.
 from quantlab.acquisition import alpaca as _alpaca  # noqa: E402,F401
 from quantlab.acquisition import tiingo as _tiingo  # noqa: E402,F401
 from quantlab.acquisition import wrds as _wrds  # noqa: E402,F401
 from quantlab.acquisition import sharadar as _sharadar  # noqa: E402,F401
 from quantlab.acquisition import fred as _fred  # noqa: E402,F401
 from quantlab.acquisition import massive as _massive  # noqa: E402,F401
+from quantlab.acquisition import stockfit as _stockfit  # noqa: E402,F401
+from quantlab.acquisition import sec_edgar as _sec_edgar  # noqa: E402,F401
