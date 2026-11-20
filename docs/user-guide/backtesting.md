@@ -746,7 +746,7 @@ ExecutionSettings(sizing_basis='fill', fees=0.0005, slippage=0.0005)
 >>> sorted(run.metrics()) == sorted(result.metrics), run.metrics()["out_of_sample_ranges"]
 (True, [['2024-02-26', '2024-03-22']])
 >>> [spec.name for spec in run.predictions().labels], sorted(run.equity().data_vars)
-(['open_ret_1'], ['returns', 'value'])
+(['open_ret_1'], ['gross_value', 'group_value', 'returns', 'universe_value', 'value'])
 ```
 
 A dataset held in memory (`FrameDataset`) has no store, so the run keeps a copy of its panel
