@@ -407,6 +407,41 @@ class TorchModel(TrainingTargetMixin, BaseModel):
             )
         return crossing if setting is None else setting
 
+    @property
+    def feature_dtype(self) -> np.dtype:
+        """The type the features are read as: ``panel_dtype``, float32 by default.
+
+        A model storing its panel in float16 collects, converts and predicts
+        its features in float16, so it never holds a float32 copy of them.
+
+        Raises
+        ------
+        ValueError
+            If ``panel_dtype`` is not an accepted value.
+
+        Examples
+        --------
+        >>> head.feature_dtype
+        dtype('float32')
+        """
+        return np.dtype(self._panel_dtype_name())
+
+    def _panel_dtype_name(self) -> str:
+        """Return the validated ``hyperparameters["panel_dtype"]``, ``"float32"`` when unset.
+
+        Raises
+        ------
+        ValueError
+            If it is not one of ``PANEL_DTYPES``.
+        """
+        dtype = self.config.hyperparameters.get("panel_dtype", "float32")
+        if not isinstance(dtype, str) or dtype not in self.PANEL_DTYPES:
+            raise ValueError(
+                f"{self.class_name}: hyperparameters['panel_dtype'] must be one of "
+                f"{list(self.PANEL_DTYPES)}, got {dtype!r}"
+            )
+        return dtype
+
     def _panel_settings(self) -> tuple[str, torch.dtype]:
         """Return the validated ``(panel_device, feature dtype)`` of the hyperparameters.
 
@@ -420,17 +455,12 @@ class TorchModel(TrainingTargetMixin, BaseModel):
         """
         hyperparameters = self.config.hyperparameters
         device = hyperparameters.get("panel_device", "auto")
-        dtype = hyperparameters.get("panel_dtype", "float32")
         if not isinstance(device, str) or device not in self.PANEL_DEVICES:
             raise ValueError(
                 f"{self.class_name}: hyperparameters['panel_device'] must be one of "
                 f"{list(self.PANEL_DEVICES)}, got {device!r}"
             )
-        if not isinstance(dtype, str) or dtype not in self.PANEL_DTYPES:
-            raise ValueError(
-                f"{self.class_name}: hyperparameters['panel_dtype'] must be one of "
-                f"{list(self.PANEL_DTYPES)}, got {dtype!r}"
-            )
+        dtype = self._panel_dtype_name()
         if device == "cuda" and self._num_workers:
             raise ValueError(
                 f"{self.class_name}: hyperparameters['panel_device']='cuda' cannot be "

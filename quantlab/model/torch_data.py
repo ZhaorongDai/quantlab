@@ -34,6 +34,10 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 
 from quantlab.model.collected_panel import FEATURE_DTYPE
 
+#: The feature types ``TrainingPanel.from_arrays`` takes without a copy: the
+#: ones a ``panel_dtype`` stores.
+_STORED_DTYPES = (np.dtype(np.float32), np.dtype(np.float16))
+
 #: ``TrainingPanel.from_arrays`` marks the present cells this many bars at a
 #: time, so the temporaries are a block's, not the whole ``[T, S, F]`` array's.
 PRESENT_BLOCK_BARS = 64
@@ -114,7 +118,8 @@ class TrainingPanel:
         Parameters
         ----------
         x : np.ndarray
-            Features, ``[T, S, F]``.
+            Features, ``[T, S, F]``. A float32 or float16 array is used as it
+            is, its memory shared; any other type is cast to float32.
         timestamps, symbols : np.ndarray
             The panel's coordinates.
         y_raw : np.ndarray, optional
@@ -141,7 +146,9 @@ class TrainingPanel:
             raise ValueError(
                 f"labels of shape {y_raw.shape} do not match features of shape {x.shape}"
             )
-        features = torch.from_numpy(np.asarray(x, dtype=FEATURE_DTYPE))
+        if x.dtype not in _STORED_DTYPES:
+            x = np.asarray(x, dtype=FEATURE_DTYPE)
+        features = torch.from_numpy(x)
         labels = torch.from_numpy(np.asarray(y_raw, dtype=np.float32))
         return cls(
             x=features,

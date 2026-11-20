@@ -19,7 +19,11 @@ What turns this file red:
 - `pin_memory` is accepted beside a prefetcher, or `prefetch=True` where it cannot work;
 - a loader with workers restarts them every epoch;
 - float16 storage changes predictions beyond rounding, or silently turns a
-  value too large for float16 into infinity.
+  value too large for float16 into infinity, when the panel is collected or
+  when a prediction panel is converted;
+- a float16 model collects its features in float32 first, or its fit or its
+  evaluation holds a float32 copy of the feature array, or a float16 panel
+  is shared with a float32 model (or the reverse).
 
 The budget and the pinning are checked with `torch.cuda` patched, so they
 run without a GPU; the GPU training path runs only where CUDA exists.
@@ -327,15 +331,60 @@ def test_float16_storage_holds_the_features_in_half_precision(tmp_path):
     assert placed.target.dtype == placed.y_raw.dtype == torch.float32
 
 
-def test_a_value_too_large_for_float16_is_refused(tmp_path):
+def test_float16_storage_collects_the_features_in_half_precision(tmp_path):
+    full = _head(tmp_path)
+    half = _head(tmp_path, panel_dtype="float16")
+    x32, _, _ = full._feature_array()
+    x16, _, _ = half._feature_array()
+    assert x16.dtype == np.float16
+    assert all(half.collected_panel.data[n].dtype == np.float16 for n in half.get_factor_names())
+    np.testing.assert_allclose(x16, x32, rtol=2**-11, atol=0)  # half a float16 unit
+
+
+def test_a_float16_fit_holds_no_float32_copy_of_the_features(tmp_path):
+    head = _head(tmp_path, panel_dtype="float16", panel_device="cpu", epochs=1)
+    x16, _, _ = head._feature_array()
+    placed = head._place_panel(head._training_panel())
+    assert np.shares_memory(placed.x.numpy(), x16)
+    head.train()
+    names = tuple(head.get_factor_names())
+    built = [np.dtype(dtype) for key, dtype in head.collected_panel._arrays if key == names]
+    assert built == [np.float16]
+
+
+def test_a_float16_array_becomes_a_training_panel_without_a_copy():
+    x = np.ones((3, 2, 1), dtype=np.float16)
+    panel = TrainingPanel.from_arrays(x, timestamps=np.arange(3), symbols=np.arange(2))
+    assert panel.x.dtype == torch.float16 and np.shares_memory(panel.x.numpy(), x)
+    wide = TrainingPanel.from_arrays(np.ones((3, 2, 1)), timestamps=np.arange(3), symbols=np.arange(2))
+    assert wide.x.dtype == torch.float32
+
+
+def test_a_value_too_large_for_float16_is_refused_when_collected(tmp_path):
     features = _features()
     features["f_a"][5, 1] = 1e6
-    head = _model(
-        tmp_path, features, _label_of(features),
-        hyperparameters={"panel_dtype": "float16"},
-    )
-    with pytest.raises(ValueError, match="float16"):
-        head.train()
+    with pytest.raises(ValueError, match="f_a.*float16"):
+        _model(tmp_path, features, _label_of(features), hyperparameters={"panel_dtype": "float16"})
+
+
+def test_a_value_too_large_for_float16_is_refused_at_prediction(tmp_path):
+    features = _features()
+    head = _head(tmp_path, panel_dtype="float16", epochs=1)
+    head.train()
+    features["f_b"][3, 2] = -1e6
+    with pytest.raises(ValueError, match="f_b.*float16"):
+        head.predict_panel(_feature_panel(features))
+
+
+def test_use_panel_refuses_a_panel_collected_at_another_precision(tmp_path):
+    features = _features()
+    label = _label_of(features)
+    full = _model(tmp_path, features, label, name="f32")
+    half = _model(tmp_path, features, label, name="f16", hyperparameters={"panel_dtype": "float16"})
+    with pytest.raises(ValueError, match="collected"):
+        half.use_panel(full.collected_panel)
+    with pytest.raises(ValueError, match="collected"):
+        full.use_panel(half.collected_panel)
 
 
 # ---------------------------------------------------------------------------

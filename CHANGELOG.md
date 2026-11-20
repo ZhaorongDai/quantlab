@@ -36,6 +36,14 @@ compatibility shims or config migrations.
 
 ### Changed
 
+- A torch model with `panel_dtype="float16"` reads its features in float16 from the start
+  (`BaseModel.feature_dtype`): each factor is cast as it is read and the collected panel, the
+  training panel, the evaluation and the predictions share one float16 array, so CPU memory no
+  longer holds a float32 copy of the features beside it. A float64 factor is now rounded to float16
+  once, straight, instead of through float32 (a value can differ by one float16 unit from before).
+  A value too large for float16 now raises
+  when the factor is read (or a prediction panel converted), naming the variable, instead of at
+  the start of the fit; `use_panel` refuses a panel collected in another feature type.
 - An `ExpectedReturnModel` declares whether its `mu` is a cross-sectionally centred alpha with a
   `centred` class attribute (default `False`; the Grinold and both z-score models set it), and
   `BlackLittermanOptimizer` reads it to warn about total-return views instead of checking a fixed
