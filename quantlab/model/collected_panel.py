@@ -57,6 +57,18 @@ def _array_dtype(data: xr.Dataset, variables: list[str], dtype) -> np.dtype:
 FEATURE_DTYPE = np.dtype(np.float32)
 
 
+#: Bits of a float16 without its sign, and the pattern of an infinity in them
+#: (exponent all ones, mantissa zero; a NaN has a nonzero mantissa).
+_HALF_MAGNITUDE, _HALF_INFINITY = 0x7FFF, 0x7C00
+
+
+def _has_infinity(values: np.ndarray) -> bool:
+    """Whether ``values`` hold an infinity; on float16 by its bits, as numpy's float16 ``isinf`` is slow."""
+    if values.dtype == np.float16:
+        return bool(((values.view(np.uint16) & _HALF_MAGNITUDE) == _HALF_INFINITY).any())
+    return bool(np.isinf(values).any())
+
+
 def _refuse_overflow(source: np.ndarray, cast: np.ndarray, name: str) -> None:
     """Raise when ``cast`` turned a finite value of ``source`` into an infinity.
 
@@ -66,7 +78,9 @@ def _refuse_overflow(source: np.ndarray, cast: np.ndarray, name: str) -> None:
         If any value finite in ``source`` is infinite in ``cast``, as a value
         beyond ±65504 becomes in float16; the message names the variable.
     """
-    overflow = int(np.count_nonzero(np.isfinite(source) & ~np.isfinite(cast)))
+    if not _has_infinity(cast):  # the usual case: one cheap pass over the result
+        return
+    overflow = int(np.count_nonzero(np.isfinite(source) & np.isinf(cast)))
     if overflow:
         raise ValueError(
             f"{overflow} value(s) of {name!r} are finite but too large for {cast.dtype}; "
@@ -185,8 +199,9 @@ def to_array(data: xr.Dataset, variables: list[str], dtype: "np.typing.DTypeLike
             for i, column in enumerate(columns):
                 if checked[i]:
                     block = column[start:stop]
-                    out[start:stop, :, first + i] = block
-                    _refuse_overflow(block, out[start:stop, :, first + i], str(names[i]))
+                    narrowed = block.astype(dtype)  # contiguous, so the check reads it fast
+                    _refuse_overflow(block, narrowed, str(names[i]))
+                    out[start:stop, :, first + i] = narrowed
                 else:
                     out[start:stop, :, first + i] = column[start:stop]
     return out
