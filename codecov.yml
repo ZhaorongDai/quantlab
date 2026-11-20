@@ -1,0 +1,6 @@
+# Coverage cannot trace code numba compiles: these modules hold only @njit kernels,
+# which the tests run compiled. Their behaviour is tested through the approximate
+# backtest (tests/test_backtest_approximate*.py) against backtest runs.
+ignore:
+  - "quantlab/execution/approximate.py"
+  - "quantlab/portfolio/predefined/approximate/_support/mean_variance_kernels.py"

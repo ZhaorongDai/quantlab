@@ -208,9 +208,11 @@ def _config(tmp_path: Path, inputs: dict[str, np.ndarray] | None = None, **overr
     history = _store(tmp_path, "history", {k: inputs[k] for k in _HISTORY})
     industry = _store(tmp_path, "industry", {"industry": inputs["industry"]})
     firm = _store(tmp_path, "firm", {"firm": inputs["firm"]})
+    # A point-in-time SIC code, only where a test gives one.
+    listing = [_store(tmp_path, "listing", {"sic_code": inputs["sic_code"]})] if "sic_code" in inputs else []
     values = {
         "warmup_bars": 0,
-        "dataset": [prices, caps, fundamentals, history, industry, firm],
+        "dataset": [prices, caps, fundamentals, history, industry, firm, *listing],
         "mode": "batch",
         "data_columns": _COLUMNS,
         "file_path": str(tmp_path / "barra.zarr"),
@@ -1056,3 +1058,48 @@ def test_priced_cells_keep_their_unmasked_values(delisted, name) -> None:
     finite = np.isfinite(want[name])
     tolerance = 1e-9 if name in _EXACT else 1e-7
     np.testing.assert_allclose(got[finite], want[name][finite], rtol=tolerance, atol=tolerance)
+
+
+_MERGER_BAR = 50  # the blank check's merger completes: its SIC code changes
+
+
+def test_an_excluded_sic_code_keeps_a_blank_check_out_of_the_universe_until_its_merger(computed, tmp_path) -> None:
+    """The largest company is a blank check (SIC 6770) until bar 50, then an operating one.
+
+    With ``estimation_universe_excluded_sic=(6770,)`` it is out of the
+    universe while its code at t-1 is 6770 (bars 1..50) and back from bar
+    51; the universe keeps its size, the next largest company taking the
+    place. Without the exclusion the code is not read and nothing changes.
+    """
+    _, base, want = computed
+    inputs = _inputs()
+    blank_check = int(np.nanargmax(inputs["marketcap"][1]))
+    assert want["estu"][1:, blank_check].all(), "the company should be in the universe"
+    sic = np.full((_T, _S), 2000.0)
+    sic[:_MERGER_BAR, blank_check] = 6770.0
+    sic[_MERGER_BAR:, blank_check] = 3559.0
+    out = compute_all(BarraStyle(_config(
+        tmp_path,
+        inputs={**inputs, "sic_code": sic},
+        data_columns=(*_COLUMNS, "sic_code"),
+        kwargs={**_KWARGS, "estimation_universe_excluded_sic": (6770,)},
+    )))
+    estu = out["estu"].transpose("timestamp", "symbol").values
+
+    assert (estu[1 : _MERGER_BAR + 1, blank_check] == 0).all()
+    assert (estu[_MERGER_BAR + 1 :, blank_check] == 1).all()
+    np.testing.assert_array_equal(estu[1:].sum(axis=1), want["estu"][1:].sum(axis=1))
+    # Outside the merger the universe is the reference's ranked without the blank check.
+    cap_before = _lag(inputs["marketcap"])
+    cap_before[: _MERGER_BAR + 1, blank_check] = np.nan
+    np.testing.assert_array_equal(estu[1:].astype(bool), _estimation_universe(cap_before)[1:])
+
+
+def test_excluded_sic_codes_are_checked(tmp_path) -> None:
+    for excluded, match in (((6770, 6770), "repeats"), ((-1,), "non-negative"), (("6770",), "integer")):
+        with pytest.raises(ValueError, match=match):
+            BarraStyle(_config(
+                tmp_path,
+                data_columns=(*_COLUMNS, "sic_code"),
+                kwargs={**_KWARGS, "estimation_universe_excluded_sic": excluded},
+            ))

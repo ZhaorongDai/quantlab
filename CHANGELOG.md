@@ -8,6 +8,11 @@ compatibility shims or config migrations.
 
 ### Added
 
+- `BarraStyleParameters.estimation_universe_excluded_sic` keeps the listed SIC codes out of the
+  estimation universe, read from a point-in-time `sic_column` (`SharadarListingDataset`'s
+  `sic_code` by default); `(6770,)` keeps out blank-check companies (SPACs), whose market cap is
+  their trust's cash. The default, `()`, keeps the universe as it was and reads no SIC code.
+
 - StockFit (`stockfit`), a vendor of SEC-filing data, usable with only its key
   (`STOCKFIT_API_KEY`). `quantlab.acquisition.stockfit.refresh.refresh_raw_tier` keeps its raw tier
   under `<download-dir>/stockfit/` current within the daily request limit: a backfill that resumes
@@ -39,6 +44,10 @@ compatibility shims or config migrations.
   A value too large for float16 now raises
   when the factor is read (or a prediction panel converted), naming the variable, instead of at
   the start of the fit; `use_panel` refuses a panel collected in another feature type.
+- An `ExpectedReturnModel` declares whether its `mu` is a cross-sectionally centred alpha with a
+  `centred` class attribute (default `False`; the Grinold and both z-score models set it), and
+  `BlackLittermanOptimizer` reads it to warn about total-return views instead of checking a fixed
+  list of classes, so a custom centred model gets the warning by setting it.
 - `USEquityCrossectionSelectStockVectorBt` is renamed `USEquityVectorBt`, matching `WeightsVectorBt`
   and `USEquityApproximateBacktest`. A saved run's config names its backtester class, so
   `BacktestRun.rebuild_backtester` on a run saved under the old name raises until the name in its
@@ -80,6 +89,13 @@ compatibility shims or config migrations.
 - A page file where a pull's directory belongs raises `ValueError` instead of reading as no rows.
 
 ### Fixed
+
+- The approximate backtest rejects an order on a symbol with no fill price, the symbol keeping
+  its holding, and settles a delisted holding into cash at its last valuation on the bar after
+  its delisting, as a backtest run does; the TopkDropout decisions see the settlement. A buy
+  on a name's last priced bar used to fill at the previous valuation and, the name never
+  settled, hold its TopkDropout slot for good, so over a long window the book filled with
+  delisted names and its value stopped moving. `PanelPrices` gains `settled`.
 
 - A Sharadar bulk pull commits in one rename (`raw_tier.publish_bulk`). A pull killed after the file
   was replaced left older window and updated pulls overriding the new bulk until the next one, and

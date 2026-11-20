@@ -148,66 +148,142 @@ def download_ranges(
     target = Path(path)
     partial = target.with_name(target.name + ".part")
     parts = [(first, min(first + part_bytes, size)) for first in range(0, size, part_bytes)]
-    # Set when a range fails or the fan-out is interrupted: the others stop.
-    stopped = threading.Event()
-    failures: list[BaseException] = []
-
-    def aborted() -> bool:
-        return stopped.is_set() or (abort is not None and abort.is_set())
-
-    def fetch(first: int, stop: int) -> None:
-        try:
-            _fetch_one(partial, first, stop, fetch_range, policy, what, error, aborted)
-        except BaseException as failure:
-            if not isinstance(failure, DownloadAborted):
-                failures.append(failure)
-            stopped.set()
-            raise
-
-    sidecar = Path(f"{partial}.json")
-    key = {"size": size, "identity": identity, "part_bytes": part_bytes}
-    done = _completed(partial, sidecar, key, {first for first, _ in parts})
-    record_lock = threading.Lock()
-    pending = [(first, stop) for first, stop in parts if first not in done]
-    if done:
+    resume = _ResumeState.load(
+        partial, {"size": size, "identity": identity, "part_bytes": part_bytes}, {first for first, _ in parts}
+    )
+    pending = [(first, stop) for first, stop in parts if first not in resume.done]
+    if resume.done:
         logger.info(f"{what}: resuming, {len(parts) - len(pending)} of {len(parts)} range(s) already complete.")
-
-    def fetch_and_record(first: int, stop: int) -> None:
-        fetch(first, stop)
-        with record_lock:
-            done.add(first)
-            _write_sidecar(sidecar, key, done)
-
+    fanout = _RangeFanout(partial, fetch_range, policy, what, error, abort, resume)
     verifying = False
     try:
-        if not done:
-            with partial.open("wb") as handle:
-                handle.truncate(size)
-            _write_sidecar(sidecar, key, done)
+        if not resume.done:
+            resume.start_over()
         with fetch_lock if fetch_lock is not None else nullcontext():
-            if pending:
-                # Threads, as every fan-out in quantlab: the ranges wait on the network.
-                Parallel(n_jobs=min(workers, len(pending)), backend="threading", batch_size=1)(
-                    delayed(fetch_and_record)(first, stop) for first, stop in pending
-                )
+            fanout.run(pending, workers)
         verifying = True
-        if partial.stat().st_size != size:
-            raise error(f"{what}: the downloaded file holds {partial.stat().st_size} bytes, not {size}")
-        if verify is not None:
-            verify(partial)
-        os.replace(partial, target)
-        sidecar.unlink(missing_ok=True)
+        _land(partial, target, size, what, error, verify)
+        resume.sidecar.unlink(missing_ok=True)
     except BaseException as raised:
-        stopped.set()
+        fanout.stop()
         if verifying:
             # A whole file that is wrong is not resumed: the next call starts over.
             partial.unlink(missing_ok=True)
-            sidecar.unlink(missing_ok=True)
+            resume.sidecar.unlink(missing_ok=True)
         # The range that failed first, not one it stopped.
-        if isinstance(raised, DownloadAborted) and failures:
-            raise failures[0] from None
+        if isinstance(raised, DownloadAborted) and fanout.failures:
+            raise fanout.failures[0] from None
         raise
     return len(parts)
+
+
+class _ResumeState:
+    """The ``.part`` file's sidecar: this download's key and the ranges already complete.
+
+    ``done`` holds the first bytes of the complete ranges; ``record`` adds
+    one and rewrites the sidecar under a lock, so ranges finishing at once
+    on different threads each land in it.
+    """
+
+    def __init__(self, partial: Path, key: dict, done: set[int]):
+        """Hold the sidecar beside ``partial``, written for ``key``, with ``done`` complete."""
+        self.partial = partial
+        self.sidecar = Path(f"{partial}.json")
+        self.key = key
+        self.done = done
+        self._lock = threading.Lock()
+
+    @classmethod
+    def load(cls, partial: Path, key: dict, starts: set[int]) -> _ResumeState:
+        """The state a sidecar left for ``key``; nothing complete when there is none to resume."""
+        return cls(partial, key, _completed(partial, Path(f"{partial}.json"), key, starts))
+
+    def start_over(self) -> None:
+        """Truncate the ``.part`` file to the download's size and record no range complete."""
+        with self.partial.open("wb") as handle:
+            handle.truncate(self.key["size"])
+        _write_sidecar(self.sidecar, self.key, self.done)
+
+    def record(self, first: int) -> None:
+        """Mark the range starting at byte ``first`` complete in the sidecar."""
+        with self._lock:
+            self.done.add(first)
+            _write_sidecar(self.sidecar, self.key, self.done)
+
+
+class _RangeFanout:
+    """Fetches ranges on joblib threads; the first failure stops the others at their next chunk.
+
+    ``failures`` keeps every failure but the ``DownloadAborted`` of a range
+    that was stopped, in the order they happened.
+    """
+
+    def __init__(
+        self,
+        partial: Path,
+        fetch_range: FetchRange,
+        policy: RequestPolicy,
+        what: str,
+        error: type[TransientError],
+        abort: threading.Event | None,
+        resume: _ResumeState,
+    ):
+        """Write into ``partial`` through ``fetch_range``, recording each finished range in ``resume``."""
+        self.partial = partial
+        self.fetch_range = fetch_range
+        self.policy = policy
+        self.what = what
+        self.error = error
+        self.abort = abort
+        self.resume = resume
+        # Set when a range fails or the fan-out is interrupted: the others stop.
+        self._stopped = threading.Event()
+        self.failures: list[BaseException] = []
+
+    def stop(self) -> None:
+        """Stop every range still running at its next chunk."""
+        self._stopped.set()
+
+    def aborted(self) -> bool:
+        """Whether a range failed, the fan-out was stopped or the caller set ``abort``."""
+        return self._stopped.is_set() or (self.abort is not None and self.abort.is_set())
+
+    def run(self, pending: list[tuple[int, int]], workers: int) -> None:
+        """Fetch the ``(first, stop)`` ranges in ``pending``, ``workers`` at once."""
+        if pending:
+            # Threads, as every fan-out in quantlab: the ranges wait on the network.
+            Parallel(n_jobs=min(workers, len(pending)), backend="threading", batch_size=1)(
+                delayed(self._fetch_and_record)(first, stop) for first, stop in pending
+            )
+
+    def _fetch_and_record(self, first: int, stop: int) -> None:
+        """Fetch one range and record it complete; a failure stops the others."""
+        try:
+            _fetch_one(
+                self.partial, first, stop, self.fetch_range, self.policy, self.what, self.error, self.aborted
+            )
+        except BaseException as failure:
+            if not isinstance(failure, DownloadAborted):
+                self.failures.append(failure)
+            self._stopped.set()
+            raise
+        self.resume.record(first)
+
+
+def _land(
+    partial: Path,
+    target: Path,
+    size: int,
+    what: str,
+    error: type[TransientError],
+    verify: Callable[[Path], None] | None,
+) -> None:
+    """Check the whole ``partial`` file's size, run ``verify`` on it and rename it to ``target``."""
+    if partial.stat().st_size != size:
+        raise error(f"{what}: the downloaded file holds {partial.stat().st_size} bytes, not {size}")
+    if verify is not None:
+        verify(partial)
+    os.replace(partial, target)
 
 
 def _completed(partial: Path, sidecar: Path, key: dict, starts: set[int]) -> set[int]:
