@@ -76,21 +76,12 @@ def _refuse_overflow(source: np.ndarray, cast: np.ndarray, name: str) -> None:
 
 
 def _below_feature_dtype(source: np.dtype, target: np.dtype) -> bool:
-    """Whether a cast of ``source`` to ``target`` goes below ``FEATURE_DTYPE`` (float16).
+    """Whether a cast of ``source`` to ``target`` goes below ``FEATURE_DTYPE`` (to float16).
 
-    Such a cast can overflow, so it is checked, and it runs through
-    ``FEATURE_DTYPE``, so a float64 value rounds as it did when every
-    feature was read in float32 first and narrowed later. A cast to
-    ``FEATURE_DTYPE`` itself is neither checked nor routed.
+    Such a cast can overflow, so it is checked. A cast to ``FEATURE_DTYPE``
+    itself is not: the default float32 read behaves as it always has.
     """
     return target.kind == "f" and target.itemsize < FEATURE_DTYPE.itemsize <= source.itemsize
-
-
-def _narrow(values: np.ndarray, target: np.dtype) -> np.ndarray:
-    """``values`` cast to ``target`` through ``FEATURE_DTYPE`` (see ``_below_feature_dtype``)."""
-    if values.dtype != FEATURE_DTYPE:
-        values = values.astype(FEATURE_DTYPE)
-    return values.astype(target)
 
 
 def as_feature_dtype(data: xr.Dataset, dtype: "np.typing.DTypeLike" = FEATURE_DTYPE) -> xr.Dataset:
@@ -98,9 +89,9 @@ def as_feature_dtype(data: xr.Dataset, dtype: "np.typing.DTypeLike" = FEATURE_DT
 
     A variable already of that type is kept as it is, not copied. Every
     variable is cast, integer ones included: a model reads its features in
-    its ``feature_dtype`` whatever their type. A cast below float32 (to
-    float16) is checked one variable at a time and runs through float32, so
-    it rounds as a float32 read narrowed later would.
+    its ``feature_dtype`` whatever their type, each value rounded once,
+    straight from its own type. A cast below float32 (to float16) is checked
+    for overflow one variable at a time.
 
     Parameters
     ----------
@@ -137,7 +128,7 @@ def as_feature_dtype(data: xr.Dataset, dtype: "np.typing.DTypeLike" = FEATURE_DT
             continue
         if _below_feature_dtype(variable.dtype, dtype):
             values = variable.values
-            narrowed = _narrow(values, dtype)
+            narrowed = values.astype(dtype)
             _refuse_overflow(values, narrowed, str(name))
             cast[name] = variable.copy(data=narrowed)
         else:
@@ -170,8 +161,7 @@ def to_array(data: xr.Dataset, variables: list[str], dtype: "np.typing.DTypeLike
     ------
     ValueError
         If ``dtype`` is below float32 (float16) and a finite value is too
-        large for it (checked a block of bars at a time; such a cast runs
-        through float32, as ``as_feature_dtype``'s does).
+        large for it (checked a block of bars at a time).
 
     Examples
     --------
@@ -195,7 +185,7 @@ def to_array(data: xr.Dataset, variables: list[str], dtype: "np.typing.DTypeLike
             for i, column in enumerate(columns):
                 if checked[i]:
                     block = column[start:stop]
-                    out[start:stop, :, first + i] = _narrow(block, dtype)
+                    out[start:stop, :, first + i] = block
                     _refuse_overflow(block, out[start:stop, :, first + i], str(names[i]))
                 else:
                     out[start:stop, :, first + i] = column[start:stop]

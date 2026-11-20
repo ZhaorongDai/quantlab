@@ -135,12 +135,12 @@ def test_a_narrowing_conversion_refuses_a_finite_value_too_large_for_the_type(co
     lambda data: collected_panel.to_array(data, ["f_b"], np.float16)[..., 0],
     lambda data: collected_panel.as_feature_dtype(data, np.float16)["f_b"].values,
 ])
-def test_a_float64_value_narrowed_to_float16_rounds_as_through_float32(convert):
+def test_a_float64_value_narrowed_to_float16_is_rounded_once(convert):
     raw = _panel()
     tie_breaker = 1 + 2**-11 + 2**-40  # float16 rounds it up directly, down through float32
     raw["f_b"].values[:] = tie_breaker
     assert np.float16(tie_breaker) != np.float16(np.float32(tie_breaker))
-    assert (convert(raw) == np.float16(np.float32(tie_breaker))).all()
+    assert (convert(raw) == np.float16(tie_breaker)).all()
 
 
 def test_as_feature_dtype_casts_every_variable_to_the_given_type():

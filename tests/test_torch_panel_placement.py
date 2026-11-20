@@ -338,7 +338,7 @@ def test_float16_storage_collects_the_features_in_half_precision(tmp_path):
     x16, _, _ = half._feature_array()
     assert x16.dtype == np.float16
     assert all(half.collected_panel.data[n].dtype == np.float16 for n in half.get_factor_names())
-    np.testing.assert_array_equal(x16, x32.astype(np.float16))
+    np.testing.assert_allclose(x16, x32, rtol=2**-11, atol=0)  # half a float16 unit
 
 
 def test_a_float16_fit_holds_no_float32_copy_of_the_features(tmp_path):
