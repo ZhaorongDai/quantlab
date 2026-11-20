@@ -31,6 +31,10 @@ compatibility shims or config migrations.
 
 ### Changed
 
+- An `ExpectedReturnModel` declares whether its `mu` is a cross-sectionally centred alpha with a
+  `centred` class attribute (default `False`; the Grinold and both z-score models set it), and
+  `BlackLittermanOptimizer` reads it to warn about total-return views instead of checking a fixed
+  list of classes, so a custom centred model gets the warning by setting it.
 - `USEquityCrossectionSelectStockVectorBt` is renamed `USEquityVectorBt`, matching `WeightsVectorBt`
   and `USEquityApproximateBacktest`. A saved run's config names its backtester class, so
   `BacktestRun.rebuild_backtester` on a run saved under the old name raises until the name in its

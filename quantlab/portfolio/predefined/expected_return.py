@@ -57,6 +57,8 @@ class _ScaledByIC(ExpectedReturnModel):
     It refuses a non-positive ``ic`` when it is built.
     """
 
+    centred = True
+
     def __init__(self, config):
         """Initialize the model from its config and check its ``ic``."""
         super().__init__(config)
@@ -174,9 +176,19 @@ class UnscaledZScoreExpectedReturn(ExpectedReturnModel):
 
     config_cls = UnscaledZScoreExpectedReturnConfig
     needs_sigma = False
+    centred = True
 
     def expected_returns(self, predictions, sigma, candidates) -> np.ndarray:
-        """The candidates' z-score, 0.0 elsewhere; see the class docstring."""
+        """The candidates' z-score, 0.0 elsewhere; ``sigma`` is not read.
+
+        See ``ExpectedReturnModel.expected_returns``.
+
+        Examples
+        --------
+        >>> model = UnscaledZScoreExpectedReturn(UnscaledZScoreExpectedReturnConfig())
+        >>> model.expected_returns(np.array([[4.0, 2.0, np.nan]]), None, np.array([[True, True, False]]))
+        array([[ 0.70710678, -0.70710678,  0.        ]])
+        """
         candidates = np.asarray(candidates, dtype=bool)
         return np.where(candidates, _zscore(predictions, candidates), 0.0)
 
@@ -201,7 +213,16 @@ class PredictionExpectedReturn(ExpectedReturnModel):
     needs_sigma = False
 
     def expected_returns(self, predictions, sigma, candidates) -> np.ndarray:
-        """The prediction on the candidates, 0.0 elsewhere; see the class docstring."""
+        """The prediction on the candidates, 0.0 elsewhere; ``sigma`` is not read.
+
+        See ``ExpectedReturnModel.expected_returns``.
+
+        Examples
+        --------
+        >>> model = PredictionExpectedReturn(PredictionExpectedReturnConfig())
+        >>> model.expected_returns(np.array([[0.3, -0.1, 0.5]]), None, np.array([[True, False, True]]))
+        array([[0.3, 0. , 0.5]])
+        """
         return np.where(np.asarray(candidates, dtype=bool), predictions, 0.0)
 
 
