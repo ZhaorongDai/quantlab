@@ -10,8 +10,9 @@ capitalization.
 
 Exposures are standardized over an *estimation universe* (ESTU), here the
 ``estimation_universe_size`` largest companies by the previous bar's market
-cap, each firm counted once (a secondary share class is never in it),
-re-ranked every bar inside the graph: on every bar the cap-weighted
+cap, each firm counted once (a secondary share class is never in it) and
+the SIC codes of ``estimation_universe_excluded_sic`` (blank checks, say)
+kept out, re-ranked every bar inside the graph: on every bar the cap-weighted
 mean exposure of the universe is 0 and the equally weighted standard
 deviation is 1. Symbols outside the universe are shifted and scaled by the
 same numbers, so every symbol with data gets an exposure.
@@ -245,6 +246,20 @@ class BarraStyleParameters:
         Number of largest companies, by the previous bar's market cap, in
         the estimation universe. Our choice: USE4 uses the MSCI USA IMI,
         which this approximates; there is no buffer band.
+    estimation_universe_excluded_sic : tuple of int, default ()
+        SIC codes kept out of the estimation universe: a symbol whose
+        point-in-time SIC code (``sic_column``) at the previous bar is one
+        of them is not ranked, so the universe takes the next largest
+        company instead. ``(6770,)`` keeps out blank-check companies
+        (SPACs), whose market cap is the cash in their trust and which
+        have no operating business; a SPAC's code changes on the day its
+        merger completes, so the merged company is ranked from then on.
+        Empty (the default): nothing is kept out and ``sic_column`` is not
+        read.
+    sic_column : str, default "sic_code"
+        Panel variable holding the point-in-time SIC code
+        (``SharadarListingDataset``'s ``sic_code``), read only when
+        ``estimation_universe_excluded_sic`` is not empty.
     beta_window : int, default 252
         Bars in the BETA regression window (USE4).
     beta_half_life : float, default 63.0
@@ -360,6 +375,8 @@ class BarraStyleParameters:
     industry_column: str = "industry"
     firm_column: str = "firm"
     estimation_universe_size: int = 3000
+    estimation_universe_excluded_sic: tuple[int, ...] = ()
+    sic_column: str = "sic_code"
     beta_window: int = 252
     beta_half_life: float = 63.0
     beta_min_observations: int = 63
@@ -462,6 +479,7 @@ class BarraStyleParameters:
             *self.history_columns(self.fiscal_year_end_prefix),
             self.industry_column,
             self.firm_column,
+            *((self.sic_column,) if self.estimation_universe_excluded_sic else ()),
         )
 
     @property
@@ -541,6 +559,14 @@ class BarraStyleParameters:
         """
         if self.estimation_universe_size < 2:
             raise ValueError("estimation_universe_size must be at least 2")
+        excluded = list(self.estimation_universe_excluded_sic)
+        if any(isinstance(code, bool) or not isinstance(code, int) or code < 0 for code in excluded):
+            raise ValueError(
+                f"estimation_universe_excluded_sic must hold non-negative integer SIC codes, got "
+                f"{excluded}"
+            )
+        if len(set(excluded)) != len(excluded):
+            raise ValueError(f"estimation_universe_excluded_sic repeats a code: {excluded}")
         if self.beta_window < 2:
             raise ValueError("beta_window must be at least 2")
         if not self.beta_half_life > 0:
@@ -760,7 +786,8 @@ class BarraStyle(FactorKunQuant):
       before anything else is computed;
     - the estimation universe is the ``estimation_universe_size`` symbols
       with the largest market cap at ``t-1``, secondary share classes left
-      out;
+      out, and so are the symbols whose SIC code at ``t-1`` is in
+      ``estimation_universe_excluded_sic`` (blank-check companies, say);
     - the market return is the universe's return, weighted by the market
       cap at ``t-1``;
     - returns are in excess of the risk-free rate of the bar before (the
@@ -1367,6 +1394,10 @@ class BarraStyle(FactorKunQuant):
         }
         arrays[INDUSTRY_INPUT] = arrays.pop(params.industry_column)
         arrays[OWN_CAP] = arrays[params.market_cap_column].copy()
+        if params.estimation_universe_excluded_sic:
+            # An excluded company has no cap to rank on, as a secondary share class has none.
+            excluded = np.isin(arrays.pop(params.sic_column), list(params.estimation_universe_excluded_sic))
+            arrays[OWN_CAP][excluded] = np.nan
         _carry_firm_values(arrays, arrays.pop(params.firm_column), panel["symbol"].values, params)
         splits = arrays[params.split_column]
         arrays[SPLIT_BASIS] = np.ascontiguousarray(
