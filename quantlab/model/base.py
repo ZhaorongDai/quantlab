@@ -466,6 +466,21 @@ class BaseModel(Component, ABC):
         return sorted_panel(data)
 
     @property
+    def feature_dtype(self) -> np.dtype:
+        """The type this model reads its features as: its fit, evaluation and predictions.
+
+        ``FEATURE_DTYPE`` (float32) here. ``TorchModel`` returns its
+        ``panel_dtype``, so a model storing its panel in float16 collects
+        and converts its features in float16 and never holds a float32 copy.
+
+        Examples
+        --------
+        >>> model.feature_dtype
+        dtype('float32')
+        """
+        return FEATURE_DTYPE
+
+    @property
     def warmup_bars(self) -> int:
         """Bars of features the model needs before the first bar it predicts.
 
@@ -487,20 +502,21 @@ class BaseModel(Component, ABC):
         ``config.factor_data_strategy``. It starts ``warmup_bars`` bars
         before ``start`` (by default the model's ``start_date``), counted as
         ``_feature_starts`` counts them, so the panel may begin before
-        ``start``. Each factor's panel is cast to ``FEATURE_DTYPE`` before
-        the merge.
+        ``start``. Each factor's panel is cast to ``feature_dtype`` before
+        the merge, so the merged panel is never wider than the model reads.
 
         Raises
         ------
         ValueError
-            If the strategy is neither ``"cal"`` nor ``"read"``.
+            If the strategy is neither ``"cal"`` nor ``"read"``, or a factor
+            value is too large for ``feature_dtype``.
         """
         start = self.config.start_date if start is None else start
         end = self.config.end_date if end is None else end
         strategy = self.config.factor_data_strategy
         factors = self.config.factors
         panels = [
-            as_feature_dtype(self._request_panel(factor, strategy, first, end))
+            as_feature_dtype(self._request_panel(factor, strategy, first, end), self.feature_dtype)
             for factor, first in zip(factors, self._feature_starts(strategy, start))
         ]
         return xr.combine_by_coords(panels)  # type: ignore
@@ -610,8 +626,8 @@ class BaseModel(Component, ABC):
         fit converts it once in all), and this model's ``training_record`` is
         the panel's. The panel must have been read for the same factor and
         label configs over the same ``start_date`` and ``end_date``, with the
-        same warm-up and read strategies; other hyperparameters and the seed
-        may differ.
+        same warm-up, read strategies and ``feature_dtype``; other
+        hyperparameters and the seed may differ.
 
         Parameters
         ----------
@@ -626,7 +642,8 @@ class BaseModel(Component, ABC):
         Raises
         ------
         ValueError
-            If ``panel`` was collected for other factors, labels or dates.
+            If ``panel`` was collected for other factors, labels or dates, or
+            in another feature type.
 
         Examples
         --------
@@ -637,7 +654,7 @@ class BaseModel(Component, ABC):
         if panel.source != self._panel_source():
             raise ValueError(
                 f"{self.class_name}.use_panel: the panel was collected for other "
-                f"factors, labels or dates than this model reads"
+                f"factors, labels, dates or feature type than this model reads"
             )
         self.collected_panel = panel
         return self
@@ -651,6 +668,7 @@ class BaseModel(Component, ABC):
             "start_date": config.start_date,
             "end_date": config.end_date,
             "warmup_bars": self.warmup_bars,
+            "feature_dtype": self.feature_dtype.name,
             "factor_data_strategy": config.factor_data_strategy,
             "label_data_strategy": config.label_data_strategy,
         })
@@ -708,7 +726,8 @@ class BaseModel(Component, ABC):
         label = self._collect_all_labels()
         with Timer(f"{self.class_name}: collect merge"):
             self.collected_panel = CollectedPanel.assemble(
-                feature, label, source=self._panel_source(), feature_names=list(self.get_factor_names())
+                feature, label, source=self._panel_source(), feature_names=list(self.get_factor_names()),
+                dtype=self.feature_dtype,
             )
 
     @staticmethod
@@ -1255,16 +1274,16 @@ class BaseModel(Component, ABC):
 
         data = sorted_panel(features[factors])
         return self._predict_arrays(
-            to_array(data, factors, FEATURE_DTYPE), data.timestamp.values, data.symbol.values
+            to_array(data, factors, self.feature_dtype), data.timestamp.values, data.symbol.values
         )
 
     def _feature_array(self) -> tuple:
-        """Return the collected panel's ``FEATURE_DTYPE`` feature array, its timestamps and symbols.
+        """Return the collected panel's ``feature_dtype`` feature array, its timestamps and symbols.
 
         The fit and the evaluation both read it, so they read one array,
         built once by the collected panel.
         """
-        return self.collected_panel.array(self.get_factor_names(), FEATURE_DTYPE)
+        return self.collected_panel.array(self.get_factor_names(), self.feature_dtype)
 
     def predict_scored(self) -> xr.Dataset:
         """Predict the bars of the collected panel the model is scored on, from the panel's feature array.

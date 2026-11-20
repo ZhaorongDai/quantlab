@@ -768,9 +768,15 @@ panel lives often decides how fast an epoch runs. `panel_device` chooses:
   several runs share one GPU.
 
 `panel_dtype="float16"` stores the features in half precision, halving the
-panel's largest part so a full-market panel fits on the GPU. Each batch is
-cast back to float32, so the network and the loss still run in float32. A
-feature beyond ±65504 raises `ValueError` rather than becoming infinite.
+panel's largest part so a full-market panel fits on the GPU. The model then
+reads its features in float16 from the start (its `feature_dtype`): each
+factor is cast as it is read, and the collected panel, the training panel,
+the evaluation and the predictions all use the one float16 array, so CPU
+memory never holds a float32 copy of the features either. Each batch is cast
+back to float32, so the network and the loss still run in float32. A feature
+beyond ±65504 raises `ValueError` naming the factor variable, when it is read
+or predicted, rather than becoming infinite. A collected panel is shared
+(`use_panel`) only between models reading the same `feature_dtype`.
 
 When the panel stays in CPU memory and the model runs on CUDA, a background
 thread prefetches the next batch into pinned memory and copies it to the GPU

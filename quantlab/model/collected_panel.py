@@ -51,38 +51,97 @@ def _array_dtype(data: xr.Dataset, variables: list[str], dtype) -> np.dtype:
     return np.dtype(dtype)
 
 
-#: The type every model reads its features as: its fit, its evaluation and
-#: its predictions (``TrainingPanel.from_arrays`` included), so they all
-#: read one array of one type.
+#: The default type a model reads its features as (``BaseModel.feature_dtype``):
+#: its fit, its evaluation and its predictions all read one array of the
+#: model's one type. A torch model storing its panel in float16 reads float16.
 FEATURE_DTYPE = np.dtype(np.float32)
 
 
-def as_feature_dtype(data: xr.Dataset) -> xr.Dataset:
-    """Return ``data`` with every variable cast to ``FEATURE_DTYPE``.
+def _refuse_overflow(source: np.ndarray, cast: np.ndarray, name: str) -> None:
+    """Raise when ``cast`` turned a finite value of ``source`` into an infinity.
+
+    Raises
+    ------
+    ValueError
+        If any value finite in ``source`` is infinite in ``cast``, as a value
+        beyond ±65504 becomes in float16; the message names the variable.
+    """
+    overflow = int(np.count_nonzero(np.isfinite(source) & ~np.isfinite(cast)))
+    if overflow:
+        raise ValueError(
+            f"{overflow} value(s) of {name!r} are finite but too large for {cast.dtype}; "
+            f"read the features in a wider type (a torch model's panel_dtype='float32') "
+            f"or rescale the factor"
+        )
+
+
+def _below_feature_dtype(source: np.dtype, target: np.dtype) -> bool:
+    """Whether a cast of ``source`` to ``target`` goes below ``FEATURE_DTYPE`` (float16).
+
+    Such a cast can overflow, so it is checked, and it runs through
+    ``FEATURE_DTYPE``, so a float64 value rounds as it did when every
+    feature was read in float32 first and narrowed later. A cast to
+    ``FEATURE_DTYPE`` itself is neither checked nor routed.
+    """
+    return target.kind == "f" and target.itemsize < FEATURE_DTYPE.itemsize <= source.itemsize
+
+
+def _narrow(values: np.ndarray, target: np.dtype) -> np.ndarray:
+    """``values`` cast to ``target`` through ``FEATURE_DTYPE`` (see ``_below_feature_dtype``)."""
+    if values.dtype != FEATURE_DTYPE:
+        values = values.astype(FEATURE_DTYPE)
+    return values.astype(target)
+
+
+def as_feature_dtype(data: xr.Dataset, dtype: "np.typing.DTypeLike" = FEATURE_DTYPE) -> xr.Dataset:
+    """Return ``data`` with every variable cast to ``dtype``, ``FEATURE_DTYPE`` by default.
 
     A variable already of that type is kept as it is, not copied. Every
-    variable is cast, integer ones included: the fit reads its features as
-    ``FEATURE_DTYPE`` whatever their type.
+    variable is cast, integer ones included: a model reads its features in
+    its ``feature_dtype`` whatever their type. A cast below float32 (to
+    float16) is checked one variable at a time and runs through float32, so
+    it rounds as a float32 read narrowed later would.
 
     Parameters
     ----------
     data : xr.Dataset
         A feature panel.
+    dtype : numpy dtype, optional
+        The type to cast to; ``FEATURE_DTYPE`` (float32) by default.
 
     Returns
     -------
     xr.Dataset
-        ``data`` with every variable of ``FEATURE_DTYPE``; ``data`` itself
-        when every variable already is.
+        ``data`` with every variable of ``dtype``; ``data`` itself when every
+        variable already is.
+
+    Raises
+    ------
+    ValueError
+        If a finite value is too large for ``dtype`` (beyond ±65504 for
+        float16).
 
     Examples
     --------
     >>> wide = panel.assign(f_a=panel["f_a"].astype(np.float64))
     >>> as_feature_dtype(wide)["f_a"].dtype
     dtype('float32')
+    >>> as_feature_dtype(wide, np.float16)["f_a"].dtype
+    dtype('float16')
     """
-    cast = {name: data[name].astype(FEATURE_DTYPE)
-            for name in data.data_vars if data[name].dtype != FEATURE_DTYPE}
+    dtype = np.dtype(dtype)
+    cast = {}
+    for name in data.data_vars:
+        variable = data[name]
+        if variable.dtype == dtype:
+            continue
+        if _below_feature_dtype(variable.dtype, dtype):
+            values = variable.values
+            narrowed = _narrow(values, dtype)
+            _refuse_overflow(values, narrowed, str(name))
+            cast[name] = variable.copy(data=narrowed)
+        else:
+            cast[name] = variable.astype(dtype)
     return data.assign(cast) if cast else data
 
 
@@ -107,6 +166,13 @@ def to_array(data: xr.Dataset, variables: list[str], dtype: "np.typing.DTypeLike
     np.ndarray
         The stacked variables.
 
+    Raises
+    ------
+    ValueError
+        If ``dtype`` is below float32 (float16) and a finite value is too
+        large for it (checked a block of bars at a time; such a cast runs
+        through float32, as ``as_feature_dtype``'s does).
+
     Examples
     --------
     >>> to_array(panel, ["f_b", "f_a"]).shape
@@ -121,14 +187,18 @@ def to_array(data: xr.Dataset, variables: list[str], dtype: "np.typing.DTypeLike
     num_times = data.sizes["timestamp"]
     out = np.empty((num_times, data.sizes["symbol"], len(variables)), dtype=dtype)
     for first in range(0, len(variables), GROUP_VARIABLES):
-        columns = [
-            data[name].transpose(*_AXES).values
-            for name in variables[first:first + GROUP_VARIABLES]
-        ]
+        names = variables[first:first + GROUP_VARIABLES]
+        columns = [data[name].transpose(*_AXES).values for name in names]
+        checked = [_below_feature_dtype(column.dtype, dtype) for column in columns]
         for start in range(0, num_times, BLOCK_BARS):
             stop = min(num_times, start + BLOCK_BARS)
-            for i, column in enumerate(columns, start=first):
-                out[start:stop, :, i] = column[start:stop]
+            for i, column in enumerate(columns):
+                if checked[i]:
+                    block = column[start:stop]
+                    out[start:stop, :, first + i] = _narrow(block, dtype)
+                    _refuse_overflow(block, out[start:stop, :, first + i], str(names[i]))
+                else:
+                    out[start:stop, :, first + i] = column[start:stop]
     return out
 
 
@@ -163,6 +233,7 @@ class CollectedPanel:
         labels: xr.Dataset,
         source: dict | None = None,
         feature_names: list[str] | None = None,
+        dtype: "np.typing.DTypeLike" = FEATURE_DTYPE,
     ) -> "CollectedPanel":
         """Join a model's features and labels into one panel on the features' bars and symbols.
 
@@ -170,9 +241,9 @@ class CollectedPanel:
         a label's symbol or bar without features is dropped (nothing can be
         fitted or predicted on it) and a feature's warm-up bar has NaN
         labels. The features are held once: they are stacked into one
-        ``[T, S, F]`` ``FEATURE_DTYPE`` array in ``feature_names`` order,
-        the array ``array(feature_names, FEATURE_DTYPE)`` returns, and the
-        panel's feature variables are views of it.
+        ``[T, S, F]`` array of ``dtype`` in ``feature_names`` order, the
+        array ``array(feature_names, dtype)`` returns, and the panel's
+        feature variables are views of it.
 
         Parameters
         ----------
@@ -185,6 +256,9 @@ class CollectedPanel:
         feature_names : list[str], optional
             The feature variables in the order the model reads them; the
             order of ``features``' variables when not given.
+        dtype : numpy dtype, optional
+            The features' type, the reading model's ``feature_dtype``;
+            ``FEATURE_DTYPE`` (float32) by default.
 
         Returns
         -------
@@ -195,7 +269,8 @@ class CollectedPanel:
         ------
         ValueError
             If no label symbol is on the features' symbol axis (an integer
-            permaticker against a text one), which would leave every label NaN.
+            permaticker against a text one), which would leave every label
+            NaN, or a feature is too large for ``dtype`` (see ``to_array``).
 
         Examples
         --------
@@ -216,7 +291,8 @@ class CollectedPanel:
                 f"every label would be NaN. Check that both are on the same axis."
             )
         names = list(features.data_vars) if feature_names is None else list(feature_names)
-        x = to_array(features, names, FEATURE_DTYPE)
+        dtype = np.dtype(dtype)
+        x = to_array(features, names, dtype)
         dims = ("timestamp", "symbol")
         data = xr.Dataset(
             {name: (dims, x[..., i]) for i, name in enumerate(names)},
@@ -224,7 +300,7 @@ class CollectedPanel:
         )
         labels = labels.reindex(timestamp=features.indexes["timestamp"], symbol=symbols)
         panel = cls(data.assign(labels.data_vars), source=source)
-        panel._arrays[(tuple(names), FEATURE_DTYPE.str)] = x
+        panel._arrays[(tuple(names), dtype.str)] = x
         return panel
 
     def __init__(self, data: xr.Dataset, record: dict | None = None, source: dict | None = None):

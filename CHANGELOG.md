@@ -31,6 +31,12 @@ compatibility shims or config migrations.
 
 ### Changed
 
+- A torch model with `panel_dtype="float16"` reads its features in float16 from the start
+  (`BaseModel.feature_dtype`): each factor is cast as it is read and the collected panel, the
+  training panel, the evaluation and the predictions share one float16 array, so CPU memory no
+  longer holds a float32 copy of the features beside it. A value too large for float16 now raises
+  when the factor is read (or a prediction panel converted), naming the variable, instead of at
+  the start of the fit; `use_panel` refuses a panel collected in another feature type.
 - `USEquityCrossectionSelectStockVectorBt` is renamed `USEquityVectorBt`, matching `WeightsVectorBt`
   and `USEquityApproximateBacktest`. A saved run's config names its backtester class, so
   `BacktestRun.rebuild_backtester` on a run saved under the old name raises until the name in its

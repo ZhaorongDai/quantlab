@@ -71,9 +71,9 @@ class TrainingTargetMixin:
         return type(self)._transform_target is not type(self)._default_transform_target
 
     def _training_panel(self) -> TrainingPanel:
-        """Return the collected panel as a float32 ``TrainingPanel`` with no target yet.
+        """Return the collected panel as a ``TrainingPanel`` with no target yet.
 
-        Its float32 feature and label arrays are the ``collected_panel``'s,
+        Its feature array (of ``feature_dtype``) and float32 label array are the ``collected_panel``'s,
         built once and shared by every fit on it and, for the features, by
         the evaluation (``_feature_array``), so a fit reads them and never
         writes into them.

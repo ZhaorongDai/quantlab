@@ -117,6 +117,40 @@ def test_to_array_fills_blocks_of_bars_and_takes_a_dtype(tmp_path):
     np.testing.assert_array_equal(x32, expected.astype(np.float32))
 
 
+@pytest.mark.parametrize("convert", [
+    lambda data: collected_panel.to_array(data, ["f_a", "f_b"], np.float16),
+    lambda data: collected_panel.as_feature_dtype(data, np.float16),
+])
+def test_a_narrowing_conversion_refuses_a_finite_value_too_large_for_the_type(convert):
+    raw = _panel()
+    raw["f_a"].values[0, 0] = np.inf  # an infinity stays one
+    raw["f_b"].values[4, 1] = np.nan
+    convert(raw)
+    raw["f_b"].values[4, 1] = 1e6
+    with pytest.raises(ValueError, match="f_b.*float16"):
+        convert(raw)
+
+
+@pytest.mark.parametrize("convert", [
+    lambda data: collected_panel.to_array(data, ["f_b"], np.float16)[..., 0],
+    lambda data: collected_panel.as_feature_dtype(data, np.float16)["f_b"].values,
+])
+def test_a_float64_value_narrowed_to_float16_rounds_as_through_float32(convert):
+    raw = _panel()
+    tie_breaker = 1 + 2**-11 + 2**-40  # float16 rounds it up directly, down through float32
+    raw["f_b"].values[:] = tie_breaker
+    assert np.float16(tie_breaker) != np.float16(np.float32(tie_breaker))
+    assert (convert(raw) == np.float16(np.float32(tie_breaker))).all()
+
+
+def test_as_feature_dtype_casts_every_variable_to_the_given_type():
+    raw = _panel()
+    half = collected_panel.as_feature_dtype(raw, np.float16)
+    assert {half[n].dtype for n in half.data_vars} == {np.dtype(np.float16)}
+    np.testing.assert_array_equal(half["f_b"].values, raw["f_b"].values.astype(np.float16))
+    assert collected_panel.as_feature_dtype(half, np.float16) is half
+
+
 def test_collect_leaves_a_collected_panel_whose_record_is_the_training_record(tmp_path):
     model = StubLibraryHead(_config(tmp_path)).collect()
     assert isinstance(model.collected_panel, CollectedPanel)
