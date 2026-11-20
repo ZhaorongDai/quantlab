@@ -144,6 +144,10 @@ class PanelPrices:
         ``[bars, symbols]``: each bar's valuation price, forward-filled.
     entry : np.ndarray
         ``[bars, symbols]``: the price each bar's weights fill at.
+    settled : np.ndarray or None, default None
+        ``[bars, symbols]`` booleans: a holding of the symbol has been
+        settled into cash (it delisted) by the bar, so the bar's holdings
+        hold none of it; ``None`` settles nothing.
 
     Examples
     --------
@@ -159,6 +163,7 @@ class PanelPrices:
     previous_entry: np.ndarray
     close: np.ndarray
     entry: np.ndarray
+    settled: np.ndarray | None = None
 
 
 @dataclass(frozen=True)

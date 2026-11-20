@@ -76,3 +76,70 @@ def test_with_fees_the_value_stays_close_to_the_runs(case):
     run_value = result.simulation.value.values / result.simulation.value.values[0]
     np.testing.assert_array_equal(account.value.timestamp.values, result.simulation.value.timestamp.values)
     np.testing.assert_allclose(account.value.values, run_value, rtol=VALUE_TOLERANCE, atol=0)
+
+
+def _three_symbol_account(price: np.ndarray, score: np.ndarray):
+    """The approximate TopkDropout (topk 1, n_drop 1, daily, no cost) on three symbols A, B, C over eight bars."""
+    import pandas as pd
+    import xarray as xr
+
+    from quantlab.backtest.config import ApproximateBacktestConfig
+    from quantlab.backtest.predefined.us_equity import USEquityApproximateBacktest
+    from quantlab.dataset.memory import FrameDataset
+    from quantlab.runs.prediction_panel import LabelSpec, PredictionPanel
+
+    bars = pd.bdate_range("2024-01-02", periods=8)
+    coords = {"timestamp": bars, "symbol": np.array(["A", "B", "C"], dtype=object)}
+    dims = ("timestamp", "symbol")
+    prices = FrameDataset(xr.Dataset({"adjOpen": (dims, price), "adjClose": (dims, price)}, coords=coords))
+    panel = PredictionPanel(
+        xr.Dataset({"ret_1": (dims, score)}, coords=coords), [LabelSpec("ret_1", "standardized", 1, 1)]
+    )
+    backtest = USEquityApproximateBacktest(ApproximateBacktestConfig(
+        price_dataset=prices, start_date=str(bars[0].date()), end_date=str(bars[-1].date()),
+        rebalance_periods=1, cost=0.0,
+    ))
+    return backtest.run(panel, TopkDropoutConstructor(TopkDropoutConfig("long_only", topk=1, n_drop=1)))
+
+
+def test_a_buy_without_a_fill_price_is_rejected_and_the_slot_is_not_locked():
+    """A has the best score on bar 3, its last priced bar, and the rule switches into it.
+
+    As in a backtest run, the buy at bar 4 has no fill price and is rejected
+    while the sell of B fills, so the book is cash for a bar; the decision at
+    bar 4 sees A settled and buys B back, which fills at bar 5. Before the
+    fix A was bought at bar 3's valuation and held for good, the value frozen
+    from bar 4 on.
+    """
+    up = 100.0 * 1.01 ** np.arange(8)
+    price = np.stack([up, up, up], axis=1)
+    price[4:, 0] = np.nan
+    score = np.tile([0.0, 1.0, 0.5], (8, 1))
+    score[3] = [2.0, 1.0, 0.5]
+    score[4:, 0] = np.nan
+    account = _three_symbol_account(price, score)
+    np.testing.assert_array_equal(account.weights["weight"].sel(symbol="B").values[:-1], [1, 1, 1, 0, 1, 1, 1])
+    np.testing.assert_allclose(
+        account.value.values, [1.0, 1.0, 1.01, 1.01**2, 1.01**3, 1.01**3, 1.01**4, 1.01**5], rtol=1e-12
+    )
+
+
+def test_a_delisted_holding_is_settled_and_frees_its_slot():
+    """A is held, delists after bar 3 and is settled into cash at its last valuation on bar 4.
+
+    The decision at bar 4 sees the slot free and buys B, which fills at bar
+    5; before the fix A stayed locked and the value never moved again.
+    """
+    price = np.stack([100.0 * 1.02 ** np.arange(8), 100.0 * 1.01 ** np.arange(8), np.full(8, 100.0)], axis=1)
+    price[4:, 0] = np.nan
+    score = np.tile([2.0, 1.0, 0.5], (8, 1))
+    score[4:, 0] = np.nan
+    account = _three_symbol_account(price, score)
+    weights = account.weights["weight"].transpose("timestamp", "symbol").values
+    np.testing.assert_array_equal(weights[:4], [[1.0, 0.0, 0.0]] * 4)
+    np.testing.assert_array_equal(weights[4:7], [[0.0, 1.0, 0.0]] * 3)
+    settled = 1.02 ** 2
+    np.testing.assert_allclose(
+        account.value.values, [1.0, 1.0, 1.02, settled, settled, settled, settled * 1.01, settled * 1.01**2],
+        rtol=1e-12,
+    )

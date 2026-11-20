@@ -5,12 +5,14 @@ for a ``TopkDropoutConstructor``; it reads the rule's config. TopkDropout reads
 the holdings, so the bars are decided in time order: a bar's holdings are the
 last decided book (or ``prices.previous``) at its fill prices, marked at the
 bar's valuation price over the book's value, cash included, as
-``quantlab.execution.approximate.mark_book`` marks it; a held symbol that is
-not tradable at the bar is locked. Each bar is then decided by the rule's own
+``quantlab.execution.approximate.mark_book`` marks it, a holding settled
+by the bar (``prices.settled``) counted as cash; a held symbol that is not
+tradable at the bar is locked. Each bar is then decided by the rule's own
 book step (``TopkDropoutConstructor.book``), so the picks, the sells and
 the buys' weights are the per-bar rule's. What the approximate backtest gives
-up is the exact book's: an order a backtest run rejects, a settled delisting
-or a buy capped by cash leaves the run's book different from the decided one.
+up is the exact book's: a rejected order or a buy capped by cash leaves the
+book filled different from the decided one, and the next bar is decided from
+the decided one.
 """
 
 import numpy as np
@@ -94,6 +96,9 @@ def decide(rule, panel: DecisionPanel, prices: PanelPrices | None = None, stoppi
     weights = np.zeros((bars, symbols))
     for b in range(bars):
         current = holdings(book, book_entry, prices.close[b])
+        if prices.settled is not None:
+            # A settled holding is cash at its last valuation: the book's value is unchanged.
+            current = np.where(prices.settled[b], 0.0, current)
         locked = (current != 0) & ~tradable[b]
         row = rule.book(scores[b], current, tradable[b], locked)
         weights[b] = row
