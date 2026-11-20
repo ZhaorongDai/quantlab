@@ -63,10 +63,8 @@ _HALF_MAGNITUDE, _HALF_INFINITY = 0x7FFF, 0x7C00
 
 
 def _has_infinity(values: np.ndarray) -> bool:
-    """Whether ``values`` hold an infinity; on float16 by its bits, as numpy's float16 ``isinf`` is slow."""
-    if values.dtype == np.float16:
-        return bool(((values.view(np.uint16) & _HALF_MAGNITUDE) == _HALF_INFINITY).any())
-    return bool(np.isinf(values).any())
+    """Whether float16 ``values`` hold an infinity, read from their bits (numpy's float16 ``isinf`` is slow)."""
+    return bool(((values.view(np.uint16) & _HALF_MAGNITUDE) == _HALF_INFINITY).any())
 
 
 def _refuse_overflow(source: np.ndarray, cast: np.ndarray, name: str) -> None:
