@@ -8,6 +8,11 @@ compatibility shims or config migrations.
 
 ### Added
 
+- `BarraStyleParameters.estimation_universe_excluded_sic` keeps the listed SIC codes out of the
+  estimation universe, read from a point-in-time `sic_column` (`SharadarListingDataset`'s
+  `sic_code` by default); `(6770,)` keeps out blank-check companies (SPACs), whose market cap is
+  their trust's cash. The default, `()`, keeps the universe as it was and reads no SIC code.
+
 - StockFit (`stockfit`), a vendor of SEC-filing data, usable with only its key
   (`STOCKFIT_API_KEY`). `quantlab.acquisition.stockfit.refresh.refresh_raw_tier` keeps its raw tier
   under `<download-dir>/stockfit/` current within the daily request limit: a backfill that resumes

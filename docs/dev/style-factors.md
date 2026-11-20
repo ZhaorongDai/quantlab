@@ -23,7 +23,12 @@ and specific risk are the [factor risk model](risk-model.md)'s.
   standardization and the regressions are fitted on: here the
   `estimation_universe_size` (3000) largest stocks by the previous bar's
   market cap, re-ranked on every bar inside the graph, with no buffer band.
-  A firm enters once: a secondary share class is never in it.
+  A firm enters once: a secondary share class is never in it. With
+  `estimation_universe_excluded_sic=(6770,)` blank-check companies (SPACs)
+  are kept out too: a SPAC's market cap is the cash in its trust, it has
+  no operating business and it barely trades. The stock's point-in-time
+  SIC code at the previous bar decides, and a SPAC's code changes on the
+  day its merger completes, so the merged company is ranked from then on.
 - A **secondary share class** (GOOG beside GOOGL, BRK.A beside BRK.B) has
   no DAILY or SF1 rows of its own. It takes its firm's market cap,
   fundamentals and fiscal-year history from the primary class named by
@@ -47,6 +52,7 @@ a merge of seven datasets:
 | `SharadarIndustryDataset` | `industry` |
 | `SharadarShareClassDataset` | `firm` |
 | `FredRateDataset` (DTB3) | `risk_free`, on the one symbol `DTB3` |
+| `SharadarListingDataset` | `sic_code`, read only with `estimation_universe_excluded_sic` |
 
 The ART store alone carries the fundamentals: its balance-sheet items equal
 ARQ's on every filing both dimensions hold. In the merge, SF1's copies of
