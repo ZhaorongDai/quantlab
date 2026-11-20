@@ -830,33 +830,36 @@ over the same window; `cost` stands for fees plus slippage:
 >>> predictions = run.predictions()
 >>> account = approximate.run(predictions, TopNConstructor(TopNConfig(direction="long_only", top_n=2)))
 >>> round(account.metrics["whole"]["Total Return [%]"], 2), round(run.metrics()["whole"]["Total Return [%]"], 2)
-(-5.92, -5.87)
+(-5.87, -5.87)
 >>> account.weights["weight"].fillna(9).equals(result.weights["weight"].fillna(9))
 True
 >>> for top_n in (1, 2, 3):
 ...     swept = approximate.run(predictions, TopNConstructor(TopNConfig(direction="long_only", top_n=top_n)))
 ...     print(top_n, round(swept.metrics["whole"]["Sharpe Ratio"], 2), round(swept.metrics["whole"]["Turnover per Rebalance [%]"], 1))
 1 -6.22 150.0
-2 -2.36 134.1
-3 -1.42 84.4
+2 -2.33 125.5
+3 -1.4 78.7
 >>> round(backtester.run_weights(account.weights).metrics["whole"]["Total Return [%]"], 2)
 -5.87
 ```
 
 The weights are the run's, with its rebalance record, so `run_weights` takes them as they are
-and gives the run back; the 0.05-point gap in total return is `FFF`'s delisting.
+and gives the run back. The approximation settles `FFF`'s delisting as the run does, so here
+the two total returns agree.
 
 ### What it keeps and what it gives up
 
 It keeps the rebalance schedule, the t+1 fill at the open, holdings marked at the close and
-drifting between fills, tradability judged at the decision bar, and the statistics, computed
-by the same functions as a run's metrics. It gives up, each a source of gap from `run()`:
+drifting between fills, tradability judged at the decision bar, an order on a symbol with no
+fill price rejected (the symbol keeps its holding while the rest of the target fills), a
+delisted holding settled into cash at its last valuation on the bar after its delisting (a
+later decision sees the cash), and the statistics, computed by the same functions as a run's
+metrics. It gives up, each a source of gap from `run()`:
 
-- **Rejected orders**: a missing fill price falls back to the previous close.
+- **Rejections seen by the next decision**: the next rebalance is decided from the book the
+  rule decided, not the one left after a rejection.
 - **Locked positions**: a held symbol that cannot trade is sold at the next rebalance at the
-  price it stopped at.
-- **Delisting settlements**: a delisted holding stays at its last valuation until a rebalance
-  sells it.
+  price it stopped at (TopkDropout keeps it, as the per-bar rule does).
 - **The cash cap**: a run cuts a fill's last buys to the cash the fees leave; the
   approximation does not, so with fees the holdings differ by about cost times turnover.
 - **Order mechanics**: fees and slippage are one `cost` on traded weight; `min_trade` is not

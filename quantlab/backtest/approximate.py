@@ -10,11 +10,16 @@ Kept from a backtest run: the rebalance schedule (every
 ``rebalance_periods``-th bar from the window's first bar, never its last),
 a weight decided at t filling at t + 1's fill price, holdings marked at the
 forward-filled valuation price and drifting with prices between fills,
-tradability judged at the decision bar. Given up: rejected orders, locked
-positions, delisting settlements (a delisted holding stays at its last
-valuation, never turned into cash), the cash cap on buys and ``min_trade``;
-fees and slippage are one ``cost`` on traded weight. A fill price missing at
-a fill bar falls back to the previous bar's valuation.
+tradability judged at the decision bar, and a delisted holding settled
+into cash at its last valuation on the bar after its delisting (the price
+dataset's ``delisting_bars``), which a decision after it sees as cash, and
+an order on a symbol with no fill price at its fill bar rejected, the
+symbol keeping its holding (marked at the previous bar's valuation) while
+the rest of the target fills. Given up: the orders a backtest run rejects
+for other reasons, locked positions, the cash cap on buys and
+``min_trade``; fees and slippage are one ``cost`` on traded weight. A
+decision does not see a rejection: the next one starts from the decided
+book.
 
 The approximate backtest decides with its own implementations of the rules
 it runs (``quantlab.portfolio.predefined.approximate``, chosen through the
@@ -182,17 +187,25 @@ def _entry_prices(fill: np.ndarray, close: np.ndarray) -> np.ndarray:
 
 
 def _simulate(
-    targets: np.ndarray, decisions: np.ndarray, fill: np.ndarray, close: np.ndarray, cost: float
+    targets: np.ndarray,
+    decisions: np.ndarray,
+    fill: np.ndarray,
+    close: np.ndarray,
+    cost: float,
+    settle: np.ndarray | None = None,
 ) -> _Simulation:
     """Simulate the targets decided at ``decisions``, in one compiled pass over the bars.
 
     ``quantlab.execution.approximate.simulate``: ``targets[k]`` (``[K, S]``;
     an all-NaN row holds) is decided at row ``decisions[k]`` (in time order)
-    and fills at the next row's fill price, or the previous row's valuation
-    where it has none; ``fill`` is raw and ``close`` the valuation price
+    and fills at the next row's fill price; an order on a symbol with none
+    there is rejected, the symbol keeping its holding marked at the previous
+    row's valuation; ``fill`` is raw and ``close`` the valuation price
     forward-filled, both ``[T, S]``, and every decision is before the last
     row. Between fills the book is marked at the valuation price, a price
-    missing on either side counting as no change; each fill costs ``cost``
+    missing on either side counting as no change; ``settle`` (``[T, S]``
+    booleans, none by default) marks the bar after each delisting, where a
+    holding turns into cash at its last valuation; each fill costs ``cost``
     times its traded weight, against the previous book marked at the fill's
     prices. Returns the value (1.0 before the first fill), each fill's
     signed traded weights and the value it traded against, and ``filled``
@@ -205,7 +218,9 @@ def _simulate(
             np.ascontiguousarray(targets, dtype=np.float64),
             np.ascontiguousarray(decisions, dtype=np.int64),
             _entry_prices(fill, close),
+            ~np.isfinite(fill),
             np.ascontiguousarray(close, dtype=np.float64),
+            np.zeros(close.shape, dtype=np.bool_) if settle is None else np.ascontiguousarray(settle, dtype=np.bool_),
             float(cost),
         )
     )
@@ -288,6 +303,8 @@ class ApproximateBacktest(Component):
             raise TypeError(f"{type(self).__name__} sets no MARKET; use a concrete class")
         self.config = config
         self._prices: xr.Dataset | None = None
+        # The window's delisting_bars, judged once on the window's prices.
+        self._delisted: np.ndarray | None = None
         # The benchmark's axis symbol and its value bought and held over the window, read once.
         self._benchmark: tuple[str, np.ndarray] | None = None
         # The prices with a warm-up before the window, and the warm-up's history_bars.
@@ -349,6 +366,7 @@ class ApproximateBacktest(Component):
         constructor.bind(predictions.labels)
         config, market = self.config, self.MARKET
         prices = self._window_prices()
+        delisted = self._window_delistings()
         timestamps = prices.timestamp.values
         panel = predictions.predictions.reindex(timestamp=timestamps, symbol=prices.symbol.values)
         inputs = DecisionInputs(
@@ -363,6 +381,7 @@ class ApproximateBacktest(Component):
         keep = inputs.decision_symbols(panel)
         if keep.any() and not keep.all():
             panel, prices = panel.isel(symbol=keep), prices.isel(symbol=keep)
+            delisted = delisted[:, keep]
         symbols = prices.symbol.values
         scheduled = inputs.panel_scheduled(timestamps)
         decisions = np.flatnonzero(scheduled)
@@ -380,6 +399,10 @@ class ApproximateBacktest(Component):
         iterations = np.zeros(len(decisions), dtype=np.int64)
         converged = np.ones(len(decisions), dtype=bool)
         entry = _entry_prices(fill, close)
+        # A holding delisted on bar b is settled on b + 1; a decision at b' sees it as cash from then on.
+        settle = np.zeros_like(delisted)
+        settle[1:] = delisted[:-1]
+        settled = np.logical_or.accumulate(settle, axis=0)
         stopping = Stopping(tolerance=config.tolerance, max_iterations=config.max_iterations)
         for chunk in np.unique(decisions // config.chunk_bars):
             members = np.flatnonzero(decisions // config.chunk_bars == chunk)
@@ -391,6 +414,7 @@ class ApproximateBacktest(Component):
                 previous_entry=np.ones(len(symbols)) if last is None else entry[decisions[last] + 1],
                 close=close[decisions[members]],
                 entry=entry[decisions[members] + 1],
+                settled=settled[decisions[members]],
             )
             solution = decider.decide(
                 constructor,
@@ -409,8 +433,8 @@ class ApproximateBacktest(Component):
                 f"{config.max_iterations} iterations, the first {missed}"
             )
 
-        simulation = _simulate(targets, decisions, fill, close, config.cost)
-        without_costs = _simulate(targets, decisions, fill, close, 0.0)
+        simulation = _simulate(targets, decisions, fill, close, config.cost, settle)
+        without_costs = _simulate(targets, decisions, fill, close, 0.0, settle)
         decided = np.zeros(len(timestamps), dtype=bool)
         decided[decisions[simulation.filled]] = True
         weights = np.full((len(timestamps), len(symbols)), np.nan)
@@ -501,6 +525,23 @@ class ApproximateBacktest(Component):
                 )
             self._prices = prices
         return self._prices
+
+    def _window_delistings(self) -> np.ndarray:
+        """Return ``[T, S]`` booleans marking each symbol's delisting bar in the window, judged once.
+
+        The price dataset's ``delisting_bars`` of the window's prices, as a
+        backtest run judges them.
+        """
+        if self._delisted is None:
+            prices = self._window_prices()
+            marks = self.config.price_dataset.delisting_bars(prices, self.MARKET.valuation_price_column)
+            self._delisted = np.asarray(
+                marks.transpose(*_DIMS)
+                .reindex(timestamp=prices.timestamp.values, symbol=prices.symbol.values, fill_value=False)
+                .values,
+                dtype=bool,
+            )
+        return self._delisted
 
     def _history_prices(self, inputs: DecisionInputs) -> xr.Dataset:
         """Return the window's prices with the rule's warm-up before it, read once per warm-up.

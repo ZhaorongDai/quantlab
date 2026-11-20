@@ -73,6 +73,13 @@ compatibility shims or config migrations.
 
 ### Fixed
 
+- The approximate backtest rejects an order on a symbol with no fill price, the symbol keeping
+  its holding, and settles a delisted holding into cash at its last valuation on the bar after
+  its delisting, as a backtest run does; the TopkDropout decisions see the settlement. A buy
+  on a name's last priced bar used to fill at the previous valuation and, the name never
+  settled, hold its TopkDropout slot for good, so over a long window the book filled with
+  delisted names and its value stopped moving. `PanelPrices` gains `settled`.
+
 - A Sharadar bulk pull commits in one rename (`raw_tier.publish_bulk`). A pull killed after the file
   was replaced left older window and updated pulls overriding the new bulk until the next one, and
   a kill before its record was written paired the new file with the old pull time. A window or
