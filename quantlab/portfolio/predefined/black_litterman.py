@@ -68,11 +68,6 @@ from quantlab.portfolio.config import (
     RelativeFactorReturnViewConfig,
     ReturnViewConfig,
 )
-from quantlab.portfolio.predefined.expected_return import (
-    GrinoldExpectedReturn,
-    UnscaledZScoreExpectedReturn,
-    ZScoreExpectedReturn,
-)
 from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.risk.base import FactorRiskForecast
@@ -470,7 +465,8 @@ class BlackLittermanOptimizer(MeanVarianceOptimizer):
     Warns
     -----
     UserWarning
-        If a z-score expected return model (``GrinoldExpectedReturn``,
+        If a cross-sectionally centred expected return model (one whose
+        ``centred`` is True: ``GrinoldExpectedReturn``,
         ``ZScoreExpectedReturn``, ``UnscaledZScoreExpectedReturn``) gives
         total-return views: its ``mu`` is a cross-sectionally centred alpha,
         so as a total return it pulls every viewed name towards zero; set
@@ -572,8 +568,10 @@ class BlackLittermanOptimizer(MeanVarianceOptimizer):
                 f"confidence={config.confidence} is Idzorek's; omega={config.omega!r} does not "
                 f"read it"
             )
-        if not config.views_relative_to_prior and isinstance(
-            config.expected_return, (GrinoldExpectedReturn, ZScoreExpectedReturn, UnscaledZScoreExpectedReturn)
+        if (
+            not config.views_relative_to_prior
+            and config.expected_return is not None
+            and config.expected_return.centred
         ):
             warnings.warn(
                 f"{type(config.expected_return).__name__} gives a cross-sectionally centred "

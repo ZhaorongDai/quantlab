@@ -844,7 +844,7 @@ class ExpectedReturnModel(_Configured, ABC):
     ``quantlab.portfolio.predefined.expected_return``.
 
     Subclass it, set ``config_cls`` to a frozen dataclass of its parameters,
-    set ``needs_sigma`` and implement ``expected_returns``; override
+    set ``needs_sigma`` and ``centred`` and implement ``expected_returns``; override
     ``bind`` to refuse a label it cannot read.
 
     Parameters
@@ -857,13 +857,17 @@ class ExpectedReturnModel(_Configured, ABC):
     >>> from quantlab.portfolio.config import GrinoldExpectedReturnConfig
     >>> from quantlab.portfolio.predefined.expected_return import GrinoldExpectedReturn
     >>> model = GrinoldExpectedReturn(GrinoldExpectedReturnConfig(ic=0.05))
-    >>> isinstance(model, ExpectedReturnModel), model.needs_sigma
-    (True, True)
+    >>> isinstance(model, ExpectedReturnModel), model.needs_sigma, model.centred
+    (True, True, True)
     """
 
     #: Whether ``expected_returns`` reads ``sigma``; a rule prepares none for
     #: a model that does not.
     needs_sigma: bool = True
+
+    #: Whether ``mu`` is a cross-sectionally centred alpha (a z-score), not a
+    #: return; Black-Litterman warns when such a model gives total-return views.
+    centred: bool = False
 
     def bind(self, spec: LabelSpec) -> None:
         """Check the expected-return label's spec before any data is read; the default accepts any.
