@@ -6,6 +6,8 @@ compatibility shims or config migrations.
 
 ## Unreleased
 
+## 0.4.0 (2026-11-24)
+
 ### Added
 
 - `BarraStyleParameters.estimation_universe_excluded_sic` keeps the listed SIC codes out of the
