@@ -13,7 +13,8 @@ compatibility shims or config migrations.
   column into the upper-case codes (`canonical_table_labels`), the TICKERS history included. A
   pull that switched labels made each security's history row and current row two rows, so the
   industry, share-class and listing panels refused to build, and the events panel found no event
-  codes.
+  codes. The TICKERS history is folded under the canonical labels, and `tickers_history` merges the
+  two rows a history folded earlier keeps of one security.
 
 ## 0.4.0 (2026-11-24)
 

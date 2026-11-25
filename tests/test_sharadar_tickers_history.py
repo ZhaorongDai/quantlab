@@ -243,3 +243,39 @@ def test_a_pull_labelling_tables_by_api_name_reads_as_the_legacy_codes(tmp_path)
 
     frame = _scan(root).sort("permaticker")
     assert frame.select("table", "permaticker").rows() == [("SEP", 101), ("SEP", 202)]
+
+
+def test_snapshots_labelled_both_ways_fold_into_one_row_per_security(tmp_path):
+    from quantlab.dataset.sharadar.tables import tickers_history
+
+    # AMD is seen as SEP, then as stocks, then not at all: one history row, and the
+    # scan brings it back once, labelled SEP.
+    root = tmp_path / "sharadar"
+    _tickers(root, [AMD, OTHER], "2026-10-08")
+    _tickers(root, [{**AMD, "table": "stocks"}, {**OTHER, "table": "stocks"}], "2026-10-09")
+    _tickers(root, [{**OTHER, "table": "stocks"}], "2026-10-10")
+    _fold(root)
+
+    history = tickers_history(root).sort("permaticker")
+    assert history.select("table", "permaticker").rows() == [("SEP", 101), ("SEP", 202)]
+    assert history["first_seen"].to_list() == [_at("2026-10-08"), _at("2026-10-08")]
+    assert history["last_seen"].to_list() == [_at("2026-10-09"), _at("2026-10-10")]
+    assert _scan(root).sort("permaticker").select("table", "permaticker").rows() == [("SEP", 101), ("SEP", 202)]
+
+
+def test_a_history_folded_with_both_labels_reads_one_row_per_security(tmp_path):
+    from quantlab.dataset.sharadar.tables import tickers_history, tickers_history_file
+
+    # A history folded before the labels were canonical keeps SEP and stocks rows.
+    root = tmp_path / "sharadar"
+    _tickers(root, [AMD], "2026-10-08")
+    _fold(root)
+    path = tickers_history_file(root)
+    old = pl.read_parquet(path)
+    later = old.with_columns(pl.lit("stocks").alias("table"), pl.lit(_at("2026-10-09")).alias("last_seen"),
+                             pl.lit(_at("2026-10-09")).alias("first_seen"))
+    pl.concat([old, later]).write_parquet(path)
+
+    history = tickers_history(root)
+    assert history.select("table", "permaticker").rows() == [("SEP", 101)]
+    assert history.select("first_seen", "last_seen").row(0) == (_at("2026-10-08"), _at("2026-10-09"))

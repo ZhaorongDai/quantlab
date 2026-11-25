@@ -910,14 +910,32 @@ def tickers_history(vendor_root: str | Path) -> pl.DataFrame | None:
         # ['first_seen', 'last_seen']
     """
     path = tickers_history_file(vendor_root)
-    return pl.read_parquet(path) if path.exists() else None
+    if not path.exists():
+        return None
+    history = canonical_table_labels(pl.read_parquet(path))
+    key = ["table", "permaticker", "ticker"]
+    if not history.select(key).is_duplicated().any():
+        return history
+    # A history folded before its labels were canonical holds a security under both
+    # labels: merge them as folding does, the latest sighting's values kept.
+    return (
+        history.sort("last_seen")
+        .group_by(key, maintain_order=True)
+        .agg(
+            *(pl.col(name).last() for name in history.columns if name not in (*key, "first_seen", "last_seen")),
+            pl.col("first_seen").min(),
+            pl.col("last_seen").max(),
+        )
+        .select(history.columns)
+        .sort(key)
+    )
 
 
 #: The tables whose ``table`` column names another table: TICKERS and INDICATORS.
 LABELLED_TABLES = ("tickers", "indicators")
 
 
-def canonical_table_labels(frame: pl.LazyFrame) -> pl.LazyFrame:
+def canonical_table_labels(frame: pl.LazyFrame | pl.DataFrame) -> pl.LazyFrame | pl.DataFrame:
     """Return ``frame`` with its ``table`` column in the upper-case legacy codes.
 
     The bulk TICKERS and INDICATORS files have labelled a table by its legacy
