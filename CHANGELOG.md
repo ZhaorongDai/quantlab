@@ -6,6 +6,16 @@ compatibility shims or config migrations.
 
 ## Unreleased
 
+### Fixed
+
+- TICKERS and INDICATORS read the same whether a pull labels a table by its legacy code (`SEP`,
+  `EVENTCODES`) or by its API name (`stocks`, `eventcodes`): `scan_raw_table` turns the `table`
+  column into the upper-case codes (`canonical_table_labels`), the TICKERS history included. A
+  pull that switched labels made each security's history row and current row two rows, so the
+  industry, share-class and listing panels refused to build, and the events panel found no event
+  codes. The TICKERS history is folded under the canonical labels, and `tickers_history` merges the
+  two rows a history folded earlier keeps of one security.
+
 ## 0.4.0 (2026-11-24)
 
 ### Added

@@ -46,6 +46,7 @@ from quantlab.dataset.sharadar.tables import (
     UPDATED_PREFIX,
     WINDOW_PREFIX,
     bulk_file,
+    canonical_table_labels,
     latest_bulk,
     pull_time,
     raw_files,
@@ -255,7 +256,8 @@ def fold_tickers_history(vendor_root: str | Path) -> Path | None:
         )
     if not frames:
         return None
-    rows = pl.concat(frames, how="vertical_relaxed").drop_nulls(_HISTORY_KEY)
+    # One row per security whichever label a snapshot gave its table (SEP or stocks).
+    rows = canonical_table_labels(pl.concat(frames, how="vertical_relaxed")).drop_nulls(_HISTORY_KEY)
     folded = (
         rows.sort("last_seen")
         .group_by(_HISTORY_KEY, maintain_order=True)
