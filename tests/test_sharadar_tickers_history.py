@@ -231,3 +231,15 @@ def test_without_a_history_nothing_changes(tmp_path):
     _tickers(root, [OTHER], "2026-10-14")
     assert tickers_history(root) is None
     assert _scan(root).equals(pl.read_parquet(latest_bulk(root, "tickers")))
+
+
+def test_a_pull_labelling_tables_by_api_name_reads_as_the_legacy_codes(tmp_path):
+    # TICKERS switched from SEP to stocks between two pulls (seen 2026-11-25):
+    # the history's SEP row and the current stocks row are one security, not two.
+    root = tmp_path / "sharadar"
+    _tickers(root, [AMD, OTHER], "2026-10-08")
+    _fold(root)
+    _tickers(root, [{**AMD, "table": "stocks"}, {**OTHER, "table": "stocks"}], "2026-10-09")
+
+    frame = _scan(root).sort("permaticker")
+    assert frame.select("table", "permaticker").rows() == [("SEP", 101), ("SEP", 202)]

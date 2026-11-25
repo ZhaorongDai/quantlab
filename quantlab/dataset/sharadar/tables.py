@@ -673,6 +673,8 @@ def scan_raw_table(
         return frame if annotate is None else annotate(path, frame)
 
     base = _overlay_windows(files, windows, scan)
+    if code in LABELLED_TABLES:
+        base = canonical_table_labels(base)
     if code == "tickers":
         base = _with_history(vendor_root, base)
     if not updates:
@@ -911,6 +913,30 @@ def tickers_history(vendor_root: str | Path) -> pl.DataFrame | None:
     return pl.read_parquet(path) if path.exists() else None
 
 
+#: The tables whose ``table`` column names another table: TICKERS and INDICATORS.
+LABELLED_TABLES = ("tickers", "indicators")
+
+
+def canonical_table_labels(frame: pl.LazyFrame) -> pl.LazyFrame:
+    """Return ``frame`` with its ``table`` column in the upper-case legacy codes.
+
+    The bulk TICKERS and INDICATORS files have labelled a table by its legacy
+    code (``SEP``, ``EVENTCODES``) or by its API name (``stocks``,
+    ``eventcodes``), and one pull may switch from one to the other. An API
+    name of a known table becomes its code in upper case, any other label is
+    upper-cased, so the pulls before and after a switch, and the TICKERS
+    history, label each table the same way.
+
+    Examples
+    --------
+    >>> frame = pl.LazyFrame({"table": ["stocks", "SEP", "funds", "eventcodes", "TABLE-DESCRIPTIONS"]})
+    >>> canonical_table_labels(frame).collect().get_column("table").to_list()
+    ['SEP', 'SEP', 'SFP', 'EVENTCODES', 'TABLE-DESCRIPTIONS']
+    """
+    codes = {entry.api_name: entry.code.upper() for entry in TABLES.values()}
+    return frame.with_columns(pl.col("table").replace(codes).str.to_uppercase())
+
+
 def _with_history(vendor_root: str | Path, current: pl.LazyFrame) -> pl.LazyFrame:
     """Return current TICKERS plus the history's rows of securities it lacks (``scan_raw_table``).
 
@@ -924,7 +950,7 @@ def _with_history(vendor_root: str | Path, current: pl.LazyFrame) -> pl.LazyFram
         return current
     columns = current.collect_schema()
     vanished = (
-        pl.scan_parquet(path)
+        canonical_table_labels(pl.scan_parquet(path))
         .join(current.select("table", "permaticker"), on=["table", "permaticker"], how="anti")
         .join(current.select("table", "ticker"), on=["table", "ticker"], how="anti")
         .sort("last_seen")
